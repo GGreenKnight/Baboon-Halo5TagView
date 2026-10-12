@@ -395,6 +395,12 @@ pub(in crate::app) fn draw_tag_pane(
         expand_all,
         nested_default: cx.model.prefs.nested_default,
         row_heights: Some(row_heights),
+        string_editor_tag: source.map(|source| crate::app::editor::fields::string_editors::EditedTag {
+            tag: &doc.tag,
+            entry,
+            stamp: (doc.id, doc.dirty.revision()),
+            source,
+        }),
     };
 
     if is_bitmap_tag(entry) {
