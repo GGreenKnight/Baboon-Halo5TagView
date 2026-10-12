@@ -768,7 +768,7 @@ fn draw_tag_header_specific_actions(cx: &Ctx, ui: &mut Ui, kit_index: usize, ent
             if icon_text_button(ui, ButtonIcon::Import, "Reimport", can_reimport)
                 .on_disabled_hover_text("Reimport requires a loose editing-kit bitmap tag")
                 .on_hover_text(
-                    "Run tool bitmaps for this bitmap source path, then reload the tag",
+                    "Import this bitmap's source image from the data folder again with tool, then reload the tag. A Halo CE or Halo 2 source image missing from the data folder is recovered from the tag first.",
                 )
                 .clicked()
             {
