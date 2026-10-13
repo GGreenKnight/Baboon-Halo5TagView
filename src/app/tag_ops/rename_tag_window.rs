@@ -106,19 +106,13 @@ impl Dialog for RenameTagState {
                     } else if state.whole_path_editable {
                         ""
                     } else {
-                        state
-                            .old_display
-                            .rsplit_once('/')
-                            .map(|(parent, _)| parent)
-                            .unwrap_or("")
+                        tag_path::parent(&state.old_display).unwrap_or("")
                     };
                     let preview_name = state.new_path_input.trim();
                     let preview = if preview_name.is_empty() {
                         "(enter a new name)".to_owned()
-                    } else if preview_parent.is_empty() {
-                        format!("{preview_name}.{}", state.extension)
                     } else {
-                        format!("{preview_parent}/{preview_name}.{}", state.extension)
+                        tag_path::join(preview_parent, &format!("{preview_name}.{}", state.extension))
                     };
                     ui.add_space(3.0);
                     ui.label(RichText::new("Preview").color(subtle_dark()).small());

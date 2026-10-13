@@ -930,17 +930,17 @@ mod tests {
             group_name: display_path
                 .rsplit_once('.')
                 .map(|(_, name)| name.to_owned()),
-            location: TagEntryLocation::LooseFile(PathBuf::from(display_path)),
+            location: TagEntryLocation::LooseFile(tag_path::to_relative(display_path)),
         }
     }
 
     /// A kit holding bitmaps, render models, a gbxmodel, and tags of neither kind.
     fn app_with_mixed_kit() -> Baboon {
         let mut entries = vec![
-            entry("objects/warthog/warthog.render_model", b"mode"),
-            entry("objects/ghost/ghost.gbxmodel", b"mod2"),
-            entry("objects/warthog/warthog.model", b"hlmt"),
-            entry("objects/warthog/warthog.vehicle", b"vehi"),
+            entry("objects\\warthog\\warthog.render_model", b"mode"),
+            entry("objects\\ghost\\ghost.gbxmodel", b"mod2"),
+            entry("objects\\warthog\\warthog.model", b"hlmt"),
+            entry("objects\\warthog\\warthog.vehicle", b"vehi"),
         ];
         for index in 0..40 {
             entries.push(entry(&format!("textures/grass_{index:02}.bitmap"), b"bitm"));
@@ -987,8 +987,8 @@ mod tests {
         assert_eq!(
             listed::<Models>(&app),
             [
-                "objects/warthog/warthog.render_model",
-                "objects/ghost/ghost.gbxmodel"
+                "objects\\warthog\\warthog.render_model",
+                "objects\\ghost\\ghost.gbxmodel"
             ],
             "render geometry only: not the .model wrapper, not the vehicle"
         );
@@ -1005,7 +1005,7 @@ mod tests {
         app.refresh_thumbnail_library::<Models>(0, &ctx);
         app.refresh_thumbnail_library::<Bitmaps>(0, &ctx);
 
-        assert_eq!(listed::<Models>(&app), ["objects/ghost/ghost.gbxmodel"]);
+        assert_eq!(listed::<Models>(&app), ["objects\\ghost\\ghost.gbxmodel"]);
         assert_eq!(
             listed::<Bitmaps>(&app).len(),
             40,
@@ -1118,7 +1118,7 @@ mod tests {
 
     fn folder_pane() -> FolderBrowserState {
         FolderBrowserState {
-            rel_path: "objects/brute".into(),
+            rel_path: tag_path::to_relative(r"objects\brute"),
             label: "brute".into(),
             filter: String::new(),
             focus_search: false,
@@ -1146,7 +1146,7 @@ mod tests {
             display_path: path.into(),
             group_tag: u32::from_be_bytes(*group),
             group_name: path.rsplit_once('.').map(|(_, name)| name.to_owned()),
-            location: TagEntryLocation::LooseFile(path.into()),
+            location: TagEntryLocation::LooseFile(tag_path::to_relative(path)),
         }
     }
 
@@ -1155,9 +1155,9 @@ mod tests {
     #[test]
     fn the_asset_order_is_kept_until_its_inputs_change() {
         let entries = vec![
-            loose_entry("objects/brute/zeta.bitmap", b"bitm"),
-            loose_entry("objects/brute/alpha.bitmap", b"bitm"),
-            loose_entry("objects/other/beta.bitmap", b"bitm"),
+            loose_entry("objects\\brute\\zeta.bitmap", b"bitm"),
+            loose_entry("objects\\brute\\alpha.bitmap", b"bitm"),
+            loose_entry("objects\\other\\beta.bitmap", b"bitm"),
         ];
         let ctx = egui::Context::default();
         let mut pane = folder_pane();
@@ -1181,10 +1181,10 @@ mod tests {
     #[test]
     fn mixed_grid_is_folder_scoped_and_type_filters_work() {
         let entries = vec![
-            loose_entry("objects/brute/grass.bitmap", b"bitm"),
-            loose_entry("objects/brute/nested/brute.render_model", b"mode"),
-            loose_entry("objects/brute/brute.biped", b"bipd"),
-            loose_entry("objects/brute_other/other.bitmap", b"bitm"),
+            loose_entry("objects\\brute\\grass.bitmap", b"bitm"),
+            loose_entry("objects\\brute\\nested\\brute.render_model", b"mode"),
+            loose_entry("objects\\brute\\brute.biped", b"bipd"),
+            loose_entry("objects\\brute_other\\other.bitmap", b"bitm"),
         ];
         for (bitmap, model, expected_bitmaps, expected_models) in [
             (true, true, 1, 1),
@@ -1249,7 +1249,7 @@ mod tests {
             assert_eq!(view.bitmap_browser.pending.len(), expected_bitmaps);
             assert_eq!(view.model_browser.pending.len(), expected_models);
             assert!(
-                queued.iter().all(|key| key.contains("objects/brute/")),
+                queued.iter().all(|key| key.contains("objects\\brute\\")),
                 "queued outside the folder: {queued:?}"
             );
         }
@@ -1259,9 +1259,9 @@ mod tests {
     fn folder_grid_search_uses_the_same_scoped_cache_as_the_tree() {
         let mut pane = folder_pane();
         let entries = vec![
-            loose_entry("objects/brute/grass.bitmap", b"bitm"),
-            loose_entry("objects/brute/brute.render_model", b"mode"),
-            loose_entry("objects/elite/grass.bitmap", b"bitm"),
+            loose_entry("objects\\brute\\grass.bitmap", b"bitm"),
+            loose_entry("objects\\brute\\brute.render_model", b"mode"),
+            loose_entry("objects\\elite\\grass.bitmap", b"bitm"),
         ];
         let keywords =
             std::collections::BTreeMap::from([(entries[0].key.clone(), vec!["wip".into()])]);

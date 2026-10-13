@@ -83,7 +83,7 @@ impl ScopedSearchQuery {
         scope: BrowserSearchScope,
         keywords: &[String],
     ) -> bool {
-        let split = entry.display_path.rfind(['/', '\\']);
+        let split = entry.display_path.rfind(tag_path::SEPARATOR);
         let filename = split
             .map(|at| &entry.display_path[at + 1..])
             .unwrap_or(&entry.display_path);
@@ -101,9 +101,7 @@ impl ScopedSearchQuery {
                                 entry.group_name.as_deref().unwrap_or(""),
                             )))))
                 || (scope.folders
-                    && parents
-                        .split(['/', '\\'])
-                        .any(|part| search_term_matches(term, part)))
+                    && tag_path::segments(parents).any(|part| search_term_matches(term, part)))
                 || (scope.keywords
                     && keywords
                         .iter()
@@ -112,8 +110,7 @@ impl ScopedSearchQuery {
     }
     pub(in crate::app) fn folder(&self, path: &str) -> bool {
         self.matches(|term| {
-            path.split(['/', '\\'])
-                .any(|part| search_term_matches(term, part))
+            tag_path::segments(path).any(|part| search_term_matches(term, part))
         })
     }
 }
@@ -162,10 +159,7 @@ pub(in crate::app) fn search_entry_is_beneath(entry: &TagEntry, prefix: &str) ->
                 .iter()
                 .take(prefix.len())
                 .zip(prefix.as_bytes())
-                .all(|(a, b)| {
-                    let a = if *a == b'\\' { b'/' } else { *a };
-                    a.eq_ignore_ascii_case(b)
-                }))
+                .all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
 pub(in crate::app) fn node_matches(node: &TagTreeNode, entries: &[TagEntry], filter: &str) -> bool {
@@ -225,14 +219,9 @@ pub(in crate::app) fn entry_matches(entry: &TagEntry, filter: &str) -> bool {
 /// group name; anchored terms match the filename only.
 fn entry_matches_lower(entry: &TagEntry, filter_lower: &str) -> bool {
     // Match only the filename (last path segment), not parent folder names.
-    // A tag at "floodcombat_elite/garbage/hg_arm/hg_arm.model" should NOT
+    // A tag at "floodcombat_elite\garbage\hg_arm\hg_arm.model" should NOT
     // appear when searching "elite" — only "elite.model" etc. should match.
-    let filename = entry
-        .display_path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(&entry.display_path)
-        .to_ascii_lowercase();
+    let filename = tag_path::name(&entry.display_path).to_ascii_lowercase();
     let fourcc = format_group_tag(entry.group_tag).to_ascii_lowercase();
     let group = entry
         .group_name
@@ -377,13 +366,13 @@ mod tests {
             display_path: display_path.to_owned(),
             group_tag: u32::from_be_bytes(*group),
             group_name: None,
-            location: TagEntryLocation::LooseFile(PathBuf::from(display_path)),
+            location: TagEntryLocation::LooseFile(tag_path::to_relative(display_path)),
         }
     }
 
     #[test]
     fn search_scopes_match_folders_keywords_and_combined_terms() {
-        let e = entry("objects/brute/armor.bitmap", b"bitm");
+        let e = entry("objects\\brute\\armor.bitmap", b"bitm");
         let tags = BrowserSearchScope {
             tags: true,
             folders: false,
@@ -436,7 +425,7 @@ mod tests {
             std::env::temp_dir().join(format!("baboon-folder-search-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("empty_brute/nested")).unwrap();
         let mut cache = FilterCache::default();
-        let e = entry("objects/armor.bitmap", b"bitm");
+        let e = entry("objects\\armor.bitmap", b"bitm");
         let mut keywords = std::collections::BTreeMap::new();
         cache.refresh_scoped(
             1,
@@ -490,8 +479,8 @@ mod tests {
     #[test]
     fn matches_filename_not_parent_folders() {
         let entries = vec![
-            entry("floodcombat_elite/garbage/hg_arm/hg_arm.model", b"mode"),
-            entry("characters/elite/elite.model", b"mode"),
+            entry("floodcombat_elite\\garbage\\hg_arm\\hg_arm.model", b"mode"),
+            entry("characters\\elite\\elite.model", b"mode"),
         ];
         // "elite" should match only the tag whose *filename* contains it.
         let matches = compute_filter_matches(&entries, "elite");
@@ -501,8 +490,8 @@ mod tests {
     #[test]
     fn matches_group_tag_and_is_case_insensitive() {
         let entries = vec![
-            entry("fx/spark.effect", b"effe"),
-            entry("weapons/rifle.weapon", b"weap"),
+            entry("fx\\spark.effect", b"effe"),
+            entry("weapons\\rifle.weapon", b"weap"),
         ];
         // Group four-CC match, regardless of query case.
         assert_eq!(compute_filter_matches(&entries, "WEAP"), vec![1]);
@@ -510,7 +499,7 @@ mod tests {
 
     #[test]
     fn reference_input_uses_fourcc_and_backslash_path_without_extension() {
-        let e = entry("objects/weapons/rifle/rifle.weapon", b"weap");
+        let e = entry("objects\\weapons\\rifle\\rifle.weapon", b"weap");
         // "weap" four-CC, backslash path, extension stripped.
         assert_eq!(
             entry_reference_input(&e),
@@ -537,9 +526,9 @@ mod tests {
     #[test]
     fn boolean_and_or_and_anchors() {
         let entries = vec![
-            entry("characters/elite/elite_arm.model", b"mode"),
-            entry("characters/elite/elite.model", b"mode"),
-            entry("weapons/rifle.weapon", b"weap"),
+            entry("characters\\elite\\elite_arm.model", b"mode"),
+            entry("characters\\elite\\elite.model", b"mode"),
+            entry("weapons\\rifle.weapon", b"weap"),
         ];
         // AND: both terms must match the same entry.
         assert_eq!(compute_filter_matches(&entries, "elite arm"), vec![0]);
@@ -556,9 +545,9 @@ mod tests {
     #[test]
     fn folder_hlsl_include_collector_finds_nested_include_entries() {
         let entries = vec![
-            entry("rasterizer/hlsl/ssao.hlsl_include", b"hlsl"),
-            entry("rasterizer/hlsl/post/tonemap.hlsl_include", b"hlsl"),
-            entry("rasterizer/bitmaps/noise.bitmap", b"bitm"),
+            entry("rasterizer\\hlsl\\ssao.hlsl_include", b"hlsl"),
+            entry("rasterizer\\hlsl\\post\\tonemap.hlsl_include", b"hlsl"),
+            entry("rasterizer\\bitmaps\\noise.bitmap", b"bitm"),
         ];
         let tree = crate::core::source::build_tree(&entries);
         let rasterizer = tree
@@ -570,8 +559,8 @@ mod tests {
         assert_eq!(
             collect_hlsl_include_keys(rasterizer, &entries),
             vec![
-                "rasterizer/hlsl/ssao.hlsl_include".to_owned(),
-                "rasterizer/hlsl/post/tonemap.hlsl_include".to_owned(),
+                "rasterizer\\hlsl\\ssao.hlsl_include".to_owned(),
+                "rasterizer\\hlsl\\post\\tonemap.hlsl_include".to_owned(),
             ]
         );
     }
@@ -580,14 +569,14 @@ mod tests {
     fn folder_material_shader_collector_finds_nested_material_shader_entries() {
         let entries = vec![
             entry(
-                "shaders/material_shaders/decals/base.material_shader",
+                "shaders\\material_shaders\\decals\\base.material_shader",
                 b"mats",
             ),
             entry(
-                "shaders/material_shaders/decals/palette/palette.material_shader",
+                "shaders\\material_shaders\\decals\\palette\\palette.material_shader",
                 b"mats",
             ),
-            entry("shaders/material_shaders/decals/noise.bitmap", b"bitm"),
+            entry("shaders\\material_shaders\\decals\\noise.bitmap", b"bitm"),
         ];
         let tree = crate::core::source::build_tree(&entries);
         let shaders = tree
@@ -599,8 +588,8 @@ mod tests {
         assert_eq!(
             collect_material_shader_keys(shaders, &entries),
             vec![
-                "shaders/material_shaders/decals/base.material_shader".to_owned(),
-                "shaders/material_shaders/decals/palette/palette.material_shader".to_owned(),
+                "shaders\\material_shaders\\decals\\base.material_shader".to_owned(),
+                "shaders\\material_shaders\\decals\\palette\\palette.material_shader".to_owned(),
             ]
         );
     }

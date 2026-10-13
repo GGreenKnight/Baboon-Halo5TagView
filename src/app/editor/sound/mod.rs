@@ -785,7 +785,7 @@ fn h2_sound_for_game(tag: &TagFile, game: Option<GameId>) -> Option<H2Sound> {
 /// building the FMOD subsound id. Backslash-normalized; the hash lowercases.
 pub(super) fn sound_tag_rel(abs: &std::path::Path, tags_root: &std::path::Path) -> Option<String> {
     let rel = abs.strip_prefix(tags_root).ok()?;
-    Some(rel.with_extension("").to_string_lossy().replace('/', "\\"))
+    Some(tag_path::relative_tag_path(&rel.with_extension("")))
 }
 
 /// The engine's `fmod bank subsound id hash` for a Halo 3+ permutation row —
@@ -810,8 +810,7 @@ fn is_fmod_language_game(game: Option<GameId>) -> bool {
 }
 
 fn sound_path_may_have_languages(path: &str) -> bool {
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    normalized.contains("sound/dialog/")
+    path.to_ascii_lowercase().contains(r"sound\dialog\")
 }
 
 /// True when every bank-backed permutation resolves from the shared
@@ -1944,7 +1943,7 @@ struct DialogueRow {
 /// A clickable referenced-tag label (filename shown, full path on hover). On
 /// click it returns an open request — Alt opens in a floating window.
 fn ref_open_label(ui: &mut Ui, group_tag: u32, path: &str) -> Option<OpenTagRequest> {
-    let filename = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    let filename = tag_path::name(path);
     let clicked = ui
         .add(egui::Label::new(RichText::new(filename).color(text_dark())).sense(Sense::click()))
         .on_hover_text(format!("{path}\n(click to open · Alt: floating)"))
@@ -2102,7 +2101,7 @@ fn referenced_clip_play(
     language: Option<&str>,
     container_source: bool,
 ) -> Option<ClipPlay> {
-    let label = path.rsplit(['\\', '/']).next().unwrap_or(path).to_owned();
+    let label = tag_path::name(path).to_owned();
     if container_source {
         return Some(ClipPlay::CeRef(CeSoundRefRequest {
             group_tag: group,
@@ -2196,7 +2195,7 @@ fn draw_referenced_sound_cell(
         for (index, (group, path)) in refs.iter().enumerate() {
             ui.horizontal(|ui| {
                 let is_sound = &group.to_be_bytes() == b"snd!";
-                let label = path.rsplit(['\\', '/']).next().unwrap_or(path).to_owned();
+                let label = tag_path::name(path).to_owned();
                 if let Some(clip) = clips.and_then(|clips| clips.get(index).copied().flatten())
                     && ui
                         .small_button("\u{25B6}")
@@ -2332,7 +2331,7 @@ pub(in crate::app) fn draw_dialogue_summary(
             clips.push(referenced_clip(
                 format!("ref:{row_index}:{sound_index}:{path}:{language_key}"),
                 Some(row.name.clone()),
-                path.rsplit(['\\', '/']).next().unwrap_or(path).to_owned(),
+                tag_path::name(path).to_owned(),
             ));
             clip_refs.push((*group, path.clone()));
         }
@@ -2500,7 +2499,7 @@ pub(in crate::app) fn draw_sound_looping_player(
             } else {
                 owner.to_owned()
             };
-            let leaf = path.rsplit(['\\', '/']).next().unwrap_or(path);
+            let leaf = tag_path::name(path);
             referenced_clip(
                 format!("ref:{index}:{path}:{language_key}"),
                 Some(group),
@@ -3044,12 +3043,9 @@ mod tests {
                 continue;
             };
             // Tag rel path (backslash, no extension) — the hash input's tag part.
-            let rel = tag_path
-                .strip_prefix(tags_root)
-                .unwrap_or(tag_path)
-                .with_extension("")
-                .to_string_lossy()
-                .replace('/', "\\");
+            let rel = crate::core::tag_path::relative_tag_path(
+                &tag_path.strip_prefix(tags_root).unwrap_or(tag_path).with_extension(""),
+            );
             let multi_pr = pitch_ranges.len() > 1;
             for pr_index in 0..pitch_ranges.len() {
                 let Some(pr) = pitch_ranges.element(pr_index) else {

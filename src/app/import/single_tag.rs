@@ -172,11 +172,7 @@ impl Baboon {
             dialog.error = Some("Enter a tag name".to_owned());
             return;
         }
-        let logical = if folder.is_empty() {
-            leaf
-        } else {
-            format!("{folder}/{leaf}")
-        };
+        let logical = tag_path::join(&folder, &leaf);
         let group_tag = dialog.group_tag;
         let group_name = dialog.group_name.clone();
         let extension = dialog.extension.clone();
@@ -412,11 +408,7 @@ impl Model {
         if leaf.is_empty() {
             return None;
         }
-        let logical = if folder.is_empty() {
-            leaf
-        } else {
-            format!("{folder}/{leaf}")
-        };
+        let logical = tag_path::join(&folder, &leaf);
         // The dialog's own kit, which is where the import lands; the focused
         // one can be another game while the window is up.
         match &self.kits[self.kit_index(kit)?].source.as_ref()?.source {
@@ -455,7 +447,7 @@ mod tests {
         let group = u32::from_be_bytes(*b"bipd");
         let mut index = crate::core::source::ContainerTagIndex::default();
         index.insert(
-            crate::core::source::container_ref_key(group, "objects/marine"),
+            crate::core::source::container_ref_key(group, r"objects\marine"),
             0,
             "Tags/objects/marine-biped.ubulk".to_owned(),
         );
@@ -486,7 +478,7 @@ mod tests {
 
         assert_eq!(
             app.model.import_overwrite_target(container_kit, "objects", "marine", group),
-            Some("objects/marine".to_owned())
+            Some(r"objects\marine".to_owned())
         );
     }
 

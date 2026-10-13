@@ -1140,7 +1140,7 @@ fn sbsp_preview_materials(root: &TagStruct<'_>) -> Vec<RenderModelPreviewMateria
                 .and_then(|element| element.read_tag_ref_with_group("render method"))
                 .filter(|(_, path)| !path.trim().is_empty())
                 .map(|(shader_group, path)| RenderModelPreviewMaterial {
-                    shader_path: path.replace('/', "\\"),
+                    shader_path: path,
                     shader_group,
                 })
                 .unwrap_or_default()
@@ -1697,9 +1697,7 @@ impl Baboon {
 
 /// The leaf name a BSP toggle shows: the last path segment of its reference.
 pub(super) fn bsp_display_name(reference: &str) -> String {
-    reference
-        .rsplit(['\\', '/'])
-        .next()
+    Some(tag_path::name(reference))
         .filter(|leaf| !leaf.is_empty())
         .unwrap_or(reference)
         .to_owned()

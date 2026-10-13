@@ -52,7 +52,7 @@ pub(in crate::app) fn bitmap_reimport_data_path(
     let rel = path.strip_prefix(tags_root).ok()?;
     let mut source = rel.to_path_buf();
     source.set_extension("");
-    Some(source.to_string_lossy().replace('/', "\\"))
+    Some(tag_path::relative_tag_path(&source))
 }
 
 /// What reimporting a bitmap tag runs: the game's `tool` verb on the tag's
@@ -87,7 +87,7 @@ fn bitmap_source_extensions(game: GameId) -> &'static [&'static str] {
 /// With no source image in the data folder, a Halo CE or Halo 2 tag's own
 /// color plate is written there first; later games' tags keep none.
 pub(in crate::app) fn bitmap_reimport_plan(game: GameId, data: &Path, data_path: &str) -> Result<BitmapReimport, String> {
-    let on_disk = |relative: &str| data.join(relative.replace('\\', std::path::MAIN_SEPARATOR_STR));
+    let on_disk = |relative: &str| data.join(tag_path::to_relative(relative));
     let existing = bitmap_source_extensions(game)
         .iter()
         .find(|extension| on_disk(&format!("{data_path}.{extension}")).is_file());
@@ -104,7 +104,7 @@ pub(in crate::app) fn bitmap_reimport_plan(game: GameId, data: &Path, data_path:
     let command = match game {
         GameId::HaloCe => format!("tool bitmap \"{data_path}\""),
         GameId::Halo2 => {
-            let folder = data_path.rsplit_once('\\').map(|(folder, _)| folder).unwrap_or("");
+            let folder = tag_path::parent(data_path).unwrap_or("");
             format!("tool bitmaps \"{folder}\"")
         }
         _ => format!("tool bitmap_single \"{data_path}.{extension}\""),

@@ -140,11 +140,8 @@ pub fn load_monolithic_blob_index(
             continue;
         }
         let group_name = names.name_for(entry.group_tag).map(str::to_owned);
-        let display_path = display_str_with_friendly_extension(
-            &entry.name.replace('\\', "/"),
-            entry.group_tag,
-            names,
-        );
+        let display_path =
+            display_str_with_friendly_extension(&entry.name, entry.group_tag, names);
         entries.push(TagEntry {
             key: cache_entry_key(entry.group_tag, &entry.name),
             display_path,
@@ -406,17 +403,7 @@ pub fn mount_additional_container(
         let Some(group_tag) = names.group_tag_for(group_longname) else {
             continue;
         };
-        let after = strip_tags_root(&e.path);
-        let dir = after.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-        let logical = if dir.is_empty() {
-            tag_name.to_ascii_lowercase()
-        } else {
-            format!(
-                "{}/{}",
-                dir.to_ascii_lowercase(),
-                tag_name.to_ascii_lowercase()
-            )
-        };
+        let logical = container_tag_path(&e.path, tag_name);
         let display_path = display_str_with_friendly_extension(&logical, group_tag, &names);
         pending_index.push((format!("{group_tag:08x}:{logical}"), e.path.clone()));
         fresh.push(TagEntry {
@@ -609,17 +596,7 @@ fn build_container_set(
             // remainder is tag-reference-relative), then lowercase folders/name
             // for consistency with lowercase tag references. `rel_path` keeps
             // ORIGINAL case for the case-sensitive container read.
-            let after = strip_tags_root(&e.path);
-            let dir = after.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-            let logical = if dir.is_empty() {
-                tag_name.to_ascii_lowercase()
-            } else {
-                format!(
-                    "{}/{}",
-                    dir.to_ascii_lowercase(),
-                    tag_name.to_ascii_lowercase()
-                )
-            };
+            let logical = container_tag_path(&e.path, tag_name);
             let display_path = display_str_with_friendly_extension(&logical, group_tag, &names);
 
             let entry = TagEntry {
@@ -769,6 +746,16 @@ fn dir_has_utoc(dir: &Path) -> bool {
 
 /// Strip the leading `Tags/` root (optionally under `Meteorite/Content/`),
 /// case-insensitively. The remainder is relative to the Halo tags root.
+/// The tag path of a container's `.ubulk` payload, lowercased like the tag
+/// references that name it: `Meteorite/Content/Tags/Objects/Crate-scenery.ubulk`
+/// holds the tag `objects\crate`. The payload path is Unreal's, separated by
+/// `/`; the tag path is the game's.
+fn container_tag_path(payload: &str, tag_name: &str) -> String {
+    let after = strip_tags_root(payload);
+    let folder = after.rsplit_once('/').map_or("", |(folder, _)| folder);
+    tag_path::join(&tag_path::from_unreal(folder), tag_name).to_ascii_lowercase()
+}
+
 fn strip_tags_root(path: &str) -> &str {
     for prefix in ["Meteorite/Content/Tags/", "Tags/"] {
         if path.len() >= prefix.len() && path[..prefix.len()].eq_ignore_ascii_case(prefix) {
@@ -1194,16 +1181,16 @@ mod tests {
     #[test]
     fn container_ref_key_normalizes() {
         let skel = u32::from_be_bytes(*b"skel");
-        // Backslashes → forward, uppercase → lower, trailing NUL stripped,
-        // group FOURCC hex-prefixed — matching `build_container_set`'s logical key.
+        // Uppercase → lower, trailing NUL stripped, group FOURCC hex-prefixed —
+        // matching `build_container_set`'s logical key.
         assert_eq!(
             container_ref_key(skel, "Objects\\Characters\\Elite_AI\\Elite_AI\u{0}"),
-            "736b656c:objects/characters/elite_ai/elite_ai"
+            r"736b656c:objects\characters\elite_ai\elite_ai"
         );
         // Idempotent on an already-normalized reference.
         assert_eq!(
-            container_ref_key(skel, "objects/characters/elite_ai/elite_ai"),
-            "736b656c:objects/characters/elite_ai/elite_ai"
+            container_ref_key(skel, r"objects\characters\elite_ai\elite_ai"),
+            r"736b656c:objects\characters\elite_ai\elite_ai"
         );
     }
 
@@ -1264,7 +1251,7 @@ mod tests {
                 "display path not lowercased: {}",
                 s.display_path
             );
-            assert!(!s.display_path.to_ascii_lowercase().contains("/tags/"));
+            assert!(!s.display_path.to_ascii_lowercase().contains("tags\\"));
         }
 
         // Read a sample (including every scenario) via the source-aware path.

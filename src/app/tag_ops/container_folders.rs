@@ -6,19 +6,18 @@
 use super::*;
 use crate::app::tag_ops::duplicate::validate_leaf_characters;
 
-/// Normalise a folder path to the form the pending set and the tree agree on:
-/// forward slashes, no empty segments, no leading or trailing separator.
+/// Normalise a folder's tag path to the form the pending set and the tree agree
+/// on: no empty segments, no leading or trailing separator.
 ///
 /// Casing is preserved. The browser's `display_path` is already lowercased for
 /// container sources, but a loose source is not, and a set that disagreed with
 /// the tree about case would seed a second sibling node beside the real folder.
 pub(in crate::app) fn normalize_folder_rel(input: &str) -> String {
-    input
-        .split(['/', '\\'])
-        .filter(|segment| !segment.trim().is_empty())
+    tag_path::segments(input)
         .map(str::trim)
+        .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>()
-        .join("/")
+        .join("\\")
 }
 
 fn folder_key(rel: &str) -> String {
@@ -27,9 +26,7 @@ fn folder_key(rel: &str) -> String {
 
 /// Split a `display_path` into its segments, dropping empties.
 fn segments(path: &str) -> Vec<&str> {
-    path.split(['/', '\\'])
-        .filter(|segment| !segment.is_empty())
-        .collect()
+    tag_path::segments(path).collect()
 }
 
 /// Everything already occupying a name directly inside `parent_rel`: child
@@ -119,7 +116,7 @@ pub(in crate::app) fn validate_folder_leaf_name(
 fn container_folder_rel(parent_rel: Option<&str>, leaf: &str) -> String {
     let leaf = leaf.to_ascii_lowercase();
     match parent_rel {
-        Some(parent) if !parent.is_empty() => format!("{parent}/{leaf}"),
+        Some(parent) if !parent.is_empty() => tag_path::join(parent, &leaf),
         _ => leaf,
     }
 }
@@ -143,10 +140,8 @@ impl Baboon {
     /// Raise the Rename Folder dialog for a pending folder.
     pub(in crate::app) fn open_rename_container_folder(&mut self, rel: String) {
         let rel = normalize_folder_rel(&rel);
-        let (parent_rel, leaf) = match rel.rsplit_once('/') {
-            Some((parent, leaf)) => (Some(parent.to_owned()), leaf.to_owned()),
-            None => (None, rel.clone()),
-        };
+        let parent_rel = tag_path::parent(&rel).map(str::to_owned);
+        let leaf = tag_path::name(&rel).to_owned();
         let kit = self.model.kits[self.model.active].id;
         self.dialogs.open(ContainerFolderDialog {
             kit,
@@ -176,7 +171,7 @@ impl Baboon {
         // case-variant of its current name would collide with itself.
         let mut siblings = self.model.folder_siblings_in(kit_index, parent_rel.as_deref());
         if let Some(old) = renaming.as_deref() {
-            let old_leaf = old.rsplit('/').next().unwrap_or(old);
+            let old_leaf = tag_path::name(old);
             siblings.retain(|name| !name.eq_ignore_ascii_case(old_leaf));
         }
 
@@ -296,7 +291,7 @@ mod tests {
             display_path: display_path.into(),
             group_tag: u32::from_be_bytes(*b"hlmt"),
             group_name: None,
-            location: TagEntryLocation::LooseFile(std::path::PathBuf::from(display_path)),
+            location: TagEntryLocation::LooseFile(tag_path::to_relative(display_path)),
         }
     }
 
@@ -306,25 +301,19 @@ mod tests {
 
     #[test]
     fn normalizes_separators_and_strays() {
-        assert_eq!(
-            normalize_folder_rel("/objects\\vehicles/"),
-            "objects/vehicles"
-        );
-        assert_eq!(
-            normalize_folder_rel("objects//vehicles"),
-            "objects/vehicles"
-        );
+        assert_eq!(normalize_folder_rel(r"\objects\vehicles\"), r"objects\vehicles");
+        assert_eq!(normalize_folder_rel(r"objects\\ vehicles "), r"objects\vehicles");
         assert_eq!(normalize_folder_rel("  "), "");
     }
 
     #[test]
     fn siblings_include_subfolders_and_tag_leaves() {
         let entries = vec![
-            entry("objects/vehicles/warthog.model"),
-            entry("objects/characters/masterchief.biped"),
-            entry("sound/ambient.sound"),
+            entry("objects\\vehicles\\warthog.model"),
+            entry("objects\\characters\\masterchief.biped"),
+            entry("sound\\ambient.sound"),
         ];
-        let pending = folders(&["objects/pending"]);
+        let pending = folders(&["objects\\pending"]);
 
         let mut names = folder_siblings(&entries, &pending, Some("objects"));
         names.sort();
@@ -340,7 +329,7 @@ mod tests {
     /// directory, so this has to be refused here rather than at write time.
     #[test]
     fn a_folder_cannot_collide_with_a_tag_leaf_in_the_same_parent() {
-        let entries = vec![entry("objects/warthog.model")];
+        let entries = vec![entry("objects\\warthog.model")];
         let siblings = folder_siblings(&entries, &folders(&[]), Some("objects"));
         assert!(validate_folder_leaf_name("warthog.model", &siblings).is_err());
         assert!(validate_folder_leaf_name("vehicles", &siblings).is_ok());
@@ -353,13 +342,13 @@ mod tests {
     fn a_container_folder_is_seeded_in_display_path_casing() {
         assert_eq!(
             container_folder_rel(Some("objects"), "Vehicles"),
-            "objects/vehicles"
+            "objects\\vehicles"
         );
         assert_eq!(container_folder_rel(None, "Objects"), "objects");
         assert_eq!(container_folder_rel(Some(""), "Objects"), "objects");
 
         // The seeded path must reach the same node an entry would build.
-        let entries = vec![entry("objects/vehicles/warthog.model")];
+        let entries = vec![entry("objects\\vehicles\\warthog.model")];
         let seeded = container_folder_rel(Some("objects"), "Vehicles");
         let tree = crate::core::source::build_tree_with_folders(&entries, &[seeded]);
         let objects = tree
@@ -391,6 +380,7 @@ mod tests {
             ".",
             "..",
             "a/b",
+            r"a\b",
             "a.b",
             "trailing ",
             "CON",

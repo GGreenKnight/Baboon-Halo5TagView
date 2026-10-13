@@ -62,7 +62,7 @@ fn kit_relative_path(source: &LoadedSourceData, entry: &TagEntry) -> Option<Stri
     let crate::core::source::TagSource::LooseFolder { root, .. } = &source.source else { return None };
     let TagEntryLocation::LooseFile(path) = &entry.location else { return None };
     let relative = path.strip_prefix(root).ok()?.with_extension("");
-    Some(relative.to_string_lossy().replace('/', "\\"))
+    Some(tag_path::relative_tag_path(&relative))
 }
 
 thread_local! {
@@ -92,8 +92,7 @@ impl KitTags<'_> {
     fn file(&self, group: u32, path: &str) -> Option<PathBuf> {
         let crate::core::source::TagSource::LooseFolder { root, .. } = &self.source.source else { return None };
         let extension = self.source.names.name_for(group)?;
-        let relative = path.trim_end_matches('\0').replace('\\', "/");
-        Some(root.join(format!("{relative}.{extension}")))
+        Some(tag_path::resolve_tag_path(root, path.trim_end_matches('\0'), extension))
     }
 
     fn read(&self, file: &Path, group: u32) -> Option<Arc<blam_tags::TagFile>> {

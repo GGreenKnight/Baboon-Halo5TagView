@@ -370,12 +370,12 @@ fn h2_fallback_parameter_section_title(root: TagStruct<'_>, names: &TagNameIndex
         return "PARAMETERS".to_owned();
     };
     let formatted = trim_formatted_value(&format_value(names, &value, false));
-    let normalized = formatted.replace('\\', "/").to_ascii_lowercase();
-    let Some(pos) = normalized.find("shader_templates/") else {
+    let normalized = formatted.to_ascii_lowercase();
+    let Some(pos) = normalized.find(r"shader_templates\") else {
         return "PARAMETERS".to_owned();
     };
-    let rest = &normalized[pos + "shader_templates/".len()..];
-    let Some((folder, _)) = rest.split_once('/') else {
+    let rest = &normalized[pos + r"shader_templates\".len()..];
+    let Some((folder, _)) = rest.split_once(tag_path::SEPARATOR) else {
         return "PARAMETERS".to_owned();
     };
     if folder.is_empty() {
@@ -2321,10 +2321,7 @@ fn classic_shader_row_edit(
                     let current = if name.is_empty() {
                         "NONE".to_owned()
                     } else {
-                        format!(
-                            "{}.shader_template",
-                            h2_normalize_shader_template_reference(name).replace('\\', "/")
-                        )
+                        format!("{}.shader_template", h2_normalize_shader_template_reference(name))
                     };
                     return Some(ShaderRowEdit {
                         path: path.to_owned(),
@@ -2341,7 +2338,7 @@ fn classic_shader_row_edit(
             let current = if name.is_empty() {
                 "NONE".to_owned()
             } else {
-                format!("{}.bitmap", name.replace('\\', "/"))
+                format!("{name}.bitmap")
             };
             Some(ShaderRowEdit {
                 path: path.to_owned(),

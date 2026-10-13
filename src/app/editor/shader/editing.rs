@@ -493,7 +493,7 @@ pub(super) fn shader_row_separator(ui: &Ui, rect: egui::Rect) {
 }
 
 pub(super) fn shader_reference_name(path: &str) -> &str {
-    path.rsplit(['/', '\\']).next().unwrap_or(path)
+    tag_path::name(path)
 }
 
 /// Native buttons in shader cells share the app's theme, hover, and focus styles.
@@ -2565,13 +2565,13 @@ fn draw_shader_reference_cell(
         open_rect.left_top() - Vec2::new(browse_width + 4.0, 0.0),
         Vec2::new(browse_width, BUTTON_HEIGHT),
     );
-    // The grid stores the path with its extension and forward slashes; strip
-    // both so it resolves like a normal tag reference.
+    // The grid shows the path with its extension; strip it so it resolves
+    // like a normal tag reference.
     let cleaned = sanitize_ref_path(&current);
     let open_ref = cleaned
         .strip_suffix(&format!(".{extension}"))
         .unwrap_or(&cleaned)
-        .replace('/', "\\");
+        .to_owned();
     let open_enabled = !open_ref.is_empty() && open_ref != "NONE";
     let thumb = (cell.thumbnail && open_enabled)
         .then(|| shader_bitmap_thumbnail(ui, edit, cell.group_tag, &open_ref))
@@ -3009,7 +3009,7 @@ fn h2_template_reference_ops(
     let pending_input = if normalized.is_empty() || normalized.eq_ignore_ascii_case("none") {
         "none".to_owned()
     } else {
-        format!("stem:{}", normalized.replace('/', "\\"))
+        format!("stem:{}", tag_path::from_input(&normalized))
     };
     DeferredOps {
         pending: vec![PendingFieldEdit {

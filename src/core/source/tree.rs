@@ -30,7 +30,7 @@ pub fn build_tree_beneath(entries: &[TagEntry], folder: &Path) -> TagTree {
         }
         node.entries.push(index);
     }
-    let parent = prefix.join("/");
+    let parent: PathBuf = prefix.iter().collect();
     TagTree {
         children: root
             .children
@@ -113,7 +113,7 @@ fn display_path_is_beneath(parts: &[String], prefix: &[String]) -> bool {
 /// container's own index starts expressing it and the seed becomes redundant
 /// (re-seeding it is a no-op, so the row is kept rather than pruned).
 ///
-/// `extra_folders` are `/`-separated paths matching `display_path` casing.
+/// `extra_folders` are tag paths matching `display_path` casing.
 pub fn build_tree_with_folders(entries: &[TagEntry], extra_folders: &[String]) -> TagTree {
     let mut root = TreeBuildNode::default();
     for (index, entry) in entries.iter().enumerate() {
@@ -145,7 +145,7 @@ pub fn build_tree_with_folders(entries: &[TagEntry], extra_folders: &[String]) -
         children: root
             .children
             .into_iter()
-            .map(|(label, node)| finish_node(label, node, ""))
+            .map(|(label, node)| finish_node(label, node, Path::new("")))
             .collect(),
         entries: root.entries,
     }
@@ -180,7 +180,7 @@ fn build_group_tree_from_indices(
         children: root
             .children
             .into_iter()
-            .map(|(label, node)| finish_node(label, node, ""))
+            .map(|(label, node)| finish_node(label, node, Path::new("")))
             .collect(),
         entries: root.entries,
     }
@@ -225,8 +225,9 @@ pub fn load_folder_node_entries(
     entries: &mut Vec<TagEntry>,
     names: &TagNameIndex,
 ) -> Result<()> {
-    // Browser display paths use '/', but file keys must keep the full scan's
-    // spelling. Normalize only the relative part, preserving the saved root.
+    // A folder path restored from a session is spelled with '/', but file keys
+    // must keep the full scan's spelling. Normalize only the relative part,
+    // preserving the saved root.
     node.rel_path = node.rel_path.components().collect();
     if !node.children_loaded {
         node.children = list_direct_child_nodes(root, &node.rel_path)?;
@@ -622,12 +623,8 @@ fn probe_tag_group(path: &Path) -> Result<Option<u32>> {
     }
 }
 
-fn finish_node(label: String, node: TreeBuildNode, parent: &str) -> TagTreeNode {
-    let rel_path = if parent.is_empty() {
-        label.clone()
-    } else {
-        format!("{parent}/{label}")
-    };
+fn finish_node(label: String, node: TreeBuildNode, parent: &Path) -> TagTreeNode {
+    let rel_path = parent.join(&label);
     let children = node
         .children
         .into_iter()
@@ -635,7 +632,7 @@ fn finish_node(label: String, node: TreeBuildNode, parent: &str) -> TagTreeNode 
         .collect();
     TagTreeNode {
         label,
-        rel_path: PathBuf::from(&rel_path),
+        rel_path,
         children,
         entries: node.entries,
         pending: node.pending,
@@ -644,17 +641,12 @@ fn finish_node(label: String, node: TreeBuildNode, parent: &str) -> TagTreeNode 
 }
 
 fn split_display_path(path: &str) -> Vec<String> {
-    path.split(['/', '\\'])
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .collect()
+    tag_path::segments(path).map(str::to_owned).collect()
 }
 
+/// The tag path of a path relative to the tags folder.
 pub(super) fn path_to_display(path: &Path) -> String {
-    path.components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+    tag_path::relative_tag_path(path)
 }
 
 /// A tag file's display path: its path with the file's own extension
@@ -699,7 +691,7 @@ pub(super) fn display_str_with_friendly_extension(
 /// Where the last dot of the final path component is, when it is not the
 /// first character of the path.
 fn leaf_extension_dot(display: &str) -> Option<usize> {
-    let leaf_start = display.rfind('/').map_or(0, |slash| slash + 1);
+    let leaf_start = display.rfind(tag_path::SEPARATOR).map_or(0, |separator| separator + 1);
     let dot = leaf_start + display[leaf_start..].rfind('.')?;
     (dot > 0).then_some(dot)
 }
@@ -733,8 +725,11 @@ fn friendly_extension(group_tag: u32, names: &TagNameIndex) -> String {
         .unwrap_or_else(|| format_group_tag(group_tag))
 }
 
+/// The order tag paths sort in: without case, and with the separator before
+/// every character a name can hold, so a folder's tags sort ahead of a sibling
+/// whose name merely starts the same way.
 pub fn natural_key(value: &str) -> String {
-    value.to_ascii_lowercase().replace('\\', "/")
+    value.to_ascii_lowercase().replace(tag_path::SEPARATOR, "\u{1}")
 }
 
 /// Insert `entry` into a list already ordered by [`natural_key`], returning the
@@ -863,7 +858,7 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
 
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].display_path, "objects/characters/test.biped");
+        assert_eq!(entries[0].display_path, "objects\\characters\\test.biped");
         assert_eq!(format_group_tag(entries[0].group_tag), "bipd");
     }
 
@@ -887,7 +882,7 @@ mod tests {
 
         assert_eq!(scanned.len(), 1);
         assert_eq!(entry.key, scanned[0].key);
-        assert_eq!(entry.display_path, "objects/characters/brute/brute.shader");
+        assert_eq!(entry.display_path, "objects\\characters\\brute\\brute.shader");
         assert_eq!(entry.display_path, scanned[0].display_path);
         assert_eq!(entry.group_tag, scanned[0].group_tag);
     }
@@ -1028,7 +1023,7 @@ mod tests {
             .iter()
             .map(|entry| entry.display_path.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(paths, vec!["objects/a.biped", "objects/c.biped"]);
+        assert_eq!(paths, vec!["objects\\a.biped", "objects\\c.biped"]);
     }
 
     #[test]
@@ -1206,7 +1201,7 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            ["objects/B.model", "objects/c.model"],
+            ["objects\\B.model", "objects\\c.model"],
             "natural (case-insensitive) order"
         );
         assert!(replaced_in_place, "a replaced entry keeps its slot, once");
@@ -1355,7 +1350,7 @@ mod tests {
         remove_test_index(&game);
         remove_test_index(&check);
         fs::remove_dir_all(&root).unwrap();
-        assert_eq!(touched, ["objects/b.model", "objects/d.model"]);
+        assert_eq!(touched, ["objects\\b.model", "objects\\d.model"]);
         assert_eq!(refresh.removed_keys, [key("c.model")]);
         let keys = |entries: &[TagEntry]| entries.iter().map(|e| e.key.clone()).collect::<Vec<_>>();
         assert_eq!(keys(&patched), keys(&rewritten));
@@ -1380,7 +1375,7 @@ mod tests {
         // What New Tag and Blam Import used to register.
         let mut bare = entries[0].clone();
         bare.key = "objects/b.model".to_owned();
-        bare.display_path = "objects/b.model".to_owned();
+        bare.display_path = "objects\\b.model".to_owned();
         assert!(upsert_entry_index_row(&game, &root, &bare).unwrap());
 
         let loaded = load_entry_index(&game, &root);
@@ -1437,9 +1432,9 @@ mod tests {
         fs::remove_dir_all(&root_b).unwrap();
 
         assert_eq!(loaded_a.len(), 1);
-        assert_eq!(loaded_a[0].display_path, "objects/a.model");
+        assert_eq!(loaded_a[0].display_path, "objects\\a.model");
         assert_eq!(loaded_b.len(), 1);
-        assert_eq!(loaded_b[0].display_path, "levels/b.scenario");
+        assert_eq!(loaded_b[0].display_path, "levels\\b.scenario");
     }
 
     #[test]
@@ -1562,7 +1557,7 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
 
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].display_path, "objects/vehicles/warthog.model");
+        assert_eq!(entries[0].display_path, "objects\\vehicles\\warthog.model");
         assert!(vehicles.entries_loaded);
     }
 
@@ -1590,8 +1585,8 @@ mod tests {
         assert_eq!(
             display_paths,
             vec![
-                "objects/vehicles/child/child.model",
-                "objects/vehicles/warthog.model",
+                "objects\\vehicles\\child\\child.model",
+                "objects\\vehicles\\warthog.model",
             ]
         );
     }
@@ -1723,20 +1718,20 @@ mod tests {
         let bitm = u32::from_be_bytes(*b"bitm");
         assert_eq!(
             display_str_with_friendly_extension(
-                "sound/levels/dlc/descent/scarab_factory/piston_close2.l",
+                "sound\\levels\\dlc\\descent\\scarab_factory\\piston_close2.l",
                 snd,
                 &names,
             ),
-            "sound/levels/dlc/descent/scarab_factory/piston_close2.l.sound"
+            "sound\\levels\\dlc\\descent\\scarab_factory\\piston_close2.l.sound"
         );
         assert_eq!(
-            display_str_with_friendly_extension("levels/v1.2/bitmaps/rock", bitm, &names),
-            "levels/v1.2/bitmaps/rock.bitmap"
+            display_str_with_friendly_extension("levels\\v1.2\\bitmaps\\rock", bitm, &names),
+            "levels\\v1.2\\bitmaps\\rock.bitmap"
         );
         // A name that already ends in this group's extension keeps it once.
         assert_eq!(
-            display_str_with_friendly_extension("a/b/piston_close2.l.sound", snd, &names),
-            "a/b/piston_close2.l.sound"
+            display_str_with_friendly_extension("a\\b\\piston_close2.l.sound", snd, &names),
+            "a\\b\\piston_close2.l.sound"
         );
     }
 
@@ -1752,11 +1747,11 @@ mod tests {
                 bitm,
                 &names
             ),
-            "levels/v1.2/bitmaps/rock.bitmap"
+            "levels\\v1.2\\bitmaps\\rock.bitmap"
         );
         assert_eq!(
             display_path_with_friendly_extension(Path::new("a/piston_close2.l.sound"), snd, &names),
-            "a/piston_close2.l.sound"
+            "a\\piston_close2.l.sound"
         );
     }
 
@@ -1768,12 +1763,12 @@ mod tests {
         let bloc = u32::from_be_bytes(*b"bloc");
         let ctrl = u32::from_be_bytes(*b"ctrl");
         assert_eq!(
-            display_str_with_friendly_extension("objects/x/crate1", bloc, &names),
-            "objects/x/crate1.crate"
+            display_str_with_friendly_extension("objects\\x\\crate1", bloc, &names),
+            "objects\\x\\crate1.crate"
         );
         assert_eq!(
-            display_str_with_friendly_extension("objects/x/switch", ctrl, &names),
-            "objects/x/switch.device_control"
+            display_str_with_friendly_extension("objects\\x\\switch", ctrl, &names),
+            "objects\\x\\switch.device_control"
         );
     }
 
@@ -1783,33 +1778,33 @@ mod tests {
         let cases = [
             (
                 b"bipd",
-                "objects/characters/spartans/spartans.bipd",
-                "objects/characters/spartans/spartans.biped",
+                "objects\\characters\\spartans\\spartans.bipd",
+                "objects\\characters\\spartans\\spartans.biped",
             ),
             (
                 b"coll",
-                "objects/characters/spartans/spartans.coll",
-                "objects/characters/spartans/spartans.collision_model",
+                "objects\\characters\\spartans\\spartans.coll",
+                "objects\\characters\\spartans\\spartans.collision_model",
             ),
             (
                 b"phmo",
-                "objects/characters/spartans/spartans.phmo",
-                "objects/characters/spartans/spartans.physics_model",
+                "objects\\characters\\spartans\\spartans.phmo",
+                "objects\\characters\\spartans\\spartans.physics_model",
             ),
             (
                 b"jmad",
-                "objects/characters/spartans/spartans.jmad",
-                "objects/characters/spartans/spartans.model_animation_graph",
+                "objects\\characters\\spartans\\spartans.jmad",
+                "objects\\characters\\spartans\\spartans.model_animation_graph",
             ),
             (
                 b"impo",
-                "objects/characters/spartans/spartans.impo",
-                "objects/characters/spartans/spartans.imposter_model",
+                "objects\\characters\\spartans\\spartans.impo",
+                "objects\\characters\\spartans\\spartans.imposter_model",
             ),
             (
                 b"frms",
-                "objects/characters/spartans/spartans.frms",
-                "objects/characters/spartans/spartans.frame_event_list",
+                "objects\\characters\\spartans\\spartans.frms",
+                "objects\\characters\\spartans\\spartans.frame_event_list",
             ),
         ];
 
@@ -1827,14 +1822,14 @@ mod tests {
         let entries = vec![
             TagEntry {
                 key: "a".into(),
-                display_path: "objects/test/a.biped".into(),
+                display_path: "objects\\test\\a.biped".into(),
                 group_tag: u32::from_be_bytes(*b"bipd"),
                 group_name: None,
                 location: TagEntryLocation::LooseFile(PathBuf::from("a")),
             },
             TagEntry {
                 key: "b".into(),
-                display_path: "objects/test/b.model".into(),
+                display_path: "objects\\test\\b.model".into(),
                 group_tag: u32::from_be_bytes(*b"hlmt"),
                 group_name: None,
                 location: TagEntryLocation::LooseFile(PathBuf::from("b")),
@@ -1849,9 +1844,9 @@ mod tests {
     #[test]
     fn folder_tree_starts_beneath_the_opened_folder_and_keeps_full_paths() {
         let entries = vec![
-            folder_entry("direct", "objects/characters/brute/brute.biped"),
-            folder_entry("nested", "objects/characters/brute/bitmaps/brute.bitmap"),
-            folder_entry("outside", "objects/characters/elite/elite.biped"),
+            folder_entry("direct", "objects\\characters\\brute\\brute.biped"),
+            folder_entry("nested", "objects\\characters\\brute\\bitmaps\\brute.bitmap"),
+            folder_entry("outside", "objects\\characters\\elite\\elite.biped"),
         ];
 
         let tree = build_tree_beneath(&entries, Path::new("objects/characters/brute"));
@@ -1869,8 +1864,8 @@ mod tests {
     #[test]
     fn folder_group_tree_keeps_indices_into_the_shared_entry_set() {
         let entries = vec![
-            folder_entry("outside", "objects/characters/elite/elite.model"),
-            folder_entry("inside", "objects/characters/brute/brute.model"),
+            folder_entry("outside", "objects\\characters\\elite\\elite.model"),
+            folder_entry("inside", "objects\\characters\\brute\\brute.model"),
         ];
 
         let tree = build_group_tree_beneath(&entries, Path::new("objects/characters/brute"));
@@ -1916,8 +1911,8 @@ mod tests {
     /// lands in it. Without this it vanishes the moment it is created.
     #[test]
     fn a_seeded_folder_appears_even_though_no_entry_reaches_it() {
-        let entries = vec![folder_entry("a", "objects/characters/a.model")];
-        let tree = build_tree_with_folders(&entries, &["objects/vehicles/warthog".to_owned()]);
+        let entries = vec![folder_entry("a", "objects\\characters\\a.model")];
+        let tree = build_tree_with_folders(&entries, &["objects\\vehicles\\warthog".to_owned()]);
 
         let objects = root_child(&tree, "objects");
         let vehicles = child(objects, "vehicles");
@@ -1938,8 +1933,8 @@ mod tests {
     /// node beside the real one, and must not relabel the real one as pending.
     #[test]
     fn seeding_a_folder_that_now_holds_a_tag_is_a_no_op() {
-        let entries = vec![folder_entry("a", "objects/vehicles/warthog/a.model")];
-        let tree = build_tree_with_folders(&entries, &["objects/vehicles/warthog".to_owned()]);
+        let entries = vec![folder_entry("a", "objects\\vehicles\\warthog\\a.model")];
+        let tree = build_tree_with_folders(&entries, &["objects\\vehicles\\warthog".to_owned()]);
 
         let vehicles = child(root_child(&tree, "objects"), "vehicles");
         assert_eq!(vehicles.children.len(), 1, "no duplicate warthog node");
@@ -1952,7 +1947,7 @@ mod tests {
     /// that does not opt in can acquire a pending node.
     #[test]
     fn build_tree_seeds_nothing_and_marks_nothing_pending() {
-        let entries = vec![folder_entry("a", "objects/characters/a.model")];
+        let entries = vec![folder_entry("a", "objects\\characters\\a.model")];
         let tree = build_tree(&entries);
         let objects = root_child(&tree, "objects");
         assert!(!objects.pending);
@@ -1965,21 +1960,21 @@ mod tests {
         let entries = vec![
             TagEntry {
                 key: "a".into(),
-                display_path: "objects/test/a.biped".into(),
+                display_path: "objects\\test\\a.biped".into(),
                 group_tag: u32::from_be_bytes(*b"bipd"),
                 group_name: Some("biped".into()),
                 location: TagEntryLocation::LooseFile(PathBuf::from("a")),
             },
             TagEntry {
                 key: "b".into(),
-                display_path: "objects/test/b2.biped".into(),
+                display_path: "objects\\test\\b2.biped".into(),
                 group_tag: u32::from_be_bytes(*b"bipd"),
                 group_name: Some("biped".into()),
                 location: TagEntryLocation::LooseFile(PathBuf::from("b")),
             },
             TagEntry {
                 key: "c".into(),
-                display_path: "objects/test/c.render_model".into(),
+                display_path: "objects\\test\\c.render_model".into(),
                 group_tag: u32::from_be_bytes(*b"mode"),
                 group_name: Some("render_model".into()),
                 location: TagEntryLocation::LooseFile(PathBuf::from("c")),
@@ -1995,7 +1990,7 @@ mod tests {
     fn group_tree_uses_friendly_fallback_when_name_is_fourcc() {
         let entries = vec![TagEntry {
             key: "a".into(),
-            display_path: "objects/test/a.weapon".into(),
+            display_path: "objects\\test\\a.weapon".into(),
             group_tag: u32::from_be_bytes(*b"weap"),
             group_name: Some("weap".into()),
             location: TagEntryLocation::LooseFile(PathBuf::from("a")),

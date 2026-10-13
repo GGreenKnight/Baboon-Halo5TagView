@@ -9,7 +9,10 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub(in crate::app) const CAMPAIGN_PROJECT_VERSION: i64 = 1;
+/// Version 2 holds tag paths, in identities, logical paths and folders, with
+/// `\`; version 1 held them with `/`. A version 1 file still opens, upgraded in
+/// memory, and is written as version 2 by its next save.
+pub(in crate::app) const CAMPAIGN_PROJECT_VERSION: i64 = 2;
 pub(in crate::app) const CAMPAIGN_PROJECT_AUTOSAVE_SECS: f64 = 0.75;
 
 /// How long after starting a write the next autosave may start, given how
@@ -869,7 +872,48 @@ fn read_project_folders(connection: &Connection) -> std::collections::BTreeSet<S
         .collect()
 }
 
+/// A version 1 project's tag paths, rewritten from `/` to `\`: identities,
+/// logical paths and folders. A package is an Unreal path, and keeps its `/`.
+fn upgrade_v1_tag_paths(snapshot: &mut CampaignProjectSnapshot) {
+    let upgrade = |path: &mut String| *path = path.replace('/', "\\");
+    if let Some(selected) = snapshot.selected_identity.as_mut() {
+        upgrade(selected);
+    }
+    for tab in &mut snapshot.tabs {
+        upgrade(&mut tab.identity);
+        upgrade(&mut tab.logical_path);
+    }
+    snapshot.overlays = std::mem::take(&mut snapshot.overlays)
+        .into_values()
+        .map(|mut overlay| {
+            upgrade(&mut overlay.identity);
+            upgrade(&mut overlay.logical_path);
+            if let Some(source) = overlay.copied_from.as_mut() {
+                upgrade(source);
+            }
+            (overlay.identity.clone(), overlay)
+        })
+        .collect();
+    snapshot.history = std::mem::take(&mut snapshot.history)
+        .into_iter()
+        .map(|(identity, history)| (identity.replace('/', "\\"), history))
+        .collect();
+    snapshot.folders = std::mem::take(&mut snapshot.folders)
+        .into_iter()
+        .map(|folder| folder.replace('/', "\\"))
+        .collect();
+}
+
 pub(in crate::app) fn load_campaign_project(path: &Path) -> Result<CampaignProjectSnapshot, String> {
+    load_campaign_project_upgrading(path).map(|(snapshot, _)| snapshot)
+}
+
+/// [`load_campaign_project`], and whether the file was an older version upgraded
+/// in memory. Opening a project never writes to it; an upgraded one still holds
+/// the old spelling on disk, so nothing in it may be taken as already saved.
+pub(in crate::app) fn load_campaign_project_upgrading(
+    path: &Path,
+) -> Result<(CampaignProjectSnapshot, bool), String> {
     let connection = Connection::open(path)
         .map_err(|error| format!("Could not open project {}: {error}", path.display()))?;
     let (version, game, source_path, selected_identity): (i64, String, String, Option<String>) =
@@ -880,7 +924,7 @@ pub(in crate::app) fn load_campaign_project(path: &Path) -> Result<CampaignProje
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .map_err(|error| format!("Could not read project metadata: {error}"))?;
-    if version != CAMPAIGN_PROJECT_VERSION {
+    if version != 1 && version != CAMPAIGN_PROJECT_VERSION {
         return Err(format!(
             "Unsupported Baboon project version {version} (expected {CAMPAIGN_PROJECT_VERSION})"
         ));
@@ -987,7 +1031,7 @@ pub(in crate::app) fn load_campaign_project(path: &Path) -> Result<CampaignProje
     }
 
     let folders = read_project_folders(&connection);
-    Ok(CampaignProjectSnapshot {
+    let mut snapshot = CampaignProjectSnapshot {
         game,
         source_path: PathBuf::from(source_path),
         selected_identity,
@@ -995,7 +1039,12 @@ pub(in crate::app) fn load_campaign_project(path: &Path) -> Result<CampaignProje
         overlays,
         history,
         folders,
-    })
+    };
+    let upgraded = version == 1;
+    if upgraded {
+        upgrade_v1_tag_paths(&mut snapshot);
+    }
+    Ok((snapshot, upgraded))
 }
 
 /// Read history rows as `(identity, stack, label, bytes, step id or NULL)`.
@@ -1117,12 +1166,8 @@ fn write_campaign_project_in_background(
 }
 
 fn logical_path_from_display(display_path: &str) -> String {
-    let normalized = display_path.replace('\\', "/");
-    normalized
-        .rsplit_once('.')
-        .map(|(path, _)| path)
-        .unwrap_or(&normalized)
-        .trim_matches('/')
+    tag_path::without_extension(display_path)
+        .trim_matches(tag_path::SEPARATOR)
         .to_ascii_lowercase()
 }
 
@@ -1132,14 +1177,15 @@ fn logical_path_from_display(display_path: &str) -> String {
 /// Container tags are named without an extension, and the display path used
 /// to be made by cutting at the name's last dot: `levels/v1.2/bitmaps/rock`
 /// displayed as `levels/v1.bitmap`, so its identity was `…:levels/v1`. Project
-/// files written then still hold that identity.
+/// files written then still hold that identity (`…:levels\v1` once upgraded
+/// to version 2).
 fn legacy_campaign_identity(entry: &TagEntry) -> Option<String> {
     if !matches!(entry.location, TagEntryLocation::Container { .. }) {
         return None;
     }
     let (_, logical_path, _, _) = campaign_entry_project_parts(entry)?;
     let (stem, _) = logical_path.rsplit_once('.')?;
-    let stem = stem.trim_matches('/');
+    let stem = stem.trim_matches(tag_path::SEPARATOR);
     (!stem.is_empty()).then(|| format!("{:08x}:{stem}", entry.group_tag))
 }
 
@@ -1294,23 +1340,31 @@ impl Baboon {
         // a second of the source mounting, overwrote everything stashed in
         // earlier sessions. Only a session restore or File > Open Baboon
         // Project ever read one back.
-        let restored = match load_campaign_project(&path) {
+        let restored = match load_campaign_project_upgrading(&path) {
             // A snapshot recorded for a different source would mean a hash
             // collision; ignore it rather than serve one install's edits to
             // another.
-            Ok(snapshot)
+            Ok((snapshot, upgraded))
                 if root
                     .as_deref()
                     .is_none_or(|root| snapshot.source_path == root) =>
             {
-                Some(snapshot)
+                Some((snapshot, upgraded))
             }
             _ => None,
         };
         self.model.kits[kit].project.active = Some(match &restored {
-            Some(snapshot) => ActiveCampaignProject::adopted(path, snapshot, now),
+            // The file still holds an older version's rows: the first save
+            // rewrites all of it rather than reconciling against it.
+            Some((snapshot, true)) => ActiveCampaignProject {
+                saved_digests: None,
+                last_saved_fingerprint: Vec::new(),
+                ..ActiveCampaignProject::adopted(path, snapshot, now)
+            },
+            Some((snapshot, false)) => ActiveCampaignProject::adopted(path, snapshot, now),
             None => ActiveCampaignProject::fresh(path, now),
         });
+        let restored = restored.map(|(snapshot, _)| snapshot);
         // Folders the user made last session. Nothing else brings them back:
         // they are not in any pak, so the mount cannot re-derive them.
         if let Some(folders) = restored.as_ref().map(|snapshot| snapshot.folders.clone()) {
@@ -2349,7 +2403,7 @@ impl Model {
         let package = overlay
             .package
             .clone()
-            .unwrap_or_else(|| format!("/Game/Tags/{}-{group_name}", overlay.logical_path));
+            .unwrap_or_else(|| crate::app::tag_ops::new_container_package(&overlay.logical_path, &group_name));
         OverlayAdoption::Ready(
             TagEntry {
                 key: crate::core::tag_key::new_tag_entry_key(&package),
@@ -3194,13 +3248,40 @@ mod tests {
         assert!(!is_campaign_recovery_file(
             &project.join("user_project.history_table_only.baboon")
         ));
-        let snap = load_campaign_project(&recovery).expect("recovery");
+        // Opening a project never writes to it, upgraded or not.
+        let before = std::fs::read(&recovery).unwrap();
+        let (snap, upgraded) =
+            crate::app::mods::project::load_campaign_project_upgrading(&recovery).expect("recovery");
+        assert!(upgraded, "the sample is version 1");
+        assert_eq!(std::fs::read(&recovery).unwrap(), before, "opening the project changed it");
         assert_eq!(snap.game, "haloce_evolved");
         assert_eq!(snap.tabs.len(), 4);
         assert_eq!(snap.overlays.len(), 2);
         assert_eq!(snap.folders.len(), 2);
-        let marine = "62697064:objects/characters/marine/marine";
+        // Version 1 spelled tag paths with `/`; they are read as tag paths.
+        let marine = r"62697064:objects\characters\marine\marine";
         assert_eq!(snap.selected_identity.as_deref(), Some(marine));
+        assert!(snap.folders.contains(r"objects\my_new_folder"), "{:?}", snap.folders);
+        assert_eq!(
+            snap.overlays[r"7472616b:objects\foo\bar"].package.as_deref(),
+            Some("/Game/Tags/objects/foo/bar-camera_track"),
+            "a package is an Unreal path, and keeps its `/`"
+        );
+        // Version 2 holds the same project already spelled that way.
+        let (current, upgraded) = crate::app::mods::project::load_campaign_project_upgrading(
+            &project.join("user_project.version2.baboon"),
+        )
+        .expect("version 2");
+        assert!(!upgraded);
+        assert_eq!(
+            current.tabs.iter().map(|tab| (&tab.identity, &tab.logical_path)).collect::<Vec<_>>(),
+            snap.tabs.iter().map(|tab| (&tab.identity, &tab.logical_path)).collect::<Vec<_>>()
+        );
+        assert_eq!(current.folders, snap.folders);
+        assert_eq!(
+            current.history.keys().collect::<Vec<_>>(),
+            snap.history.keys().collect::<Vec<_>>()
+        );
         let history = &snap.history[marine];
         assert_eq!(
             (history.undo.len(), history.redo.len()),
@@ -3220,6 +3301,23 @@ mod tests {
         assert_eq!(expected, "46ec1ffb674b");
 
         let scratch = unique_temp_dir("project");
+        // An adopted version 1 recovery file is saved over itself, with nothing
+        // taken as already on disk: every row comes back in the new spelling,
+        // none in the old.
+        let upgraded_copy = scratch.join("upgraded.baboon");
+        std::fs::copy(&recovery, &upgraded_copy).unwrap();
+        save_campaign_project(&upgraded_copy, &snap, None, ProjectScope::Session).unwrap();
+        let (reopened, upgraded) =
+            crate::app::mods::project::load_campaign_project_upgrading(&upgraded_copy).unwrap();
+        assert!(!upgraded, "the save wrote version 2");
+        let mut identities: Vec<&String> = reopened.tabs.iter().map(|tab| &tab.identity).collect();
+        identities.extend(reopened.overlays.keys());
+        identities.extend(reopened.history.keys());
+        identities.extend(&reopened.folders);
+        assert!(identities.iter().all(|identity| !identity.contains('/')), "{identities:?}");
+        assert_eq!(reopened.overlays.len(), snap.overlays.len(), "no row was left behind");
+        assert_eq!(reopened.history.len(), snap.history.len());
+
         let out = scratch.join("roundtrip.baboon");
         save_campaign_project(&out, &snap, None, ProjectScope::Session).unwrap();
         let back = load_campaign_project(&out).unwrap();
@@ -3236,7 +3334,7 @@ mod tests {
             .expect("original schema");
         assert!(original.history.is_empty() && original.folders.is_empty());
         for rejected in [
-            "rejected.version2.baboon",
+            "rejected.version3.baboon",
             "rejected.game_halo3_mcc.baboon",
             "rejected.unknown_kind.baboon",
         ] {
@@ -3258,7 +3356,7 @@ mod tests {
                 "pakchunk0-WinGDK",
                 &format!("Meteorite/Content/Tags/{logical}-{extension}.ubulk"),
             ),
-            display_path: format!("{logical}.{extension}"),
+            display_path: format!("{}.{extension}", tag_path::from_unreal(logical)),
             group_tag: u32::from_be_bytes(*group),
             group_name: Some(extension.to_owned()),
             location: TagEntryLocation::Container {
@@ -3269,15 +3367,15 @@ mod tests {
         let identity = |entry: &TagEntry| campaign_entry_project_parts(entry).unwrap().0;
         assert_eq!(
             identity(&container("objects/characters/marine/marine", b"bipd", "biped")),
-            "62697064:objects/characters/marine/marine"
+            r"62697064:objects\characters\marine\marine"
         );
         assert_eq!(
             identity(&container("Levels/V1.2/Bitmaps/Rock", b"bitm", "bitmap")),
-            "6269746d:levels/v1.2/bitmaps/rock"
+            r"6269746d:levels\v1.2\bitmaps\rock"
         );
         assert_eq!(
             identity(&container("sound/machines/piston_close2.l", b"snd!", "sound")),
-            "736e6421:sound/machines/piston_close2.l"
+            r"736e6421:sound\machines\piston_close2.l"
         );
         let package = "/Game/Tags/objects/foo/bar-camera_track";
         assert_eq!(
@@ -3286,7 +3384,7 @@ mod tests {
         );
         let authored = TagEntry {
             key: crate::core::tag_key::new_tag_entry_key(package),
-            display_path: "objects/foo/bar.camera_track".to_owned(),
+            display_path: r"objects\foo\bar.camera_track".to_owned(),
             group_tag: u32::from_be_bytes(*b"trak"),
             group_name: Some("camera_track".to_owned()),
             location: TagEntryLocation::NewContainer {
@@ -3298,12 +3396,12 @@ mod tests {
             },
         };
         let (new_identity, _, kind, new_package) = campaign_entry_project_parts(&authored).unwrap();
-        assert_eq!(new_identity, "7472616b:objects/foo/bar");
+        assert_eq!(new_identity, r"7472616b:objects\foo\bar");
         assert_eq!(kind, CampaignProjectTagKind::New);
         assert_eq!(new_package.as_deref(), Some(package));
 
         // The project file holding both spellings, against a mounted source with
-        // one dotted tag in it.
+        // one dotted tag in it. It is a version 1 file, read upgraded.
         let snap = crate::app::mods::project::load_campaign_project(
             &compat_samples().join("project/user_project.dotted_identities.baboon"),
         )
@@ -3312,9 +3410,9 @@ mod tests {
         assert_eq!(
             tabs,
             [
-                "6269746d:levels/v1.2/bitmaps/rock",
-                "6269746d:levels/v1",
-                "736e6421:sound/machines/piston_close2.l",
+                r"6269746d:levels\v1.2\bitmaps\rock",
+                r"6269746d:levels\v1",
+                r"736e6421:sound\machines\piston_close2.l",
             ]
         );
         let mut app = Baboon::for_test();

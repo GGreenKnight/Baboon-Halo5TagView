@@ -64,29 +64,17 @@ fn reveal_align(ui: &Ui) -> Option<egui::Align> {
 /// (group four-CC + extension-less backslash path) — matching the format
 /// [`choose_tag_reference_input`] produces, for use as a drag payload.
 pub(in crate::app) fn entry_reference_input(entry: &TagEntry) -> String {
-    let display = &entry.display_path;
-    let without_ext = match display.rfind('.') {
-        Some(dot) => &display[..dot],
-        None => display.as_str(),
-    };
-    format_tag_reference_input(entry.group_tag, without_ext)
+    format_tag_reference_input(entry.group_tag, &entry_rel_path(entry))
 }
 
-/// Forward-slash, extension-less relative path of an entry — the form shader
-/// bitmap rows use for their references.
+/// An entry's tag path without its group extension: `objects\props\crate`.
 pub(in crate::app) fn entry_rel_path(entry: &TagEntry) -> String {
-    let display = &entry.display_path;
-    let without_ext = match display.rfind('.') {
-        Some(dot) => &display[..dot],
-        None => display.as_str(),
-    };
-    without_ext.replace('\\', "/")
+    tag_path::without_extension(&entry.display_path).to_owned()
 }
 
-/// Format an internal or persisted path for presentation on this host. Tag
-/// references deliberately remain forward-slash portable; browser tooltips
-/// should look like native filesystem paths instead.
-/// A tag path with either separator, in the platform's own.
+/// A path on disk as this host spells it. A root the user typed can mix
+/// separators on Windows; shown, it should not. Tag paths are shown as they
+/// are, never through this.
 pub(in crate::app) fn native_display_path(path: &str) -> String {
     let separator = std::path::MAIN_SEPARATOR.to_string();
     path.replace('\\', &separator).replace('/', &separator)
@@ -587,7 +575,7 @@ fn tag_extract_menu_button(
         }
         if crate::app::editor::is_sound_group(entry.group_tag) {
             let language = browser_sound_language(ui);
-            let localized = sound_key_may_have_languages(&entry.key);
+            let localized = sound_may_have_languages(&entry.display_path);
             let extract_label = if localized {
                 format!("Extract sounds ({language})")
             } else {
@@ -647,12 +635,7 @@ fn tag_extract_menu_button(
 }
 
 fn entry_filename_lower(entry: &TagEntry) -> String {
-    entry
-        .display_path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(&entry.display_path)
-        .to_ascii_lowercase()
+    tag_path::name(&entry.display_path).to_ascii_lowercase()
 }
 
 /// Reorder a node's entry indices for display. `Natural` borrows the input with
@@ -766,11 +749,8 @@ fn guide_segments_around_cutouts(
 
 /// Folder-label ancestors of a tag's display path (filename removed).
 pub(in crate::app) fn ancestor_labels(display_path: &str) -> Vec<String> {
-    let mut segments: Vec<String> = display_path
-        .replace('\\', "/")
-        .split('/')
-        .map(str::to_owned)
-        .collect();
+    let mut segments: Vec<String> =
+        tag_path::segments(display_path).map(str::to_owned).collect();
     segments.pop(); // drop the filename
     segments
 }
@@ -1198,7 +1178,7 @@ fn draw_tree_node_lazy_block(
     hover_tooltip_beside_pointer(
         ui,
         &response,
-        &native_display_path(&node.rel_path.to_string_lossy()),
+        &tag_path::relative_tag_path(&node.rel_path),
     );
     context_menu(&response, |ui| {
         style_tag_context_menu(ui);
@@ -1420,7 +1400,7 @@ fn draw_tree_node_block(
         hover_tooltip_beside_pointer(
             ui,
             &header_response,
-            &native_display_path(&node.rel_path.to_string_lossy()),
+            &tag_path::relative_tag_path(&node.rel_path),
         );
     }
     context_menu(&header_response, |ui| {
@@ -1456,7 +1436,7 @@ fn draw_tree_node_block(
         // Campaign Evolved folder authoring (Folders mode only — in Groups mode
         // the node path is a group label, not a folder).
         if is_container && !groups_mode {
-            let folder_rel = node.rel_path.to_string_lossy().replace('\\', "/");
+            let folder_rel = tag_path::relative_tag_path(&node.rel_path);
             let folder_rel = (!folder_rel.is_empty()).then_some(folder_rel);
             if let Some(action) = container_authoring_menu_items(ui, folder_rel.clone()) {
                 clicked = Some(action);
@@ -1541,18 +1521,20 @@ fn draw_tree_node_block(
     clicked
 }
 
+/// Whether two paths name the same place without case: component by
+/// component, so a separator spelled either way on Windows still matches.
 pub(in crate::app) fn paths_match_case_insensitive(a: &Path, b: &Path) -> bool {
-    a.to_string_lossy()
-        .replace('\\', "/")
-        .eq_ignore_ascii_case(&b.to_string_lossy().replace('\\', "/"))
+    a.components().count() == b.components().count()
+        && a.components()
+            .zip(b.components())
+            .all(|(a, b)| a.as_os_str().eq_ignore_ascii_case(b.as_os_str()))
 }
 
 /// Browser-only presentation hint. The extractor verifies this precisely by
 /// resolving permutations against `sfx.fsb`; the conventional dialogue tree
 /// lets menus avoid offering redundant language actions before a tag is read.
-fn sound_key_may_have_languages(key: &str) -> bool {
-    let normalized = key.replace('\\', "/").to_ascii_lowercase();
-    normalized.contains("sound/dialog/")
+fn sound_may_have_languages(display_path: &str) -> bool {
+    display_path.to_ascii_lowercase().contains(r"sound\dialog\")
 }
 
 /// Collect the folder-wide export commands beneath one row. Keeping this
@@ -1587,6 +1569,7 @@ fn folder_extract_menu_button(
         };
     folder_extract_menu_from_keys(
         ui,
+        entries,
         folder_display_path(node),
         node.rel_path.clone(),
         container_keys,
@@ -1665,6 +1648,7 @@ pub(in crate::app) fn folder_tree_extract_menu_button(
 
     folder_extract_menu_from_keys(
         ui,
+        entries,
         label,
         rel_path,
         container_keys,
@@ -1729,6 +1713,7 @@ fn collect_loaded_extractable_keys(
 
 fn folder_extract_menu_from_keys(
     ui: &mut Ui,
+    entries: &[TagEntry],
     label: String,
     rel_path: PathBuf,
     container_keys: Vec<String>,
@@ -1822,12 +1807,15 @@ fn folder_extract_menu_from_keys(
 
             let sound_count = sound_keys.len();
             let language = browser_sound_language(ui);
-            let has_localized_sounds = sound_keys
-                .iter()
-                .any(|key| sound_key_may_have_languages(key));
-            let has_shared_sounds = sound_keys
-                .iter()
-                .any(|key| !sound_key_may_have_languages(key));
+            let sound_set: HashSet<&str> = sound_keys.iter().map(String::as_str).collect();
+            let sound_paths = || {
+                entries
+                    .iter()
+                    .filter(|entry| sound_set.contains(entry.key.as_str()))
+                    .map(|entry| entry.display_path.as_str())
+            };
+            let has_localized_sounds = sound_paths().any(sound_may_have_languages);
+            let has_shared_sounds = sound_paths().any(|path| !sound_may_have_languages(path));
             let selected_label = if has_localized_sounds {
                 format!("Extract loaded sounds ({language}) ({sound_count})")
             } else {
@@ -2366,7 +2354,7 @@ fn browser_row_hover_shape(
 fn is_current_folder(selected: Option<&str>, rel_path: &std::path::Path) -> bool {
     selected
         .and_then(|key| key.strip_prefix(FOLDER_PANE_PREFIX))
-        .is_some_and(|path| path.eq_ignore_ascii_case(&rel_path.to_string_lossy().replace('\\', "/")))
+        .is_some_and(|path| path.eq_ignore_ascii_case(&tag_path::relative_tag_path(rel_path)))
 }
 
 /// Allocate one browser row whose interaction and hover fill span all
@@ -2427,11 +2415,11 @@ pub(in crate::app) fn collect_tag_keys_into(
     }
 }
 
-/// A folder node's path for display, in the forward-slash form the rest of the
-/// container UI uses. Falls back to the node's own label for a node with no
-/// relative path, so the root still names itself in a confirmation.
+/// A folder node's tag path for display. Falls back to the node's own label
+/// for a node with no relative path, so the root still names itself in a
+/// confirmation.
 fn folder_display_path(node: &TagTreeNode) -> String {
-    let rel = node.rel_path.to_string_lossy().replace('\\', "/");
+    let rel = tag_path::relative_tag_path(&node.rel_path);
     if rel.is_empty() {
         node.label.clone()
     } else {
@@ -2707,11 +2695,7 @@ pub(in crate::app) fn draw_entry(
     reserve_disclosure: bool,
     game: Option<GameId>,
 ) -> Option<BrowserAction> {
-    let leaf_label = entry
-        .display_path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(&entry.display_path);
+    let leaf_label = tag_path::name(&entry.display_path);
     // Every expanded row runs this each frame, on screen or not, so what a
     // row allocates waits until it is needed: the payload until a drag
     // starts, the path until the row is hovered, the label until it is drawn.
@@ -2724,7 +2708,7 @@ pub(in crate::app) fn draw_entry(
     if response.hovered() {
         // Not `on_hover_text`: an egui tooltip would block the very drag this
         // row exists to start. See `hover_tooltip_beside_pointer`.
-        let hover_label = native_display_path(&entry.display_path);
+        let hover_label = &entry.display_path;
         // Only a hovered row asks for its thumbnail. Every bitmap row laid
         // out used to, which read and decoded every bitmap in an expanded
         // folder.
@@ -3030,7 +3014,8 @@ pub(in crate::app) fn draw_favorites(
     let favorite_folders = browser_favorite_folders(ui).unwrap_or_default();
     let folder_matches = |path: &Path| {
         filter.is_empty()
-            || (search_scope.folders && scoped_folder_matches(&path.to_string_lossy(), filter))
+            || (search_scope.folders
+                && scoped_folder_matches(&tag_path::relative_tag_path(path), filter))
     };
     let entry_matches = |entry: &TagEntry| {
         scoped_entry_matches(
@@ -3055,7 +3040,7 @@ pub(in crate::app) fn draw_favorites(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .map(str::to_owned)
-                .unwrap_or_else(|| folder.to_string_lossy().into_owned());
+                .unwrap_or_else(|| tag_path::relative_tag_path(folder));
             let (response, icon_rect) = show_full_width_browser_row(
                 ui,
                 ui.make_persistent_id(("favorite_folder", folder)),
@@ -3076,7 +3061,7 @@ pub(in crate::app) fn draw_favorites(
             );
             button_icon_image(ui, ButtonIcon::FolderOpen, text_dark(), BROWSER_TREE_ICON_SIZE)
                 .paint_at(ui, icon_rect);
-            let tooltip = native_display_path(&folder.to_string_lossy());
+            let tooltip = tag_path::relative_tag_path(folder);
             hover_tooltip_beside_pointer(ui, &response, &tooltip);
             if response.clicked() && action.is_none() {
                 action = Some(BrowserAction::OpenFolderBrowser {
@@ -3303,21 +3288,14 @@ pub(in crate::app) fn disclosure_triangle_icon(
 }
 
 pub(in crate::app) fn tag_tab_label(entry: &TagEntry) -> String {
-    entry
-        .display_path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(&entry.display_path)
-        .to_owned()
+    tag_path::name(&entry.display_path).to_owned()
 }
 
 pub(in crate::app) fn tag_file_name(entry: &TagEntry) -> String {
-    entry
-        .display_path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("tag")
-        .to_owned()
+    match tag_path::name(&entry.display_path) {
+        "" => "tag".to_owned(),
+        name => name.to_owned(),
+    }
 }
 
 pub(in crate::app) fn tag_file_stem(entry: &TagEntry) -> String {
@@ -3542,7 +3520,7 @@ pub(in crate::app) fn load_lazy_folders(
                 // unloaded is asked for again by every frame that draws it,
                 // and each answer repaints, so a failure would retry forever.
                 node.entries_loaded = true;
-                format!("Failed to load folder {}: {error}", node.rel_path.display())
+                format!("Failed to load folder {}: {error}", tag_path::relative_tag_path(&node.rel_path))
             }
         });
     }
@@ -4016,13 +3994,10 @@ mod tests {
     }
 
     #[test]
-    fn hover_paths_use_the_host_separator() {
+    fn disk_paths_display_with_the_host_separator() {
         let separator = std::path::MAIN_SEPARATOR;
-        let expected = ["objects", "characters", "brute.model"].join(&separator.to_string());
-        assert_eq!(
-            native_display_path("objects/characters\\brute.model"),
-            expected
-        );
+        let expected = ["kit", "tags", "brute.model"].join(&separator.to_string());
+        assert_eq!(native_display_path("kit/tags\\brute.model"), expected);
     }
 
     fn entry(location: TagEntryLocation) -> TagEntry {
@@ -4042,25 +4017,25 @@ mod tests {
             display_path: path.to_owned(),
             group_tag,
             group_name: None,
-            location: TagEntryLocation::LooseFile(PathBuf::from(path)),
+            location: TagEntryLocation::LooseFile(tag_path::to_relative(path)),
         };
         let entries = vec![
-            loose_entry("sound/direct.sound", u32::from_be_bytes(*b"snd!")),
+            loose_entry("sound\\direct.sound", u32::from_be_bytes(*b"snd!")),
             loose_entry(
-                "sound/characters/nested.sound",
+                "sound\\characters\\nested.sound",
                 u32::from_be_bytes(*b"snd!"),
             ),
-            loose_entry("sound/direct.bitmap", u32::from_be_bytes(*b"bitm")),
-            loose_entry("other/unrelated.sound", u32::from_be_bytes(*b"snd!")),
+            loose_entry("sound\\direct.bitmap", u32::from_be_bytes(*b"bitm")),
+            loose_entry("other\\unrelated.sound", u32::from_be_bytes(*b"snd!")),
         ];
 
         let (_, bitmaps, sounds, shaders, includes) =
             collect_loaded_extractable_keys(&entries, Path::new("sound"), false);
 
-        assert_eq!(bitmaps, vec!["sound/direct.bitmap"]);
+        assert_eq!(bitmaps, vec!["sound\\direct.bitmap"]);
         assert_eq!(
             sounds,
-            vec!["sound/direct.sound", "sound/characters/nested.sound"]
+            vec!["sound\\direct.sound", "sound\\characters\\nested.sound"]
         );
         assert!(shaders.is_empty());
         assert!(includes.is_empty());
@@ -4241,7 +4216,7 @@ mod tests {
         let entries: Vec<TagEntry> = (0..6)
             .map(|index| TagEntry {
                 key: format!("file:objects/weapons/rifle_{index}.weapon"),
-                display_path: format!("objects/weapons/rifle_{index}.weapon"),
+                display_path: format!(r"objects\weapons\rifle_{index}.weapon"),
                 group_tag: u32::from_be_bytes(*b"weap"),
                 group_name: Some("weapon".to_owned()),
                 location: TagEntryLocation::LooseFile(PathBuf::from(format!(
@@ -4854,12 +4829,8 @@ mod tests {
 
     #[test]
     fn sound_menu_distinguishes_dialogue_from_shared_sfx_paths() {
-        assert!(sound_key_may_have_languages(
-            r"file:C:\kit\tags\sound\dialog\combat\brute.sound"
-        ));
-        assert!(!sound_key_may_have_languages(
-            r"file:C:\kit\tags\sound\visual_fx\explosion.sound"
-        ));
+        assert!(sound_may_have_languages(r"sound\dialog\combat\brute.sound"));
+        assert!(!sound_may_have_languages(r"sound\visual_fx\explosion.sound"));
     }
 
     #[test]
@@ -4934,7 +4905,7 @@ mod tests {
                     let path = format!("folder_{top:02}/sub_{sub:02}/tag_{tag:03}.biped");
                     entries.push(TagEntry {
                         key: format!("file:{path}"),
-                        display_path: path.clone(),
+                        display_path: format!(r"folder_{top:02}\sub_{sub:02}\tag_{tag:03}.biped"),
                         group_tag: u32::from_be_bytes(*b"bipd"),
                         group_name: Some("biped".to_owned()),
                         location: TagEntryLocation::LooseFile(path.into()),
@@ -5487,7 +5458,7 @@ mod tests {
         for browser in [&mut skipping, &mut full] {
             browser
                 .entries
-                .retain(|entry| !entry.display_path.starts_with("folder_02/sub_03/tag_1"));
+                .retain(|entry| !entry.display_path.starts_with(r"folder_02\sub_03\tag_1"));
             browser.tree = crate::core::source::build_tree(&browser.entries);
         }
         for offset in [500_000.0, END] {

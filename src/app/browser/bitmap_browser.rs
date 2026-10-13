@@ -295,10 +295,7 @@ pub(in crate::app) fn fit_within(size: Vec2, edge: f32) -> Vec2 {
 
 /// The file name a display path ends in, without its group extension.
 pub(in crate::app) fn tag_leaf_name(display_path: &str) -> String {
-    let leaf = display_path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(display_path);
+    let leaf = tag_path::name(display_path);
     leaf.rsplit_once('.')
         .map_or(leaf, |(stem, _)| stem)
         .to_owned()
@@ -338,7 +335,7 @@ mod tests {
             display_path: display_path.to_owned(),
             group_tag: u32::from_be_bytes(*group),
             group_name: group_name.map(str::to_owned),
-            location: TagEntryLocation::LooseFile(PathBuf::from(display_path)),
+            location: TagEntryLocation::LooseFile(tag_path::to_relative(display_path)),
         }
     }
 
@@ -347,10 +344,10 @@ mod tests {
     /// testing the four-CC alone and quietly missing a game's bitmaps.
     #[test]
     fn every_way_a_bitmap_identifies_itself_is_listed() {
-        let by_fourcc = entry("bitmaps/a.bitmap", b"bitm", None);
-        let by_group_name = entry("bitmaps/b.bitmap", b"____", Some("bitmap"));
-        let by_extension = entry("bitmaps/c.bitmap", b"____", None);
-        let not_a_bitmap = entry("shaders/d.shader", b"shad", Some("shader"));
+        let by_fourcc = entry("bitmaps\\a.bitmap", b"bitm", None);
+        let by_group_name = entry("bitmaps\\b.bitmap", b"____", Some("bitmap"));
+        let by_extension = entry("bitmaps\\c.bitmap", b"____", None);
+        let not_a_bitmap = entry("shaders\\d.shader", b"shad", Some("shader"));
 
         assert!(is_bitmap_tag(&by_fourcc));
         assert!(is_bitmap_tag(&by_group_name));
@@ -362,8 +359,8 @@ mod tests {
     /// know works here — including the plain substring the request asked for.
     #[test]
     fn the_search_box_takes_the_browsers_own_filter_grammar() {
-        let grass = entry("bitmaps/field_grass.bitmap", b"bitm", Some("bitmap"));
-        let metal = entry("bitmaps/metal_plate.bitmap", b"bitm", Some("bitmap"));
+        let grass = entry("bitmaps\\field_grass.bitmap", b"bitm", Some("bitmap"));
+        let metal = entry("bitmaps\\metal_plate.bitmap", b"bitm", Some("bitmap"));
 
         assert!(entry_matches(&grass, "grass"));
         assert!(!entry_matches(&metal, "grass"));
@@ -460,7 +457,7 @@ mod tests {
             tag_leaf_name("bitmaps\\ui\\field_grass.bitmap"),
             "field_grass"
         );
-        assert_eq!(tag_leaf_name("bitmaps/field_grass.bitmap"), "field_grass");
+        assert_eq!(tag_leaf_name("bitmaps\\field_grass.bitmap"), "field_grass");
         assert_eq!(tag_leaf_name("field_grass"), "field_grass");
     }
 
@@ -628,7 +625,7 @@ mod tests {
     /// `entries` only, so the two really do differ.
     #[test]
     fn extraction_resolves_a_bitmap_the_grid_listed_from_the_background_index() {
-        let indexed = entry("bitmaps/deep/field_grass.bitmap", b"bitm", Some("bitmap"));
+        let indexed = entry("bitmaps\\deep\\field_grass.bitmap", b"bitm", Some("bitmap"));
         let mut kit = Kit::empty(KitId(1), TagNameIndex::default());
         kit.source = Some(LoadedSourceData {
             label: "test".to_owned(),
@@ -692,7 +689,7 @@ mod tests {
         assert_eq!(&payload.group_tag.to_be_bytes(), b"bitm");
         // The shader row writes `rel_path` straight into the field: forward slashes,
         // no group extension.
-        assert_eq!(payload.rel_path, "scenery/rock/rock_diffuse");
+        assert_eq!(payload.rel_path, "scenery\\rock\\rock_diffuse");
         // Foundation reference cells take `input` instead, in four-CC form.
         assert!(
             payload.input.starts_with("bitm:"),

@@ -38,12 +38,8 @@ impl Baboon {
         if self.views[self.model.kits[kit_index].id].blam.running {
             return;
         }
-        let asset_rel = self.views[self.model.kits[kit_index].id]
-            .blam
-            .asset_path
-            .trim()
-            .replace('\\', "/")
-            .trim_matches('/')
+        let asset_rel = tag_path::from_input(self.views[self.model.kits[kit_index].id].blam.asset_path.trim())
+            .trim_matches(tag_path::SEPARATOR)
             .to_owned();
         if asset_rel.is_empty() {
             self.views[self.model.kits[kit_index].id].blam.status = "Pick an asset data folder first".to_owned();
@@ -73,14 +69,10 @@ impl Baboon {
             .as_ref()
             .map(|source| source.names.clone())
             .unwrap_or_default();
-        let asset_name = asset_rel
-            .rsplit('/')
-            .next()
-            .unwrap_or(asset_rel.as_str())
-            .to_owned();
+        let asset_name = tag_path::name(&asset_rel).to_owned();
         let blam = &self.views[self.model.kits[kit_index].id].blam;
         let job = BlamImportJob {
-            data_dir: layout.data.join(&asset_rel),
+            data_dir: layout.data.join(tag_path::to_relative(&asset_rel)),
             tags_root,
             asset_rel,
             asset_name,
@@ -462,7 +454,7 @@ fn import_jms_pipeline(
         stamp,
         ctx,
         format!(
-            "{group}: verifying and writing {}/{}.{group}…",
+            "{group}: verifying and writing {}\\{}.{group}…",
             job.asset_rel, job.asset_name
         ),
     );
@@ -525,7 +517,7 @@ fn import_structures(
             stamp,
             ctx,
             format!(
-                "scenario_structure_bsp: verifying and writing {}/{stem}.scenario_structure_bsp…",
+                "scenario_structure_bsp: verifying and writing {}\\{stem}.scenario_structure_bsp…",
                 job.asset_rel
             ),
         );
@@ -563,7 +555,7 @@ fn file_tag(
         .map_err(|error| format!("the built {group} would not parse back: {error}"))?;
     let output = job
         .tags_root
-        .join(&job.asset_rel)
+        .join(tag_path::to_relative(&job.asset_rel))
         .join(format!("{stem}.{group}"));
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)

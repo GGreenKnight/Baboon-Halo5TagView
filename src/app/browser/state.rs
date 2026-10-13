@@ -172,10 +172,7 @@ pub(in crate::app) struct FolderBrowserState {
 pub(in crate::app) const FOLDER_PANE_PREFIX: &str = "\u{1f}folder:";
 
 pub(in crate::app) fn folder_pane_key(rel_path: &Path) -> String {
-    format!(
-        "{FOLDER_PANE_PREFIX}{}",
-        rel_path.to_string_lossy().replace('\\', "/")
-    )
+    format!("{FOLDER_PANE_PREFIX}{}", tag_path::relative_tag_path(rel_path))
 }
 
 pub(in crate::app) fn is_folder_pane_key(key: &str) -> bool {
@@ -702,11 +699,11 @@ fn run_browser_search(
 ) -> Option<SearchResults> {
     let cancelled = || cancel.load(std::sync::atomic::Ordering::Relaxed);
     let query = ScopedSearchQuery::new(&request.query);
-    let normalized = request.folder.to_string_lossy().replace('\\', "/");
-    let prefix = if normalized.is_empty() {
+    let folder = tag_path::relative_tag_path(&request.folder);
+    let prefix = if folder.is_empty() {
         String::new()
     } else {
-        format!("{}/", normalized.trim_end_matches('/'))
+        format!("{folder}{}", tag_path::SEPARATOR)
     };
     let mut entries = Vec::new();
     for (index, entry) in source.iter().enumerate() {
@@ -743,7 +740,7 @@ fn run_browser_search(
                         }
                         if item.file_type().is_dir() {
                             if let Ok(path) = item.path().strip_prefix(root) {
-                                paths.push(path.to_string_lossy().replace('\\', "/"));
+                                paths.push(tag_path::relative_tag_path(path));
                             }
                         }
                     }
@@ -809,7 +806,7 @@ mod tests {
         let entries: Vec<_> = (0..10_000)
             .map(|index| TagEntry {
                 key: format!("tag{index}"),
-                display_path: format!("objects/tag{index}.bitmap"),
+                display_path: format!(r"objects\tag{index}.bitmap"),
                 group_tag: u32::from_be_bytes(*b"bitm"),
                 group_name: None,
                 location: crate::core::source::TagEntryLocation::LooseFile(format!("tag{index}").into()),

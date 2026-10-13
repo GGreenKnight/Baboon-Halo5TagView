@@ -82,7 +82,7 @@ impl Baboon {
             None => {
                 self.model.status = format!(
                     "Could not locate the referencing field in {}",
-                    jump.tag_key.replace('\\', "/")
+                    key_label(&jump.tag_key)
                 );
             }
         }
@@ -271,7 +271,7 @@ impl Baboon {
             let Some(key) = container_key else {
                 self.model.status = format!(
                     "Referenced Campaign Evolved tag not found: {} (group {})",
-                    req.rel_path.replace('\\', "/"),
+                    req.rel_path,
                     blam_tags::format_group_tag(req.group_tag)
                 );
                 return;
@@ -298,9 +298,9 @@ impl Baboon {
             .name_for(req.group_tag)
             .or_else(|| blam_tags::paths::group_tag_to_extension(req.group_tag))
             .unwrap_or("");
-        // Normalize: tolerate forward slashes and a path that already carries
-        // its extension (e.g. a shader bitmap ref), so we don't double-append.
-        let rel = without_extension(&req.rel_path.replace('/', "\\"), ext).to_owned();
+        // Tolerate a path that already carries its extension (e.g. a shader
+        // bitmap ref), so we don't double-append.
+        let rel = without_extension(&req.rel_path, ext).to_owned();
         let abs = blam_tags::paths::resolve_tag_path(&root, &rel, ext);
         if !abs.exists() {
             self.model.status = format!(

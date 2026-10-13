@@ -58,7 +58,7 @@ impl Dialog for ContentExplorer {
                     });
                     ui.separator();
                     ui.label(
-                        RichText::new(explorer.focus.display_path.replace('\\', "/"))
+                        RichText::new(&explorer.focus.display_path)
                             .strong()
                             .color(text_dark()),
                     );
@@ -281,7 +281,7 @@ impl Baboon {
             return;
         };
         // Fresh query — drop any expander state from a previous references popup.
-        let title = format!("References to {}", entry.display_path.replace('\\', "/"));
+        let title = format!("References to {}", entry.display_path);
         // The referenced tag's dependency path, so a clicked row can jump to the
         // exact field that points here.
         let ref_target =

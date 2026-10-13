@@ -1087,9 +1087,8 @@ impl Baboon {
 }
 
 pub(in crate::app) fn extraction_scope_key(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .trim_matches('/')
+    tag_path::relative_tag_path(path)
+        .trim_matches(tag_path::SEPARATOR)
         .to_ascii_lowercase()
 }
 
@@ -1098,7 +1097,7 @@ pub(in crate::app) fn scope_contains(parent: &str, child: &str) -> bool {
         || child == parent
         || child
             .strip_prefix(parent)
-            .is_some_and(|rest| rest.starts_with('/'))
+            .is_some_and(|rest| rest.starts_with(tag_path::SEPARATOR))
 }
 
 pub(in crate::app) fn mark_tree_loaded(tree: &mut TagTree) {
@@ -1652,15 +1651,15 @@ mod tests {
             display_path: format!("{path}.sound"),
             group_tag: u32::from_be_bytes(*b"snd!"),
             group_name: Some("sound".to_owned()),
-            location: TagEntryLocation::LooseFile(PathBuf::from(format!(
-                "C:/kit/tags/{path}.sound"
-            ))),
+            location: TagEntryLocation::LooseFile(
+                PathBuf::from("C:/kit/tags").join(tag_path::to_relative(&format!("{path}.sound"))),
+            ),
         }
     }
 
     #[test]
     fn loading_an_extraction_scope_materializes_its_nested_tags() {
-        let entries = vec![sound("sound/a"), sound("sound/sub/b")];
+        let entries = vec![sound(r"sound\a"), sound(r"sound\sub\b")];
         let mut tree = TagTree {
             children: vec![TagTreeNode {
                 label: "sound".to_owned(),
@@ -1678,14 +1677,14 @@ mod tests {
         assert!(sound_node.children_loaded && sound_node.entries_loaded);
         assert_eq!(
             crate::app::browser::collect_sound_keys(sound_node, &entries),
-            vec!["sound/a".to_owned(), "sound/sub/b".to_owned()]
+            vec![r"sound\a".to_owned(), r"sound\sub\b".to_owned()]
         );
     }
 
     // Lazily listed tags have to be keyed exactly as the full scan keys them:
     // an index refresh drops the lazy entries, and a tab whose key the full
     // index spells differently is orphaned with "no longer in the source".
-    // The browser holds relative folder paths with '/', so on Windows, where
+    // A folder path restored from a session holds '/', so on Windows, where
     // both separators work, a path joined as it was came out mixed.
 
     /// Removes the fixture's folder however the test ends.
@@ -1733,12 +1732,12 @@ mod tests {
         (app, cleanup, tag)
     }
 
-    /// The key the full scan gives the tag at `rel` (with '/').
+    /// The key the full scan gives the tag at `rel`.
     fn full_scan_key(root: &Path, rel: &str) -> String {
         crate::core::source::scan_folder_subtree_entries(root, Path::new(""), &TagNameIndex::default())
             .unwrap()
             .into_iter()
-            .find(|entry| entry.display_path.replace('\\', "/") == rel)
+            .find(|entry| entry.display_path == tag_path::from_input(rel))
             .unwrap_or_else(|| panic!("the full scan has no {rel}"))
             .key
     }

@@ -348,16 +348,22 @@ def win_root_key(p):  # cache_root_key on Windows: canonicalize (\\?\ prefix) + 
 def win_root_key_uncanonical(p):  # cache_root_key on Windows when canonicalize fails
     return p.replace("/", "\\").lower()
 
-def make_db(path, sources):
+def bs(p):  # a tag path as version 2 formats spell it: '\' between segments
+    return p.replace("/", "\\")
+
+def make_db(path, sources, version=1):
+    """Version 1 holds display and relative paths with '/', version 2 with '\'."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path):
         os.remove(path)
     c = sqlite3.connect(path)
     c.executescript(INDEX_DDL)
     for sid, (game, root_key, entries, deps, indexed) in enumerate(sources, start=1):
-        c.execute("INSERT INTO sources (id, game, root_key, schema_version, updated_at) VALUES (?,?,?,1,1759500000)",
-                  (sid, game, root_key))
+        c.execute("INSERT INTO sources (id, game, root_key, schema_version, updated_at) VALUES (?,?,?,?,1759500000)",
+                  (sid, game, root_key, version))
         for e in entries:
+            if version >= 2:
+                e = (e[0], bs(e[1]), bs(e[2]), *e[3:])
             c.execute("INSERT INTO entries VALUES (?,?,?,?,?,?,?,?,?)", (sid, *e))
         for t in indexed:
             c.execute("INSERT INTO indexed_tags VALUES (?,?)", (sid, t))
@@ -370,7 +376,7 @@ def make_db(path, sources):
         f.write(sql + "\n")
 
 ar_key = K["file_windows"]
-make_db(os.path.join(OUT, "index/indexes.sqlite3"), [
+INDEX_SOURCES = [
     ("halo3_mcc", win_root_key(H3_WIN),
      [(ar_key, "objects/weapons/rifle/assault_rifle/assault_rifle.weapon",
        "objects/weapons/rifle/assault_rifle/assault_rifle.weapon", gt("weap"), "weapon", 123456, 1759500000, 5),
@@ -398,7 +404,10 @@ make_db(os.path.join(OUT, "index/indexes.sqlite3"), [
     ("haloce_mcc", win_root_key(r"C:\Kits\HCEEK\tags"), [], [], []),
     ("halo2amp_mcc", win_root_key(r"C:\Kits\H2AMPEK\tags"), [], [], []),
     (FUTURE_GAME, win_root_key(r"C:\Kits\H5EK\tags"), [], [], []),
-])
+]
+# Version 1 is never read again (the next scan replaces it); kept to pin that.
+make_db(os.path.join(OUT, "index/indexes.sqlite3"), INDEX_SOURCES)
+make_db(os.path.join(OUT, "index/indexes.v2.sqlite3"), INDEX_SOURCES, version=2)
 
 # =========================================================================
 # {game}_keywords.json -- BTreeMap<String, Vec<String>> (entry key -> sorted lowercase keywords)
@@ -512,30 +521,34 @@ A30 = ident("scnr", "levels/halo1/solo/a30/_generated_/a30")
 
 def make_project(path, ddl, *, version=1, game="haloce_evolved", source_path=CE_PAKS, history=True,
                  legacy_history=False, folders=True, kind_override=None):
+    """Version 1 spells tag paths with '/'; version 2 (and later) with '\'. A
+    package is an Unreal path in every version."""
     if os.path.exists(path):
         os.remove(path)
+    tp = bs if version >= 2 else (lambda p: p)
+    marine, copy, new, a30 = (tp(i) for i in (MARINE, COPY, NEW, A30))
     c = sqlite3.connect(path)
     c.executescript(ddl)
-    c.execute("INSERT INTO project VALUES (1,?,?,?,?)", (version, game, source_path, MARINE))
-    tabs = [(0, MARINE, "objects/characters/marine/marine.biped", gt("bipd"), "objects/characters/marine/marine", "existing", None, 0),
-            (1, COPY, "objects/characters/marine/marine_copy.biped", gt("bipd"), "objects/characters/marine/marine_copy", "new",
+    c.execute("INSERT INTO project VALUES (1,?,?,?,?)", (version, game, source_path, marine))
+    tabs = [(0, marine, tp("objects/characters/marine/marine.biped"), gt("bipd"), tp("objects/characters/marine/marine"), "existing", None, 0),
+            (1, copy, tp("objects/characters/marine/marine_copy.biped"), gt("bipd"), tp("objects/characters/marine/marine_copy"), "new",
              "/Game/Tags/objects/characters/marine/marine_copy-biped", 0),
-            (2, NEW, "objects/foo/bar.camera_track", gt("trak"), "objects/foo/bar", kind_override or "new", "/Game/Tags/objects/foo/bar-camera_track", 0),
-            (3, A30, "levels/halo1/solo/a30/_generated_/a30.scenario", gt("scnr"), "levels/halo1/solo/a30/_generated_/a30", "existing", None, 0)]
+            (2, new, tp("objects/foo/bar.camera_track"), gt("trak"), tp("objects/foo/bar"), kind_override or "new", "/Game/Tags/objects/foo/bar-camera_track", 0),
+            (3, a30, tp("levels/halo1/solo/a30/_generated_/a30.scenario"), gt("scnr"), tp("levels/halo1/solo/a30/_generated_/a30"), "existing", None, 0)]
     c.executemany("INSERT INTO tabs VALUES (?,?,?,?,?,?,?,?)", tabs)
     blob = b"BLAM-TAG-BYTES-PLACEHOLDER (not a parseable tag)"
     c.executemany("INSERT INTO overlays VALUES (?,?,?,?,?,?)", [
-        (MARINE, gt("bipd"), "objects/characters/marine/marine", "existing", None, blob),
-        (NEW, gt("trak"), "objects/foo/bar", "new", "/Game/Tags/objects/foo/bar-camera_track", blob)])
+        (marine, gt("bipd"), tp("objects/characters/marine/marine"), "existing", None, blob),
+        (new, gt("trak"), tp("objects/foo/bar"), "new", "/Game/Tags/objects/foo/bar-camera_track", blob)])
     if history:
         c.executemany("INSERT INTO history_steps VALUES (?,?,?,?,?,?)", [
-            (MARINE, 41, "undo", 0, "Edit health", blob), (MARINE, 42, "undo", 1, "Edit shield", blob),
-            (MARINE, 43, "redo", 0, "Edit speed", blob), (MARINE, 44, "sideways", 0, "unknown stack", blob)])
+            (marine, 41, "undo", 0, "Edit health", blob), (marine, 42, "undo", 1, "Edit shield", blob),
+            (marine, 43, "redo", 0, "Edit speed", blob), (marine, 44, "sideways", 0, "unknown stack", blob)])
     if legacy_history:
         c.executemany("INSERT INTO history VALUES (?,?,?,?,?)", [
-            (MARINE, "undo", 0, "Edit health", blob), (MARINE, "redo", 0, "Edit speed", blob)])
+            (marine, "undo", 0, "Edit health", blob), (marine, "redo", 0, "Edit speed", blob)])
     if folders:
-        c.executemany("INSERT INTO folders VALUES (?)", [("objects/my_new_folder",), ("levels/custom",)])
+        c.executemany("INSERT INTO folders VALUES (?)", [(tp("objects/my_new_folder"),), (tp("levels/custom"),)])
     c.commit()
     sql = "\n".join(c.iterdump())
     c.close()
@@ -547,7 +560,8 @@ os.makedirs(os.path.join(OUT, "project"), exist_ok=True)
 make_project(os.path.join(OUT, f"project/campaign_evolved_recovery-{recovery_tag}.baboon"), PROJECT_DDL)
 make_project(os.path.join(OUT, "project/user_project.history_table_only.baboon"), PROJECT_DDL, history=False, legacy_history=True, folders=False)
 make_project(os.path.join(OUT, "project/user_project.original_v1_schema.baboon"), PROJECT_DDL_V1_ORIGINAL, history=False, folders=False)
-make_project(os.path.join(OUT, "project/rejected.version2.baboon"), PROJECT_DDL, version=2)
+make_project(os.path.join(OUT, "project/user_project.version2.baboon"), PROJECT_DDL, version=2)
+make_project(os.path.join(OUT, "project/rejected.version3.baboon"), PROJECT_DDL, version=3)
 make_project(os.path.join(OUT, "project/rejected.game_halo3_mcc.baboon"), PROJECT_DDL, game="halo3_mcc")
 make_project(os.path.join(OUT, "project/rejected.unknown_kind.baboon"), PROJECT_DDL, kind_override="renamed")
 

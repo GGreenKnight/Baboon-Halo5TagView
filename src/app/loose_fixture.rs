@@ -158,6 +158,11 @@ impl LooseKit {
         Self { base, root, game }
     }
 
+    /// The file a tag path names in this kit: `objects\props\crate.model`.
+    pub(in crate::app) fn path(&self, tag_path: &str) -> PathBuf {
+        self.root.join(tag_path::to_relative(tag_path))
+    }
+
     pub(in crate::app) fn names(&self) -> TagNameIndex {
         TagNameIndex::load_game(&locate_definitions_root(), GameId::from_id(self.game).unwrap()).expect("load group names")
     }
@@ -172,7 +177,7 @@ impl LooseKit {
         let mut tag = TagFile::new(definition(self.game, group))
             .unwrap_or_else(|error| panic!("build a {group}: {error}"));
         edit(&mut tag);
-        let path = self.root.join(format!("{rel}.{group}"));
+        let path = self.path(&format!("{rel}.{group}"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         tag.write(&path).unwrap();
         path
@@ -181,7 +186,7 @@ impl LooseKit {
     /// Write a zeroed classic Halo CE tag of `group` at `rel`.
     pub(in crate::app) fn write_classic_ce(&self, rel: &str, group: &str) -> PathBuf {
         assert_eq!(self.game, "haloce_mcc");
-        let path = self.root.join(format!("{rel}.{group}"));
+        let path = self.path(&format!("{rel}.{group}"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, classic_ce_bytes(group)).unwrap();
         path
@@ -194,7 +199,7 @@ impl LooseKit {
 
     /// The key the folder scan gives the tag at `rel_with_extension`.
     pub(in crate::app) fn key(&self, rel_with_extension: &str) -> String {
-        loose_file_entry(&self.root, &self.root.join(rel_with_extension), &self.names())
+        loose_file_entry(&self.root, &self.path(rel_with_extension), &self.names())
             .unwrap()
             .unwrap_or_else(|| panic!("{rel_with_extension} does not probe as a tag"))
             .key

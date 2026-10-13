@@ -7,6 +7,7 @@ use blam_tags::{
     parse_group_tag,
 };
 
+use crate::core::tag_path;
 use crate::core::source::{TagEntry, TagEntryLocation};
 
 /// Whether this document's fields and block controls are live.
@@ -606,6 +607,7 @@ fn mask_bits(input: &str, bits: u32) -> Result<u64, String> {
     Ok(mask)
 }
 
+/// A tag reference as a person types it: `GROUP:path` or `path.group`.
 pub(crate) fn parse_tag_reference(input: &str) -> Result<TagReferenceData, String> {
     if input.eq_ignore_ascii_case("none") || input.is_empty() {
         return Ok(TagReferenceData {
@@ -616,7 +618,7 @@ pub(crate) fn parse_tag_reference(input: &str) -> Result<TagReferenceData, Strin
         let group_tag = parse_group_tag(group)
             .ok_or_else(|| "tag reference group must be 1..=4 ASCII chars".to_owned())?;
         return Ok(TagReferenceData {
-            group_tag_and_name: Some((group_tag, path.replace('/', "\\"))),
+            group_tag_and_name: Some((group_tag, tag_path::from_input(path))),
         });
     }
     let Some((path, extension)) = input.rsplit_once('.') else {
@@ -626,7 +628,7 @@ pub(crate) fn parse_tag_reference(input: &str) -> Result<TagReferenceData, Strin
         .or_else(|| parse_group_tag(extension))
         .ok_or_else(|| format!("unknown tag group {extension:?}"))?;
     Ok(TagReferenceData {
-        group_tag_and_name: Some((group_tag, path.replace('/', "\\"))),
+        group_tag_and_name: Some((group_tag, tag_path::from_input(path))),
     })
 }
 

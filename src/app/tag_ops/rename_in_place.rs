@@ -30,13 +30,13 @@ fn container_rename_destination(
     old_rel_path: &str,
     new_rel: &str,
 ) -> Result<RenameDestination, String> {
-    let normalized = normalize_folder_rel(new_rel);
+    let normalized = normalize_folder_rel(&tag_path::from_input(new_rel));
     if normalized.is_empty() {
-        return Err("Enter a tag path (e.g. objects/vehicles/warthog)".to_owned());
+        return Err(r"Enter a tag path (e.g. objects\vehicles\warthog)".to_owned());
     }
     // Every component, not just the leaf: a rename is also how a tag moves into
     // a folder, so the folder names have to survive the same rules the leaf does.
-    for component in normalized.split('/') {
+    for component in normalized.split(tag_path::SEPARATOR) {
         validate_leaf_characters(component, "A folder or tag name", "Enter a tag path")?;
     }
     let group_name = entry
@@ -56,7 +56,7 @@ fn container_rename_destination(
         .map(|(_, group)| group.to_owned())
         .ok_or("This tag's container path has no group suffix")?;
     Ok(RenameDestination {
-        package: format!("/Game/Tags/{normalized}-{group_suffix}"),
+        package: format!("/Game/Tags/{}-{group_suffix}", tag_path::to_unreal(&normalized)),
         display: format!("{normalized}.{group_name}"),
     })
 }
@@ -872,8 +872,8 @@ mod tests {
             tag_tree_id(kit.id),
             vec![OLD.to_owned(), BYSTANDER.to_owned()],
         );
-        view.caches.rmdf_cache.insert("shaders/foo".to_owned(), None);
-        view.caches.rmop_cache.insert("shaders/bar".to_owned(), None);
+        view.caches.rmdf_cache.insert("shaders\\foo".to_owned(), None);
+        view.caches.rmop_cache.insert("shaders\\bar".to_owned(), None);
         view.browser.modified_signature = vec![OLD.to_owned()];
         (kit, view)
     }
@@ -1135,7 +1135,7 @@ mod tests {
     fn entry_at(rel_path: &str) -> TagEntry {
         TagEntry {
             key: format!("ublock:pakchunk240-Windows:{rel_path}"),
-            display_path: "objects/copy.biped".to_owned(),
+            display_path: "objects\\copy.biped".to_owned(),
             group_tag: 0x6269_7064,
             group_name: Some("biped".to_owned()),
             location: TagEntryLocation::Container {
@@ -1153,9 +1153,9 @@ mod tests {
             package_id: 7,
             uasset_path: "Meteorite/Content/Tags/objects/copy-biped.uasset".to_owned(),
             ubulk_path: REL.to_owned(),
-            display_path: "objects/copy.biped".to_owned(),
+            display_path: "objects\\copy.biped".to_owned(),
             group_tag: 0x6269_7064,
-            source_display: "objects/original.biped".to_owned(),
+            source_display: "objects\\original.biped".to_owned(),
             container_entry_count_before: 4096,
             origin,
             created_unix_secs: 1,
@@ -1175,7 +1175,7 @@ mod tests {
         let ledger = CreatedTagLedger::default();
         let new_container = TagEntry {
             key: "new:1".to_owned(),
-            display_path: "objects/fresh.biped".to_owned(),
+            display_path: "objects\\fresh.biped".to_owned(),
             group_tag: 0,
             group_name: None,
             location: TagEntryLocation::NewContainer {
@@ -1189,18 +1189,18 @@ mod tests {
         };
         let loose = TagEntry {
             key: "file:1".to_owned(),
-            display_path: "objects/loose.biped".to_owned(),
+            display_path: "objects\\loose.biped".to_owned(),
             group_tag: 0,
             group_name: None,
             location: TagEntryLocation::LooseFile(PathBuf::from("C:/kit/tags/objects/loose.biped")),
         };
         let monolithic = TagEntry {
-            key: "cache:bipd:objects/cached".to_owned(),
-            display_path: "objects/cached.biped".to_owned(),
+            key: r"cache:bipd:objects\cached".to_owned(),
+            display_path: "objects\\cached.biped".to_owned(),
             group_tag: 0,
             group_name: None,
             location: TagEntryLocation::Monolithic {
-                name: "objects/cached".to_owned(),
+                name: "objects\\cached".to_owned(),
                 group_tag: 0,
             },
         };
@@ -1297,7 +1297,7 @@ mod tests {
     fn source_with_one_tag() -> LoadedSourceData {
         let mut index = crate::core::source::ContainerTagIndex::default();
         index.insert(
-            crate::core::source::container_ref_key(GROUP, "objects/vehicles/warthog"),
+            crate::core::source::container_ref_key(GROUP, "objects\\vehicles\\warthog"),
             0,
             OLD_UBULK.to_owned(),
         );
@@ -1307,11 +1307,11 @@ mod tests {
         shipped.insert(OLD_UBULK, 0);
 
         let entries = vec![
-            entry(OLD_KEY, "objects/vehicles/warthog", OLD_UBULK),
+            entry(OLD_KEY, "objects\\vehicles\\warthog", OLD_UBULK),
             // A neighbour, so the sorted re-insert has something to sort against.
             entry(
                 "ublock:pakchunk0:objects/vehicles/mongoose",
-                "objects/vehicles/mongoose",
+                "objects\\vehicles\\mongoose",
                 "Meteorite/Content/Tags/objects/vehicles/mongoose-vehicle.ubulk",
             ),
         ];
@@ -1375,7 +1375,7 @@ mod tests {
         apply_container_rename_source_state(
             source,
             OLD_KEY,
-            &entry(NEW_KEY, "objects/vehicles/scorpion", NEW_UBULK),
+            &entry(NEW_KEY, "objects\\vehicles\\scorpion", NEW_UBULK),
             &move_request(redirect),
             &[],
         )
@@ -1389,10 +1389,10 @@ mod tests {
 
         let (index, packages, shipped) = indices(&source);
         assert_eq!(
-            index.lookup(GROUP, "objects/vehicles/scorpion"),
+            index.lookup(GROUP, "objects\\vehicles\\scorpion"),
             Some((0, NEW_UBULK))
         );
-        assert_eq!(index.lookup(GROUP, "objects/vehicles/warthog"), None);
+        assert_eq!(index.lookup(GROUP, "objects\\vehicles\\warthog"), None);
         assert_eq!(packages.lookup(NEW_PACKAGE), Some((0, NEW_UASSET)));
         assert_eq!(packages.lookup(OLD_PACKAGE), None);
         assert_eq!(shipped.container_for(NEW_UBULK), Some(0));
@@ -1435,12 +1435,12 @@ mod tests {
 
         let (index, _, _) = indices(&source);
         assert_eq!(
-            index.lookup(GROUP, "objects/vehicles/warthog"),
+            index.lookup(GROUP, "objects\\vehicles\\warthog"),
             Some((0, NEW_UBULK)),
             "a reference to the old path follows the tag"
         );
         assert_eq!(
-            index.lookup(GROUP, "objects/vehicles/scorpion"),
+            index.lookup(GROUP, "objects\\vehicles\\scorpion"),
             Some((0, NEW_UBULK))
         );
         // Resolvable, but gone from the browser, which draws from `entries`.
@@ -1462,8 +1462,8 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                "objects/vehicles/mongoose.vehicle",
-                "objects/vehicles/scorpion.vehicle"
+                "objects\\vehicles\\mongoose.vehicle",
+                "objects\\vehicles\\scorpion.vehicle"
             ]
         );
     }
@@ -1490,7 +1490,7 @@ mod tests {
         apply_container_rename_source_state(
             &mut source,
             OLD_KEY,
-            &entry(NEW_KEY, "objects/vehicles/scorpion", NEW_UBULK),
+            &entry(NEW_KEY, "objects\\vehicles\\scorpion", NEW_UBULK),
             &request,
             &[],
         )

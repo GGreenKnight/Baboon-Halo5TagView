@@ -37,7 +37,7 @@ pub(in crate::app) fn draw_blam_pane(cx: &Ctx, ui: &mut Ui, kit_index: usize, bl
     let trimmed = blam.asset_path.trim().to_owned();
     if blam.scanned_path.as_deref() != Some(trimmed.as_str()) {
         if let Some(data_root) = data_root.as_ref().filter(|_| !trimmed.is_empty()) {
-            let asset_folder = data_root.join(trimmed.replace('\\', "/"));
+            let asset_folder = data_root.join(tag_path::to_relative(&tag_path::from_input(&trimmed)));
             blam.rescan(&asset_folder);
         } else {
             blam.scan = BlamFolderScan::default();

@@ -428,18 +428,22 @@ fn validate_runtime_tag_entry(memory: &dyn RuntimeMemory, tag: &RuntimeTag) -> R
     Ok(())
 }
 
+/// A tag's name as the game's memory or the browser spells it, as one
+/// comparable tag path. The game names a tag by its Unreal package as often as
+/// by its tag path, `/Game/Tags/Objects/...` or `\Game\Tags\Objects\...`, so
+/// both separators are read here; what comes out is a tag path.
 fn normalize_tag_path(path: &str) -> String {
     let mut normalized = path
         .trim_matches('\0')
         .trim()
-        .replace('\\', "/")
+        .replace('/', "\\")
         .to_ascii_lowercase();
-    while normalized.starts_with('/') {
+    while normalized.starts_with(tag_path::SEPARATOR) {
         normalized.remove(0);
     }
     loop {
         let mut stripped = false;
-        for prefix in ["meteorite/content/", "content/", "game/tags/", "tags/"] {
+        for prefix in [r"meteorite\content\", r"content\", r"game\tags\", r"tags\"] {
             if let Some(rest) = normalized.strip_prefix(prefix) {
                 normalized = rest.to_owned();
                 stripped = true;
@@ -450,14 +454,7 @@ fn normalize_tag_path(path: &str) -> String {
             break;
         }
     }
-    if let Some((stem, extension)) = normalized.rsplit_once('/')
-        && let Some((file, _)) = extension.rsplit_once('.')
-    {
-        normalized = format!("{stem}/{file}");
-    } else if let Some((file, _)) = normalized.rsplit_once('.') {
-        normalized = file.to_owned();
-    }
-    normalized.trim_matches('/').to_owned()
+    tag_path::without_extension(&normalized).trim_matches(tag_path::SEPARATOR).to_owned()
 }
 
 fn field_path(parent: &str, field: TagField<'_>) -> String {
@@ -3296,13 +3293,13 @@ mod tests {
     fn path_normalization_matches_runtime_and_browser_forms() {
         assert_eq!(
             normalize_tag_path(r"\Game\Tags\Objects\Weapons\Pistol.weapon"),
-            "objects/weapons/pistol"
+            r"objects\weapons\pistol"
         );
         assert_eq!(
             normalize_tag_path("/Meteorite/Content/Tags/levels/a/scenario.scenario"),
-            "levels/a/scenario"
+            r"levels\a\scenario"
         );
-        assert_eq!(normalize_tag_path("objects/a/biped"), "objects/a/biped");
+        assert_eq!(normalize_tag_path(r"objects\a\biped"), r"objects\a\biped");
     }
 
     #[test]

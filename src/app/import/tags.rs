@@ -313,7 +313,7 @@ impl TagImportDialog {
         if relative.is_empty() {
             return None;
         }
-        Some(self.target_tags_root.join(relative))
+        Some(self.target_tags_root.join(tag_path::to_relative(&relative)))
     }
 
     pub(in crate::app) fn source_is_folder(&self) -> bool {
@@ -345,16 +345,14 @@ pub(in crate::app) fn normalize_import_input(input: &str) -> String {
     input.trim().trim_matches('"').trim().to_owned()
 }
 
-/// Tidy a typed destination into a relative path with forward slashes and no
-/// leading, trailing or doubled separators.
+/// Tidy a typed destination into a tag path with no leading, trailing or
+/// doubled separators.
 pub(in crate::app) fn normalize_import_rel(input: &str) -> String {
-    input
-        .replace('\\', "/")
-        .split('/')
+    tag_path::segments(&tag_path::from_input(input))
         .map(str::trim)
         .filter(|segment| !segment.is_empty() && *segment != ".")
         .collect::<Vec<_>>()
-        .join("/")
+        .join("\\")
 }
 
 /// Where a source lands by default: under `base`, keeping its own name.
@@ -371,7 +369,7 @@ pub(in crate::app) fn seeded_destination(base: &str, source: &Path, is_folder: b
     }
     .and_then(|name| name.to_str())
     .unwrap_or_default();
-    normalize_import_rel(&format!("{base}/{leaf}"))
+    normalize_import_rel(&tag_path::join(base, leaf))
 }
 
 /// Where a single imported tag is written.
@@ -390,7 +388,7 @@ pub(in crate::app) fn single_output_path(
     if relative.is_empty() {
         return None;
     }
-    let mut output = tags_root.join(relative);
+    let mut output = tags_root.join(tag_path::to_relative(&relative));
     output.set_extension(target_extension);
     Some(output)
 }
@@ -420,7 +418,7 @@ pub(in crate::app) fn plan_folder_import(
         return Err("Enter a destination folder for the imported tags".to_owned());
     }
     let source_folder = normalize_conversion_path(source_folder);
-    let output_root = normalize_conversion_path(&tags_root.join(&relative));
+    let output_root = normalize_conversion_path(&tags_root.join(tag_path::to_relative(&relative)));
     // Either way round is the same accident: a run that reads what it is writing.
     if output_root.starts_with(&source_folder) || source_folder.starts_with(&output_root) {
         return Err("The destination must not overlap the folder being imported".to_owned());
@@ -1615,10 +1613,11 @@ mod tests {
     fn a_destination_is_tidied_into_a_relative_tag_path() {
         assert_eq!(
             normalize_import_rel("\\objects\\characters\\\\masterchief\\"),
-            "objects/characters/masterchief"
+            r"objects\characters\masterchief"
         );
         assert_eq!(normalize_import_rel("   "), "");
-        assert_eq!(normalize_import_rel("./objects/./foo"), "objects/foo");
+        // A typed `/` is taken as `\`.
+        assert_eq!(normalize_import_rel("./objects/./foo"), r"objects\foo");
     }
 
     /// Import offers the profiles that convert *into* the kit, which is not the
@@ -1698,19 +1697,19 @@ mod tests {
     fn a_source_lands_under_the_folder_it_was_dropped_on() {
         assert_eq!(
             seeded_destination(
-                "objects/characters",
+                r"objects\characters",
                 Path::new("D:/H3EK/tags/objects/characters/masterchief"),
                 true
             ),
-            "objects/characters/masterchief"
+            r"objects\characters\masterchief"
         );
         assert_eq!(
             seeded_destination(
-                "objects/weapons",
+                r"objects\weapons",
                 Path::new("D:/H3EK/tags/objects/weapons/rifle.weapon"),
                 false
             ),
-            "objects/weapons/rifle"
+            r"objects\weapons\rifle"
         );
         // Opened from the File menu, with no folder to land under.
         assert_eq!(

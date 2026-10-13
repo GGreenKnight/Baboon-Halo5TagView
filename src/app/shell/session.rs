@@ -894,7 +894,7 @@ pub(in crate::app) fn render_last_opened_windows_prompt(
                             ui.add_enabled_ui(kit.checked, |ui| {
                             for entry in &mut kit.folder_entries {
                                 restore_path_row(ui, &mut entry.checked, entry.available,
-                                    &entry.folder.rel_path.display().to_string(), None, None, true);
+                                    &tag_path::relative_tag_path(&entry.folder.rel_path), None, None, true);
                             }
                             for entry in &mut kit.entries {
                                 // Session labels include " - group name" for the old
@@ -1135,7 +1135,7 @@ fn parse_session_kit(value: &Value) -> Option<LastSessionKit> {
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|label| !label.is_empty())
-                .or_else(|| rel_path.rsplit(['/', '\\']).next())?;
+                .or_else(|| Path::new(rel_path).file_name().and_then(|name| name.to_str()))?;
             Some(LastSessionFolder {
                 rel_path: PathBuf::from(rel_path),
                 label: label.to_owned(),
