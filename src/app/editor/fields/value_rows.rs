@@ -13,9 +13,9 @@ pub(in crate::app) fn draw_foundation_value_row(
     depth: usize,
     path: &str,
     edit: &mut FieldEditContext<'_>,
-    // The target block of a block-index field, when it could be found among
-    // the struct's siblings or ancestors; `None` for non-block-index fields and
-    // unresolvable (custom) indices → numeric editor.
+    // The target block of a block-index or block-flags field, when it could be
+    // found among the struct's siblings or ancestors; `None` for other fields
+    // and unresolvable (custom) indices → numeric editor.
     block_index: Option<&BlockIndexTarget>,
     tag_reference_value_width: f32,
 ) {
@@ -53,7 +53,10 @@ pub(in crate::app) fn draw_foundation_value_row(
         return;
     }
 
-    if let Some((raw, flag_names)) = flag_value_parts(value) {
+    if let Some((raw, mut flag_names)) = flag_value_parts(value) {
+        if let Some(target) = block_index.filter(|_| is_block_flags(value)) {
+            flag_names = block_flags_names(edit, target, value);
+        }
         draw_foundation_flags_row(ui, meta, raw, &flag_names, field, depth, path, edit);
         return;
     }
@@ -874,9 +877,162 @@ pub(super) fn draw_foundation_labelled_cell_row(
 /// Red used to flag tag references whose target file is missing on disk.
 pub(in crate::app) const REFERENCE_MISSING_COLOR: Color32 = Color32::from_rgb(216, 92, 92);
 
+fn is_block_flags(value: &TagFieldData) -> bool {
+    matches!(
+        value,
+        TagFieldData::ByteBlockFlags(_)
+            | TagFieldData::WordBlockFlags(_)
+            | TagFieldData::LongBlockFlags(_)
+    )
+}
+
+/// One flag per element of a block-flags field's target block, named as the
+/// editor labels the element: bit `n` is element `n`. Elements past the
+/// field's width have no bit, and are left off.
+pub(in crate::app) fn block_flags_names(
+    edit: &FieldEditContext<'_>,
+    target: &BlockIndexTarget,
+    value: &TagFieldData,
+) -> Vec<(u32, String)> {
+    let bits = match value {
+        TagFieldData::ByteBlockFlags(_) => 8,
+        TagFieldData::WordBlockFlags(_) => 16,
+        _ => 32,
+    };
+    let Some(block) = edit
+        .root
+        .and_then(|root| root.field_path(&target.path))
+        .and_then(|field| field.as_block())
+    else {
+        return Vec::new();
+    };
+    let default_names = TagNameIndex::default();
+    let names = edit.names.unwrap_or(&default_names);
+    let labeler = BlockLabeler::new(edit, names);
+    (0..target.len.min(bits))
+        .map(|index| (index as u32, labeler.bare_label(&target.path, block, index)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A block-flags field lists its target block's elements as checkboxes,
+    /// named as the editor names them, and a click sets the element's bit.
+    /// ODST's zone sets showed `bsp zone flags` as a bare `0x0FFF`.
+    #[test]
+    fn block_flags_list_the_target_blocks_elements() {
+        let mut tag = blam_tags::TagFile::new(crate::app::test_definition_path(
+            "halo3odst_mcc/scenario.json",
+        ))
+        .unwrap();
+        let add = |tag: &mut blam_tags::TagFile, path: &str| {
+            crate::core::document::apply::apply_block_ops(
+                tag,
+                vec![crate::core::document::ops::BlockOp {
+                    path: path.to_owned(),
+                    kind: crate::core::document::ops::BlockOpKind::Add,
+                }],
+                &mut Default::default(),
+            );
+        };
+        add(&mut tag, "structure bsps");
+        add(&mut tag, "structure bsps");
+        add(&mut tag, "zone sets");
+        for (index, name) in ["h100_000", "h100_shared"].iter().enumerate() {
+            crate::core::document::apply::apply_field_edit(
+                &mut tag,
+                &format!("structure bsps[{index}]/structure bsp"),
+                &format!("sbsp:levels\\atlas\\h100\\{name}"),
+            )
+            .unwrap();
+        }
+        crate::core::document::apply::apply_field_edit(&mut tag, "zone sets[0]/bsp zone flags", "1").unwrap();
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::app::foundation_fonts());
+        let mut time = 0.0;
+        let mut frame = |pointer: Vec<egui::Event>, pending: &mut Vec<PendingFieldEdit>| {
+            time += 1.0 / 60.0;
+            let input = egui::RawInput {
+                time: Some(time),
+                events: pointer,
+                ..Default::default()
+            };
+            let definitions_root = crate::core::bundled::locate_definitions_root();
+            let mut sinks = EditSinks::default();
+            let mut edit = FieldEditContext::read_only(&mut sinks, "test", "test");
+            let root = tag.root();
+            edit.root = Some(root);
+            edit.game = Some(GameId::Halo3Odst);
+            edit.group_tag = u32::from_be_bytes(*b"scnr");
+            edit.definitions_root = Some(definitions_root.as_path());
+            edit.editable = true;
+            let zone_set = root.descend("zone sets[0]").unwrap();
+            let output = crate::app::run_ui_test(&ctx, input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    draw_fields_with_docs(
+                        ui,
+                        &zone_set,
+                        &TagNameIndex::default(),
+                        0,
+                        true,
+                        "zone sets[0]",
+                        &mut edit,
+                        None,
+                    );
+                });
+            });
+            pending.append(edit.pending);
+            output
+        };
+
+        let mut pending = Vec::new();
+        let output = frame(Vec::new(), &mut pending);
+        let texts = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((text.galley.text().to_owned(), text.pos)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !texts.iter().any(|(text, _)| text == "0x0001 (none set)"),
+            "bsp zone flags still painted as a bare mask: {texts:?}"
+        );
+        let shared = texts
+            .iter()
+            .find(|(text, _)| text == "h100_shared")
+            .unwrap_or_else(|| panic!("no h100_shared flag among {texts:?}"))
+            .1;
+        assert!(texts.iter().any(|(text, _)| text == "h100_000"), "no h100_000 flag among {texts:?}");
+
+        let target = shared + egui::vec2(4.0, 6.0);
+        for step in 0..3 {
+            let at = target - egui::vec2(12.0 * (2 - step) as f32, 0.0);
+            frame(vec![egui::Event::PointerMoved(at)], &mut pending);
+        }
+        for pressed in [true, false] {
+            frame(
+                vec![egui::Event::PointerButton {
+                    pos: target,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+                &mut pending,
+            );
+        }
+        assert_eq!(pending.len(), 1, "one click, one edit: {:?}", pending.iter().map(|e| (&e.path, &e.input)).collect::<Vec<_>>());
+        crate::core::document::apply::apply_field_edit(&mut tag, &pending[0].path, &pending[0].input).unwrap();
+        let value = tag.root().field_path("zone sets[0]/bsp zone flags").and_then(|field| field.value());
+        assert!(
+            matches!(value, Some(TagFieldData::LongBlockFlags(3))),
+            "clicking h100_shared should add bit 1 to bit 0: {value:?}"
+        );
+    }
 
     // Foundation unit tests.
     // It owns test-only characterization and does not participate in runtime application behavior.
