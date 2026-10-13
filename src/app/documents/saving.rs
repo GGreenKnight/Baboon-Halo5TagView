@@ -292,11 +292,8 @@ pub(in crate::app) fn entries_for_keys(source: &LoadedSourceData, keys: &[String
         .collect()
 }
 
-fn clean_file_name(value: &str) -> String {
-    let mut name = value
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("tag")
+fn clean_file_name(display_path: &str) -> String {
+    let mut name = tag_path::name(display_path)
         .trim()
         .to_owned();
     name.retain(|ch| !matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'));
@@ -400,7 +397,7 @@ pub(in crate::app) fn new_tag_output_path_from_dialog(
     {
         return Err("Choose a tag name inside the loaded tags folder".to_owned());
     }
-    let display = rel.to_string_lossy().replace('\\', "/");
+    let display = tag_path::relative_tag_path(rel);
     Ok((output, display))
 }
 
@@ -1070,17 +1067,17 @@ mod tests {
                 .any(|node| node.label == "saved")
         );
         assert!(source.entries.iter().any(|entry| {
-            entry.display_path == "saved/cyborg.gbxmodel"
+            entry.display_path == r"saved\cyborg.gbxmodel"
                 && entry.group_tag == u32::from_be_bytes(*b"mod2")
         }));
         assert!(source.all_entries.iter().any(|entry| {
-            entry.display_path == "saved/cyborg.gbxmodel"
+            entry.display_path == r"saved\cyborg.gbxmodel"
                 && entry.group_tag == u32::from_be_bytes(*b"mod2")
         }));
         assert!(source.group_tree.children.iter().any(|node| {
             node.entries
                 .iter()
-                .any(|&index| source.all_entries[index].display_path == "saved/cyborg.gbxmodel")
+                .any(|&index| source.all_entries[index].display_path == r"saved\cyborg.gbxmodel")
         }));
     }
 
@@ -1109,7 +1106,7 @@ mod tests {
             new_tag_output_path_from_dialog(root, Path::new("C:/kit/tags/objects/foo"), "shader")
                 .unwrap();
         assert_eq!(output, PathBuf::from("C:/kit/tags/objects/foo.shader"));
-        assert_eq!(display, "objects/foo.shader");
+        assert_eq!(display, r"objects\foo.shader");
 
         let (output, display) = new_tag_output_path_from_dialog(
             root,
@@ -1118,7 +1115,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output, PathBuf::from("C:/kit/tags/objects/foo.shader"));
-        assert_eq!(display, "objects/foo.shader");
+        assert_eq!(display, r"objects\foo.shader");
 
         assert!(
             new_tag_output_path_from_dialog(root, Path::new("C:/other/foo.shader"), "shader")

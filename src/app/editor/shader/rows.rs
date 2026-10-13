@@ -397,7 +397,7 @@ pub(in crate::app) fn shader_bitmap_row(
     let display = if value.is_empty() {
         "NONE".to_owned()
     } else {
-        format!("{}.bitmap", value.replace('\\', "/"))
+        format!("{value}.bitmap")
     };
     let bitmap_input = display.clone();
     let parameter_type_index = shader_parameter_type_index(parameter);
@@ -568,7 +568,7 @@ pub(in crate::app) fn shader_bitmap_row(
                 current: if value.is_empty() {
                     "NONE".to_owned()
                 } else {
-                    format!("{}.bitmap", value.replace('\\', "/"))
+                    format!("{value}.bitmap")
                 },
                 kind: ShaderRowEditKind::BitmapRef {
                     group_tag: u32::from_be_bytes(*b"bitm"),
@@ -581,7 +581,7 @@ pub(in crate::app) fn shader_bitmap_row(
                     current: if value.is_empty() {
                         "NONE".to_owned()
                     } else {
-                        format!("{}.bitmap", value.replace('\\', "/"))
+                        format!("{value}.bitmap")
                     },
                     kind: ShaderRowEditKind::BitmapRef {
                         group_tag: u32::from_be_bytes(*b"bitm"),

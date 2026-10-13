@@ -367,7 +367,7 @@ pub(super) fn load_model_preview(
         .name_for(group_tag)
         .or_else(|| group_tag_to_extension(group_tag))
         .unwrap_or("render_model");
-    let mut normalized = rel_path.replace('/', "\\");
+    let mut normalized = rel_path.to_owned();
     if let Some(stripped) = normalized.strip_suffix(&format!(".{extension}")) {
         normalized = stripped.to_owned();
     }
@@ -380,7 +380,7 @@ pub(super) fn load_model_preview(
     }
     let render_entry = TagEntry {
         key: file_entry_key(&path),
-        display_path: format!("{}.{}", normalized.replace('\\', "/"), extension),
+        display_path: format!("{normalized}.{extension}"),
         group_tag,
         group_name: names.name_for(group_tag).map(str::to_owned),
         location: TagEntryLocation::LooseFile(path),
@@ -416,10 +416,7 @@ pub(super) fn load_model_preview(
 /// object names — see `blam_tags::particle_model`). Falls back to the
 /// entry key when the display path has no usable leaf.
 fn preview_tag_stem(entry: &TagEntry) -> String {
-    entry
-        .display_path
-        .rsplit(['/', '\\'])
-        .next()
+    Some(tag_path::name(&entry.display_path))
         .map(|leaf| leaf.split('.').next().unwrap_or(leaf))
         .filter(|stem| !stem.is_empty())
         .unwrap_or("particle_model")
@@ -2717,7 +2714,7 @@ mod tests {
         let names = bundled_names();
         let entry = crate::core::source::TagEntry {
             key: file_entry_key(&path),
-            display_path: "fx/particles/models/debris/falling_leaves/falling_leaves.particle_model"
+            display_path: r"fx\particles\models\debris\falling_leaves\falling_leaves.particle_model"
                 .to_owned(),
             group_tag: tag.header.group_tag,
             group_name: Some("particle_model".to_owned()),
@@ -2833,7 +2830,7 @@ mod tests {
                     }
                     let tag = read(&path, game);
                     let rel = path.strip_prefix(&root).unwrap_or(&path);
-                    let display = rel.to_string_lossy().replace('\\', "/");
+                    let display = tag_path::relative_tag_path(rel);
                     let tag_entry = crate::core::source::TagEntry {
                         key: file_entry_key(&path),
                         display_path: display.clone(),

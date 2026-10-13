@@ -147,7 +147,7 @@ pub(in crate::app) fn reference_target_missing(
     else {
         return false;
     };
-    let mut rel = rel_path.replace('/', "\\");
+    let mut rel = rel_path.to_owned();
     if !ext.is_empty() {
         if let Some(stripped) = rel
             .strip_suffix(&format!(".{ext}"))
@@ -180,7 +180,7 @@ pub(super) fn bitmap_reference_hover_entry(
     if group_tag != u32::from_be_bytes(*b"bitm") {
         return None;
     }
-    let mut rel_path = sanitize_ref_path(&path).replace('/', "\\");
+    let mut rel_path = sanitize_ref_path(&path);
     if rel_path.to_ascii_lowercase().ends_with(".bitmap") {
         rel_path.truncate(rel_path.len() - ".bitmap".len());
     }
@@ -190,10 +190,7 @@ pub(super) fn bitmap_reference_hover_entry(
 
     if let Some(entry) = entries.and_then(|entries| {
         entries.iter().find(|entry| {
-            entry.group_tag == group_tag
-                && entry_rel_path(entry)
-                    .replace('/', "\\")
-                    .eq_ignore_ascii_case(&rel_path)
+            entry.group_tag == group_tag && entry_rel_path(entry).eq_ignore_ascii_case(&rel_path)
         })
     }) {
         return Some(entry.clone());
@@ -203,7 +200,7 @@ pub(super) fn bitmap_reference_hover_entry(
     let path = blam_tags::paths::resolve_tag_path(root, &rel_path, "bitmap");
     Some(TagEntry {
         key: file_entry_key(&path),
-        display_path: format!("{}.bitmap", rel_path.replace('\\', "/")),
+        display_path: format!("{rel_path}.bitmap"),
         group_tag,
         group_name: names
             .and_then(|names| names.name_for(group_tag))
@@ -631,19 +628,16 @@ pub(in crate::app) fn geometry_import_verb_for_group_name(
 /// tag path. e.g. `objects\characters\masterchief\masterchief` →
 /// `objects\characters\masterchief` (the dir `tool render` expects).
 pub(in crate::app) fn model_source_dir(rel_path: &str) -> String {
-    rel_path
-        .rsplit_once('\\')
-        .map(|(parent, _)| parent.to_owned())
-        .unwrap_or_else(|| rel_path.to_owned())
+    tag_path::parent(rel_path).unwrap_or(rel_path).to_owned()
 }
 
 pub(in crate::app) fn tag_reference_start_dir(tags_root: &Path, rel_path: &str) -> PathBuf {
-    let cleaned = sanitize_ref_path(rel_path).replace('/', "\\");
+    let cleaned = sanitize_ref_path(rel_path);
     if cleaned.is_empty() || cleaned.eq_ignore_ascii_case("NONE") {
         return tags_root.to_path_buf();
     }
 
-    let candidate = tags_root.join(PathBuf::from(cleaned));
+    let candidate = tags_root.join(tag_path::to_relative(&cleaned));
     candidate
         .parent()
         .filter(|parent| parent.is_dir())
@@ -676,7 +670,7 @@ pub(in crate::app) fn choose_tag_reference_input(
         .and_then(|ext| ext.to_str())
         .ok_or_else(|| "Selected tag file has no extension".to_owned())?;
     let group_tag = tag_reference_group_for_extension(extension, accepted, names)?;
-    let path = rel.with_extension("").to_string_lossy().into_owned();
+    let path = tag_path::relative_tag_path(&rel.with_extension(""));
     Ok(Some(format_tag_reference_input(group_tag, &path)))
 }
 
@@ -723,11 +717,7 @@ pub(super) fn tag_reference_group_for_extension(
 }
 
 pub(in crate::app) fn format_tag_reference_input(group_tag: u32, path: &str) -> String {
-    format!(
-        "{}:{}",
-        format_group_tag(group_tag),
-        path.replace('/', "\\")
-    )
+    format!("{}:{path}", format_group_tag(group_tag))
 }
 
 pub(super) fn tag_reference_group_allowed(reference: &TagReferenceData, accepted: &[u32]) -> bool {
@@ -755,7 +745,7 @@ pub(in crate::app) fn tag_reference_relative_path_with_extension(
     if rel.extension().and_then(|ext| ext.to_str()).is_none() {
         return Err("Selected tag file has no extension".to_owned());
     }
-    Ok(rel.to_string_lossy().replace('/', "\\"))
+    Ok(tag_path::relative_tag_path(&rel))
 }
 
 pub(in crate::app) fn draw_foundation_flags_row(
@@ -1260,7 +1250,7 @@ mod tests {
         let bitmap_group = parse_group_tag("bitm").unwrap();
         let entry = TagEntry {
             key: "bitmap-key".to_owned(),
-            display_path: "ui/hud/scope.bitmap".to_owned(),
+            display_path: "ui\\hud\\scope.bitmap".to_owned(),
             group_tag: bitmap_group,
             group_name: Some("bitmap".to_owned()),
             location: TagEntryLocation::LooseFile(PathBuf::from("tags/ui/hud/scope.bitmap")),
@@ -1285,7 +1275,7 @@ mod tests {
             bitmap_reference_hover_entry(None, Some(&root), None, r"ui\hud\scope.bitmap", None)
                 .unwrap();
 
-        assert_eq!(resolved.display_path, "ui/hud/scope.bitmap");
+        assert_eq!(resolved.display_path, "ui\\hud\\scope.bitmap");
         assert!(matches!(
             resolved.location,
             TagEntryLocation::LooseFile(path) if path == root.join("ui").join("hud").join("scope.bitmap")
@@ -1521,7 +1511,7 @@ mod tests {
         let weapon = parse_group_tag("weap").unwrap();
         let parent_only = TagEntry {
             key: "ublock:model".to_owned(),
-            display_path: "objects/characters/elite/garbage/hg_arm.render_model".to_owned(),
+            display_path: "objects\\characters\\elite\\garbage\\hg_arm.render_model".to_owned(),
             group_tag: model,
             group_name: Some("render_model".to_owned()),
             location: TagEntryLocation::Container {
@@ -1532,7 +1522,7 @@ mod tests {
         };
         let rifle = TagEntry {
             key: "ublock:weapon".to_owned(),
-            display_path: "objects/weapons/rifle/battle_rifle.weapon".to_owned(),
+            display_path: "objects\\weapons\\rifle\\battle_rifle.weapon".to_owned(),
             group_tag: weapon,
             group_name: Some("weapon".to_owned()),
             location: TagEntryLocation::Container {

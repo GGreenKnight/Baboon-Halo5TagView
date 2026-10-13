@@ -374,7 +374,7 @@ fn load_legacy_entry_index_value(game: &str) -> Option<serde_json::Value> {
 fn parse_entry_index(
     root: &Path,
     value: &serde_json::Value,
-) -> Option<(Vec<TagEntry>, HashMap<PathBuf, EntryFingerprint>)> {
+) -> Option<(Vec<TagEntry>, HashMap<String, EntryFingerprint>)> {
     let saved_root = value.get("root").and_then(|v| v.as_str())?;
     if cache_root_str_key(saved_root) != cache_root_key(root) {
         return None;
@@ -397,7 +397,8 @@ fn parse_entry_index(
 
 fn entry_from_index_item(item: &serde_json::Value) -> Option<TagEntry> {
     let key = item.get("key")?.as_str()?.to_owned();
-    let display_path = item.get("display_path")?.as_str()?.to_owned();
+    // The JSON index wrote display paths with `/`, before they were tag paths.
+    let display_path = item.get("display_path")?.as_str()?.replace('/', "\\");
     let group_tag = item.get("group_tag")?.as_u64()? as u32;
     let group_name = item
         .get("group_name")
@@ -442,13 +443,13 @@ fn index_item_relative_path(
 ///
 /// The path is carried even for a non-tag, because "every file that is still
 /// there" is what decides which cached entries were removed.
-type ResolvedFiles = Vec<(PathBuf, Option<TagEntry>, bool)>;
+type ResolvedFiles = Vec<(String, Option<TagEntry>, bool)>;
 
 fn refresh_entry_index_from_cache(
     root: &Path,
     names: &TagNameIndex,
     cached_entries: &[TagEntry],
-    cached_fingerprints: &HashMap<PathBuf, EntryFingerprint>,
+    cached_fingerprints: &HashMap<String, EntryFingerprint>,
 ) -> Result<EntryIndexRefresh> {
     let cached_by_rel = cached_entries
         .iter()
@@ -632,8 +633,10 @@ fn entry_relative_path(root: &Path, entry: &TagEntry) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn normalize_rel_path(path: &Path) -> PathBuf {
-    PathBuf::from(path_to_display(path).to_ascii_lowercase())
+/// The key a tag file's fingerprint is filed under: its tag path relative to
+/// the root, without case.
+fn normalize_rel_path(path: &Path) -> String {
+    path_to_display(path).to_ascii_lowercase()
 }
 
 fn file_fingerprint(path: &Path) -> Result<Option<EntryFingerprint>> {
@@ -777,11 +780,17 @@ pub(super) fn open_index_db() -> Result<Connection> {
     Ok(conn)
 }
 
+/// The version of what a source's rows hold. Version 2 stores display and
+/// relative paths as tag paths, separated by `\`; version 1 used `/`.
+const INDEX_SCHEMA_VERSION: i64 = 2;
+
+/// The saved source for `game` at `root`, when it was saved in this version.
+/// Rows from an older one are not read: the next save replaces them.
 fn source_id(conn: &Connection, game: &str, root: &Path) -> Result<Option<i64>> {
     let root_key = cache_root_key(root);
     conn.query_row(
-        "SELECT id FROM sources WHERE game = ?1 AND root_key = ?2",
-        params![game, root_key],
+        "SELECT id FROM sources WHERE game = ?1 AND root_key = ?2 AND schema_version = ?3",
+        params![game, root_key, INDEX_SCHEMA_VERSION],
         |row| row.get(0),
     )
     .optional()
@@ -790,12 +799,18 @@ fn source_id(conn: &Connection, game: &str, root: &Path) -> Result<Option<i64>> 
 
 fn ensure_source_id(conn: &Connection, game: &str, root: &Path) -> Result<i64> {
     let root_key = cache_root_key(root);
+    // An older version's rows go with it: they cascade from the source.
+    conn.execute(
+        "DELETE FROM sources WHERE game = ?1 AND root_key = ?2 AND schema_version != ?3",
+        params![game, root_key, INDEX_SCHEMA_VERSION],
+    )
+    .context("drop outdated index source")?;
     conn.execute(
         "INSERT INTO sources (game, root_key, schema_version, updated_at)
-         VALUES (?1, ?2, 1, unixepoch())
+         VALUES (?1, ?2, ?3, unixepoch())
          ON CONFLICT(game, root_key)
-         DO UPDATE SET schema_version = 1, updated_at = unixepoch()",
-        params![game, root_key],
+         DO UPDATE SET updated_at = unixepoch()",
+        params![game, root_key, INDEX_SCHEMA_VERSION],
     )
     .context("upsert index source")?;
     source_id(conn, game, root)?.context("index source missing after upsert")
@@ -833,7 +848,7 @@ fn save_entry_index_to_db(game: &str, root: &Path, entries: &[TagEntry]) -> Resu
 fn load_entry_index_from_db(
     game: &str,
     root: &Path,
-) -> Option<(Vec<TagEntry>, HashMap<PathBuf, EntryFingerprint>)> {
+) -> Option<(Vec<TagEntry>, HashMap<String, EntryFingerprint>)> {
     let conn = open_index_db().ok()?;
     load_entry_index_from_conn(&conn, game, root)
 }
@@ -843,7 +858,7 @@ fn load_entry_index_from_conn(
     conn: &Connection,
     game: &str,
     root: &Path,
-) -> Option<(Vec<TagEntry>, HashMap<PathBuf, EntryFingerprint>)> {
+) -> Option<(Vec<TagEntry>, HashMap<String, EntryFingerprint>)> {
     let source_id = source_id(conn, game, root).ok().flatten()?;
     let mut stmt = conn
         .prepare(
@@ -905,7 +920,7 @@ fn load_entry_index_from_conn(
         if !rel_path.is_empty()
             && let Some(fingerprint) = fingerprint
         {
-            fingerprints.insert(normalize_rel_path(Path::new(&rel_path)), fingerprint);
+            fingerprints.insert(rel_path.to_ascii_lowercase(), fingerprint);
         }
         entries.push(entry);
     }
@@ -1026,7 +1041,7 @@ pub(crate) fn dependency_key(group_tag: u32, rel_path: &str) -> String {
 }
 
 pub(crate) fn normalize_dependency_path(rel_path: &str) -> String {
-    rel_path.replace('/', "\\").to_ascii_lowercase()
+    rel_path.to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -1290,15 +1305,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&existing);
     }
 
-    /// The sample database through the real row decoder. A row whose key names
-    /// no file (a bare key from before `file:`) is skipped, not fatal.
+    /// A version 1 index is not read at all: its display paths are spelled with
+    /// `/`, and the scan it falls back to writes version 2 in its place.
     #[test]
-    fn compat_index_database_rows() {
+    fn compat_index_database_v1_is_not_read() {
         let conn = Connection::open_with_flags(
             samples().join("index/indexes.sqlite3"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .expect("open the sample index");
+        for (game, root) in [
+            ("halo4_mcc", "/Users/me/Kits/H4EK/tags"),
+            ("haloreach_mcc", "C:/Kits/HREK/tags"),
+            ("haloreach_mcc", r"C:\KITS\hrek\TAGS"),
+        ] {
+            assert!(load_entry_index_from_conn(&conn, game, Path::new(root)).is_none(), "{game}");
+        }
+    }
+
+    /// The sample database through the real row decoder. A row whose key names
+    /// no file (a bare key from before `file:`) is skipped, not fatal.
+    #[test]
+    fn compat_index_database_rows() {
+        let conn = Connection::open_with_flags(
+            samples().join("index/indexes.v2.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open the sample index");
+        let display = load_entry_index_from_conn(&conn, "halo4_mcc", Path::new("/Users/me/Kits/H4EK/tags"))
+            .and_then(|(entries, _)| entries.into_iter().next())
+            .map(|entry| entry.display_path);
+        #[cfg(not(windows))]
+        assert_eq!(
+            display.as_deref(),
+            Some(r"objects\weapons\rifle\storm_rifle\storm_rifle.weapon"),
+            "display paths are tag paths"
+        );
+        #[cfg(windows)]
+        let _ = display;
         let keys = |game: &str, root: &str| {
             load_entry_index_from_conn(&conn, game, Path::new(root)).map(|(entries, fingerprints)| {
                 (

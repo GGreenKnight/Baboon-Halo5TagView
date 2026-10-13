@@ -64,11 +64,7 @@ impl Dialog for LooseFolderRenameState {
                     ui.add_space(8.0);
                     let new_name = state.name_input.trim();
                     let folder = |name: &str| {
-                        if state.parent_display.is_empty() {
-                            format!("{name}/")
-                        } else {
-                            format!("{}/{name}/", state.parent_display)
-                        }
+                        format!("{}{}", tag_path::join(&state.parent_display, name), tag_path::SEPARATOR)
                     };
                     ui.label(
                         RichText::new(format!(

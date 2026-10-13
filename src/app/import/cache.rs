@@ -91,13 +91,10 @@ impl OutsideTree {
     pub(in crate::app) fn build(references: &[OutsideReference]) -> Self {
         let mut tree = Self::default();
         for reference in references {
-            let normalized = reference.display_path.replace('\\', "/");
-            let (folder, leaf) = match normalized.rsplit_once('/') {
-                Some((folder, leaf)) => (folder.to_owned(), leaf.to_owned()),
-                // A tag at the top with no folder of its own still needs one to
-                // hang from, and an empty name is what the roots loop skips.
-                None => (String::new(), normalized.clone()),
-            };
+            // A tag at the top with no folder of its own still needs one to
+            // hang from, and an empty name is what the roots loop skips.
+            let folder = tag_path::parent(&reference.display_path).unwrap_or_default().to_owned();
+            let leaf = tag_path::name(&reference.display_path).to_owned();
             tree.tags
                 .entry(folder.clone())
                 .or_default()
@@ -106,7 +103,7 @@ impl OutsideTree {
             let mut path = folder.as_str();
             loop {
                 *tree.totals.entry(path.to_owned()).or_default() += 1;
-                match path.rsplit_once('/') {
+                match path.rsplit_once(tag_path::SEPARATOR) {
                     Some((parent, child)) => {
                         tree.folders
                             .entry(parent.to_owned())
@@ -139,11 +136,7 @@ impl OutsideTree {
             }
             if let Some(children) = self.folders.get(&path) {
                 for child in children {
-                    pending.push(if path.is_empty() {
-                        child.clone()
-                    } else {
-                        format!("{path}/{child}")
-                    });
+                    pending.push(tag_path::join(&path, child));
                 }
             }
         }
@@ -306,10 +299,7 @@ impl Baboon {
             outside_picked: BTreeMap::new(),
             single: Some(SingleTagImport {
                 key,
-                parent: display_path
-                    .rsplit_once(['\\', '/'])
-                    .map(|(folder, _)| folder.to_owned())
-                    .unwrap_or_default(),
+                parent: tag_path::parent(&display_path).unwrap_or_default().to_owned(),
                 display_path,
             }),
             destination: None,
@@ -570,7 +560,7 @@ impl Baboon {
                     }
                     conflicts.push(OutsideReference {
                         key: entry.key.clone(),
-                        display_path: relative.to_string_lossy().replace('\\', "/"),
+                        display_path: tag_path::relative_tag_path(&relative),
                     });
                 }
                 WorkerMessage::CacheImportConflicts {
@@ -777,7 +767,7 @@ mod tests {
 
     fn reference(path: &str) -> OutsideReference {
         OutsideReference {
-            key: format!("cache:bitm:{}", path.replace('/', "\\")),
+            key: format!("cache:bitm:{path}"),
             display_path: path.to_owned(),
         }
     }
@@ -790,10 +780,10 @@ mod tests {
     #[test]
     fn a_folder_counts_and_carries_its_whole_subtree() {
         let tree = OutsideTree::build(&[
-            reference("objects/characters/elite/elite.biped"),
-            reference("objects/characters/elite/bitmaps/elite_diffuse.bitmap"),
-            reference("objects/weapons/rifle/assault_rifle.weapon"),
-            reference("fx/decals/scorch.bitmap"),
+            reference("objects\\characters\\elite\\elite.biped"),
+            reference("objects\\characters\\elite\\bitmaps\\elite_diffuse.bitmap"),
+            reference("objects\\weapons\\rifle\\assault_rifle.weapon"),
+            reference("fx\\decals\\scorch.bitmap"),
         ]);
 
         assert_eq!(
@@ -802,16 +792,16 @@ mod tests {
         );
         assert_eq!(tree.totals.get("objects").copied(), Some(3));
         assert_eq!(
-            tree.totals.get("objects/characters/elite").copied(),
+            tree.totals.get("objects\\characters\\elite").copied(),
             Some(2)
         );
         assert_eq!(tree.keys_under("objects").len(), 3);
-        assert_eq!(tree.keys_under("objects/weapons").len(), 1);
+        assert_eq!(tree.keys_under("objects\\weapons").len(), 1);
         // The leaves hang off the folder that actually holds them, not off the
         // first two segments the old grouping used.
         assert_eq!(
             tree.tags
-                .get("objects/characters/elite")
+                .get("objects\\characters\\elite")
                 .map(|tags| tags.len()),
             Some(1),
         );
@@ -821,9 +811,9 @@ mod tests {
     #[test]
     fn a_partly_chosen_folder_says_so() {
         let references = [
-            reference("objects/characters/elite/elite.biped"),
-            reference("objects/characters/elite/bitmaps/elite_diffuse.bitmap"),
-            reference("objects/weapons/rifle/assault_rifle.weapon"),
+            reference("objects\\characters\\elite\\elite.biped"),
+            reference("objects\\characters\\elite\\bitmaps\\elite_diffuse.bitmap"),
+            reference("objects\\weapons\\rifle\\assault_rifle.weapon"),
         ];
         let tree = OutsideTree::build(&references);
         let mut picked: BTreeMap<String, bool> =
@@ -832,8 +822,8 @@ mod tests {
         assert_eq!(tree.tally("objects", &picked), (0, 3));
         picked.insert(references[0].key.clone(), true);
         assert_eq!(tree.tally("objects", &picked), (1, 3));
-        assert_eq!(tree.tally("objects/characters", &picked), (1, 2));
-        assert_eq!(tree.tally("objects/weapons", &picked), (0, 1));
+        assert_eq!(tree.tally("objects\\characters", &picked), (1, 2));
+        assert_eq!(tree.tally("objects\\weapons", &picked), (0, 1));
         for wanted in picked.values_mut() {
             *wanted = true;
         }

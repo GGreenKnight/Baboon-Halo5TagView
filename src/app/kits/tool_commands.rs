@@ -178,15 +178,19 @@ pub(in crate::app) fn path_arg_from_picker(
     base: Option<&Path>,
     strip_extension: bool,
 ) -> String {
-    let rel = base
-        .and_then(|base| path.strip_prefix(base).ok())
-        .unwrap_or(path);
-    let rel = if strip_extension {
-        rel.with_extension("")
-    } else {
-        rel.to_path_buf()
+    let strip = |path: &Path| {
+        if strip_extension {
+            path.with_extension("")
+        } else {
+            path.to_path_buf()
+        }
     };
-    rel.to_string_lossy().replace('/', "\\")
+    // Beneath the kit folder, the tag or data path the tool expects; anywhere
+    // else, the file on disk as it is.
+    match base.and_then(|base| path.strip_prefix(base).ok()) {
+        Some(rel) => tag_path::relative_tag_path(&strip(rel)),
+        None => strip(path).display().to_string(),
+    }
 }
 
 #[cfg(test)]

@@ -181,23 +181,21 @@ pub(in crate::app) enum CacheDestination {
 impl CacheDestination {
     /// Where a tag with this cache name lands, relative to the tags root.
     pub(in crate::app) fn place(&self, name: &str) -> PathBuf {
-        let own = name.replace('\\', "/");
         let Self::Folder { root, strip } = self else {
-            return PathBuf::from(own);
+            return tag_path::to_relative(name);
         };
-        let strip = strip.replace('\\', "/");
-        let strip = strip.trim_end_matches('/');
+        let strip = strip.trim_end_matches(tag_path::SEPARATOR);
         // The remainder after the folder that was asked for, or the bare leaf
         // when the name does not sit under it -- a tag that arrived by another
         // route still has to land somewhere, and somewhere inside the folder
         // the user named is the only answer that keeps the run inside its own
         // destination.
-        let rest = own
+        let rest = name
             .strip_prefix(strip)
-            .map(|rest| rest.trim_start_matches('/'))
+            .map(|rest| rest.trim_start_matches(tag_path::SEPARATOR))
             .filter(|rest| !rest.is_empty() && !strip.is_empty())
-            .unwrap_or_else(|| own.rsplit('/').next().unwrap_or(&own));
-        root.join(rest)
+            .unwrap_or_else(|| tag_path::name(name));
+        root.join(tag_path::to_relative(rest))
     }
 }
 
@@ -360,11 +358,7 @@ fn scan_folder_conversion_source(
             disk_paths.sort();
             let total_files = disk_paths.len();
             for (index, path) in disk_paths.iter().enumerate() {
-                let display = path
-                    .strip_prefix(root)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let display = tag_path::relative_tag_path(path.strip_prefix(root).unwrap_or(path));
                 match loose_file_entry(root, path, &job.names) {
                     Ok(Some(entry)) => entries.push(entry),
                     Ok(None) => ignored_files.push(display.clone()),
@@ -435,9 +429,9 @@ pub(in crate::app) fn cache_entry_is_under(entry: &TagEntry, prefix: &str) -> bo
     if prefix.is_empty() {
         return true;
     }
-    let name = name.replace('/', "\\").to_ascii_lowercase();
-    let prefix = prefix.replace('/', "\\").to_ascii_lowercase();
-    let prefix = prefix.trim_end_matches('\\');
+    let name = name.to_ascii_lowercase();
+    let prefix = prefix.to_ascii_lowercase();
+    let prefix = prefix.trim_end_matches(tag_path::SEPARATOR);
     name == prefix || name.starts_with(&format!("{prefix}\\"))
 }
 
@@ -809,10 +803,7 @@ pub(in crate::app) fn run_folder_conversion_job(
                 if entry.group_tag == u32::from_be_bytes(*b"Lbsp")
                     && let TagEntryLocation::Monolithic { name, .. } = &entry.location
                 {
-                    let folder = name
-                        .rsplit_once(['\\', '/'])
-                        .map(|(folder, _)| folder.to_owned())
-                        .unwrap_or_else(|| name.clone());
+                    let folder = tag_path::parent(name).unwrap_or(name).to_owned();
                     report.levels_without_lighting.insert(folder);
                 }
                 FolderConversionFileResult {
@@ -924,7 +915,7 @@ fn discover_outside_references(
             // destination has an explanation that is not this import.
             unresolved.insert(format!(
                 "{}.{}",
-                reference.rel_path.replace('\\', "/"),
+                reference.rel_path,
                 group_tag_to_extension(reference.group_tag).unwrap_or("unknown")
             ));
             continue;
@@ -972,13 +963,13 @@ fn discover_outside_references(
 
 /// A cache key, folded so a reference and an entry that name the same tag agree.
 ///
-/// The shape is the one `load_monolithic_blob_index` builds, with two things
-/// forced: separators to backslashes, and case down. Tag paths inside a tag are
+/// The shape is the one `load_monolithic_blob_index` builds, with case forced
+/// down. Tag paths inside a tag are
 /// written by whoever authored it, so the same tag turns up as
 /// `objects\Weapons\rifle` in one reference and `objects\weapons\rifle` in
 /// the next, and a case-sensitive lookup would follow one and drop the other.
 fn folded_cache_key(group_tag: u32, name: &str) -> String {
-    crate::core::tag_key::cache_entry_key(group_tag, &name.replace('/', "\\").to_ascii_lowercase())
+    crate::core::tag_key::cache_entry_key(group_tag, &name.to_ascii_lowercase())
 }
 
 /// What class this entry lands in, asked once per class and remembered.
@@ -1358,9 +1349,9 @@ mod tests {
         assert_eq!(report.native_count(), 2);
         assert_eq!(report.generated_count(), 0);
         assert_eq!(report.failed_count(), 1);
-        assert_eq!(report.ignored_files, vec!["characters/jackal/notes.txt"]);
+        assert_eq!(report.ignored_files, vec!["characters\\jackal\\notes.txt"]);
         assert!(report.files.iter().any(|file| {
-            file.source == "characters/jackal/nested/jackal.weapon" && file.overwritten
+            file.source == "characters\\jackal\\nested\\jackal.weapon" && file.overwritten
         }));
         let reopened = TagFile::read(&output).unwrap();
         let mut references = Vec::new();
@@ -1702,7 +1693,7 @@ mod tests {
         // Only the folder. Anything else it needed is a question, not a fait
         // accompli.
         for file in &report.files {
-            let source = file.source.replace('/', "\\").to_ascii_lowercase();
+            let source = file.source.to_ascii_lowercase();
             assert!(
                 source.starts_with(&prefix.to_ascii_lowercase()),
                 "{} is outside {prefix} and was converted anyway",
@@ -1740,7 +1731,6 @@ mod tests {
                     .rsplit_once('.')
                     .map(|(stem, _)| stem)
                     .unwrap_or(&file.source)
-                    .replace('\\', "/")
                     .to_ascii_lowercase();
                 accounted.insert(stem.clone());
                 if let Some(output) = file.output.as_ref() {
@@ -1768,7 +1758,6 @@ mod tests {
                         .rsplit_once('.')
                         .map(|(stem, _)| stem)
                         .unwrap_or(&entry.source)
-                        .replace('\\', "/")
                         .to_ascii_lowercase(),
                 );
             }
@@ -1779,7 +1768,6 @@ mod tests {
                         .rsplit_once('.')
                         .map(|(stem, _)| stem)
                         .unwrap_or(&reference.display_path)
-                        .replace('\\', "/")
                         .to_ascii_lowercase(),
                 );
             }
@@ -1789,7 +1777,6 @@ mod tests {
                         .rsplit_once('.')
                         .map(|(stem, _)| stem)
                         .unwrap_or(missing)
-                        .replace('\\', "/")
                         .to_ascii_lowercase(),
                 );
             }
@@ -1805,7 +1792,7 @@ mod tests {
             let mut refs = Vec::new();
             collect_tag_dependency_refs(tag.root(), &mut refs);
             for reference in refs {
-                let wanted = reference.rel_path.replace('\\', "/").to_ascii_lowercase();
+                let wanted = reference.rel_path.to_ascii_lowercase();
                 if !accounted.contains(&wanted) {
                     dangling.push(format!("{} -> {wanted}", output.display()));
                 }
@@ -1834,7 +1821,7 @@ mod tests {
         let group_tag = u32::from_be_bytes(*group);
         TagEntry {
             key: format!("cache:{}:{name}", format_group_tag(group_tag)),
-            display_path: name.replace('\\', "/"),
+            display_path: name.to_owned(),
             group_tag,
             group_name: None,
             location: TagEntryLocation::Monolithic {
@@ -1871,9 +1858,8 @@ mod tests {
                 entry.display_path
             );
         }
-        // Forward slashes and case are what the browser hands back, not what the
-        // cache stores.
-        assert!(cache_entry_is_under(&rifle, "Objects/Weapons/Rifle"));
+        // Case is what the browser hands back, not what the cache stores.
+        assert!(cache_entry_is_under(&rifle, r"Objects\Weapons\Rifle"));
         // Trailing separators come from the same place.
         assert!(cache_entry_is_under(&rifle, r"objects\weapons\rifle\"));
         // The whole cache.
@@ -1894,7 +1880,6 @@ mod tests {
         let canonical = folded_cache_key(*group_tag, name);
         for spelling in [
             r"objects\weapons\rifle\assault_rifle",
-            "objects/weapons/rifle/assault_rifle",
             r"Objects\Weapons\Rifle\Assault_Rifle",
         ] {
             assert_eq!(

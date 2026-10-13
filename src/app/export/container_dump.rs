@@ -176,6 +176,9 @@ fn write_shipped_entry(
 fn safe_relative_path(display_path: &str) -> Option<PathBuf> {
     let mut path = PathBuf::new();
     let mut any = false;
+    // Split on both separators, not just a tag path's: the result is written to
+    // disk, where Windows reads either as one, so a `/` left inside a component
+    // could still carry a `..` out of the folder.
     for component in display_path.split(['/', '\\']) {
         let component = component.trim().trim_end_matches([' ', '.']);
         if component.is_empty() || component == ".." || component.contains(':') {

@@ -525,7 +525,7 @@ fn resolve_h2_shader(
     // self-illumination-only `illum*` ones.
     if textures.slots.iter().all(Option::is_none) {
         let template = root.read_tag_ref_path("template").unwrap_or_default();
-        let leaf = template.rsplit(['\\', '/']).next().unwrap_or(&template);
+        let leaf = tag_path::name(&template);
         textures.error = Some(format!(
             "its template ({leaf}) uses none of the maps this preview draws"
         ));
@@ -592,7 +592,7 @@ fn cached_h2_template(
                     }
                 }
             }
-            let leaf = path.rsplit(['\\', '/']).next().unwrap_or(path);
+            let leaf = tag_path::name(path);
             Arc::new(H2TemplateDefaults {
                 parameters,
                 alpha_tested: leaf.contains("alpha_test"),

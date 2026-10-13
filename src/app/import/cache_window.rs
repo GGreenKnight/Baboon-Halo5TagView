@@ -35,7 +35,7 @@ fn draw_outside_folder(
     depth: usize,
 ) {
     let (chosen, total) = tree.tally(folder, picked);
-    let leaf = folder.rsplit('/').next().unwrap_or(folder);
+    let leaf = tag_path::name(folder);
     let mut all = chosen == total && total > 0;
     let id = ui.make_persistent_id(("cache_import_outside_folder", folder));
     // Open at the top so the first level is readable without a click, closed
@@ -64,11 +64,7 @@ fn draw_outside_folder(
         .body(|ui| {
             if let Some(children) = tree.folders.get(folder) {
                 for child in children {
-                    let path = if folder.is_empty() {
-                        child.clone()
-                    } else {
-                        format!("{folder}/{child}")
-                    };
+                    let path = tag_path::join(folder, child);
                     draw_outside_folder(ui, tree, picked, &path, depth + 1);
                 }
             }
@@ -180,20 +176,21 @@ fn draw_cache_import_body(
         if let Some(folder) = dialog.destination.clone() {
             let name = match dialog.single.as_ref() {
                 Some(single) => single.display_path.clone(),
-                None => format!("{}/...", dialog.prefix.replace('\\', "/")),
+                None => tag_path::join(&dialog.prefix, "..."),
             };
             let strip = match dialog.single.as_ref() {
                 Some(single) => single.parent.clone(),
                 None => dialog.prefix.clone(),
             };
             let leaf = name
-                .replace('\\', "/")
-                .strip_prefix(&strip.replace('\\', "/"))
-                .map(|rest| rest.trim_start_matches('/').to_owned())
+                .strip_prefix(&strip)
+                .map(|rest| rest.trim_start_matches(tag_path::SEPARATOR).to_owned())
                 .filter(|rest| !rest.is_empty())
-                .unwrap_or_else(|| name.rsplit(['\\', '/']).next().unwrap_or(&name).to_owned());
+                .unwrap_or_else(|| tag_path::name(&name).to_owned());
             ui.label(
-                RichText::new(tags_root.join(&folder).join(leaf).display().to_string())
+                RichText::new(
+                    tags_root.join(&folder).join(tag_path::to_relative(&leaf)).display().to_string(),
+                )
                     .monospace()
                     .small(),
             );

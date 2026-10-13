@@ -90,8 +90,8 @@ impl Baboon {
                     .map_err(|e| format!("read template .uasset: {e}"))?;
                 let old_pkg = container_rel_to_package_path(&rel_path)
                     .ok_or("could not derive source package path")?;
-                let new_pkg = format!("/Game/Tags/{new_rel}-{group}");
-                let leaf = new_rel.rsplit('/').next().unwrap_or("tag");
+                let new_pkg = format!("/Game/Tags/{}-{group}", tag_path::to_unreal(&new_rel));
+                let leaf = tag_path::name(&new_rel);
                 let Some(output) = pick_override_utoc(&format!("{leaf}-{group}_P.utoc")) else {
                     return Ok(None);
                 };

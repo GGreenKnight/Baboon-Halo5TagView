@@ -40,8 +40,8 @@ impl Baboon {
     pub(in crate::app) fn open_new_tag_dialog_in_folder(&mut self, folder_rel: Option<String>) {
         let mut dialog = self.new_tag_dialog();
         if let Some(folder) = folder_rel.filter(|f| !f.is_empty()) {
-            // Pre-fill the path field with the folder + a trailing slash.
-            dialog.rel_path = format!("{}/", folder.trim_end_matches('/'));
+            // Pre-fill the path field with the folder + a trailing separator.
+            dialog.rel_path = format!("{}{}", folder.trim_end_matches(tag_path::SEPARATOR), tag_path::SEPARATOR);
         }
         self.dialogs.open(dialog);
     }
@@ -183,7 +183,7 @@ impl Baboon {
         };
         let rel = normalize_container_tag_rel(&dialog.rel_path);
         if rel.is_empty() {
-            dialog.error = Some("Enter a tag path (e.g. objects/foo/bar)".to_owned());
+            dialog.error = Some(r"Enter a tag path (e.g. objects\foo\bar)".to_owned());
             return false;
         }
         let tag = match TagFile::new(&group.schema_path) {
@@ -607,11 +607,8 @@ pub(in crate::app) fn install_root_for_paks(paks_dir: &Path) -> PathBuf {
 }
 
 pub(in crate::app) fn normalize_container_tag_rel(input: &str) -> String {
-    let lowered = input.trim().replace('\\', "/").to_ascii_lowercase();
-    let mut segments: Vec<&str> = lowered
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect();
+    let lowered = tag_path::from_input(input.trim()).to_ascii_lowercase();
+    let mut segments: Vec<&str> = tag_path::segments(&lowered).collect();
     // Drop a trailing tag extension on the leaf (`foo.biped` → `foo`).
     if let Some(last) = segments.last_mut()
         && let Some((stem, _ext)) = last.rsplit_once('.')
@@ -619,7 +616,7 @@ pub(in crate::app) fn normalize_container_tag_rel(input: &str) -> String {
     {
         *last = stem;
     }
-    segments.join("/")
+    segments.join("\\")
 }
 
 /// Decide where a new tag's `.uasset` wrapper will come from.
@@ -735,15 +732,15 @@ pub(in crate::app) fn new_container_template_bytes(
     }
 }
 
-/// The UE package path a brand-new tag will be written at, from its normalized
-/// container-relative path and group name (`objects/foo/bar` + `camera_track`
-/// → `/Game/Tags/objects/foo/bar-camera_track`).
+/// The UE package path a brand-new tag will be written at, from its tag path
+/// and group name (`objects\foo\bar` + `camera_track` →
+/// `/Game/Tags/objects/foo/bar-camera_track`).
 ///
 /// Shared by creation and rename on purpose: the entry key derives from this,
 /// and a rename that derived either differently would produce an entry the save
 /// and project-overlay paths no longer recognize as the same tag.
 pub(in crate::app) fn new_container_package(logical: &str, group_name: &str) -> String {
-    format!("/Game/Tags/{logical}-{group_name}")
+    format!("/Game/Tags/{}-{group_name}", tag_path::to_unreal(logical))
 }
 
 /// A container-relative payload path as a `/Game/…` package path.
@@ -1373,14 +1370,14 @@ mod tests {
 
     #[test]
     fn normalize_container_tag_rel_cleans_path() {
-        // Lowercases, normalizes separators, trims slashes, drops a leaf extension.
+        // Lowercases, takes a typed `/`, trims separators, drops a leaf extension.
         assert_eq!(
             normalize_container_tag_rel("Objects\\Characters/Foo/Bar"),
-            "objects/characters/foo/bar"
+            "objects\\characters\\foo\\bar"
         );
         assert_eq!(
             normalize_container_tag_rel("/objects//foo/bar.biped/"),
-            "objects/foo/bar"
+            "objects\\foo\\bar"
         );
         assert_eq!(normalize_container_tag_rel("  Foo.Weapon  "), "foo");
         assert_eq!(normalize_container_tag_rel(""), "");

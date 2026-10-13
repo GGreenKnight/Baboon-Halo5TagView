@@ -825,24 +825,24 @@ mod tests {
     // mounted install; those branches are not reached here. The stash half of the
     // prompt is covered by the tests in `mods/project.rs`.
 
-    const MODEL: &str = "objects/props/crate.model";
-    const OTHER: &str = "objects/props/barrel.model";
+    const MODEL: &str = "objects\\props\\crate.model";
+    const OTHER: &str = "objects\\props\\barrel.model";
     const DISTANCE: &str = "disappear distance";
 
     /// An H3 kit with two models, one referencing a render model.
     fn kit(name: &str) -> LooseKit {
         let kit = LooseKit::new(name, "halo3_mcc");
         let mode = group_tag("halo3_mcc", "render_model");
-        kit.write_mcc("objects/props/crate", "render_model", |_| {});
-        kit.write_mcc("objects/props/crate", "model", |tag| {
+        kit.write_mcc("objects\\props\\crate", "render_model", |_| {});
+        kit.write_mcc("objects\\props\\crate", "model", |tag| {
             set_reference(tag, "render model", mode, "objects\\props\\crate");
         });
-        kit.write_mcc("objects/props/barrel", "model", |_| {});
+        kit.write_mcc("objects\\props\\barrel", "model", |_| {});
         kit
     }
 
     fn distance_on_disk(kit: &LooseKit, rel: &str) -> f32 {
-        let tag = TagFile::read(kit.root.join(rel)).expect("the saved tag reads");
+        let tag = TagFile::read(kit.path(rel)).expect("the saved tag reads");
         real_of(&tag, DISTANCE).expect("a real")
     }
 
@@ -947,7 +947,7 @@ mod tests {
         assert!(!tab_open(&app, &key), "the close went ahead");
         assert!(tab_open(&app, &other));
         // The reference the tag already held is written back untouched.
-        let saved = TagFile::read(kit.root.join(MODEL)).unwrap();
+        let saved = TagFile::read(kit.path(MODEL)).unwrap();
         assert_eq!(
             reference_of(&saved, "render model").as_deref(),
             Some("objects\\props\\crate")
@@ -958,12 +958,12 @@ mod tests {
     fn the_prompt_s_dont_save_closes_without_writing() {
         let (kit, mut app, key, _other) = edited("close-dont-save");
         app.request_close_action(PendingCloseAction::CloseTab(key.clone()), &ctx());
-        let before = fs::read(kit.root.join(MODEL)).unwrap();
+        let before = fs::read(kit.path(MODEL)).unwrap();
         let mut driver = PromptDriver::new();
 
         driver.click(&mut app, "Don't Save");
 
-        assert_eq!(fs::read(kit.root.join(MODEL)).unwrap(), before, "nothing written");
+        assert_eq!(fs::read(kit.path(MODEL)).unwrap(), before, "nothing written");
         assert!(app.dialogs.get::<SaveChangesPrompt>().is_none());
         assert!(!tab_open(&app, &key));
         assert!(!app.model.kits[0].parsed_tags.contains_key(&key));
@@ -1037,8 +1037,8 @@ mod tests {
         app.request_close_action(PendingCloseAction::CloseTab(key.clone()), &ctx());
         // The tag's file is replaced by a directory, so the atomic write cannot
         // land.
-        fs::remove_file(kit.root.join(MODEL)).unwrap();
-        fs::create_dir_all(kit.root.join(MODEL)).unwrap();
+        fs::remove_file(kit.path(MODEL)).unwrap();
+        fs::create_dir_all(kit.path(MODEL)).unwrap();
         let mut driver = PromptDriver::new();
 
         driver.click(&mut app, "Save");
@@ -1266,7 +1266,7 @@ mod tests {
         assert!(!is_dirty(&app, &key));
         assert_eq!(
             app.model.status,
-            format!("Saved {}", kit.root.join(MODEL).display())
+            format!("Saved {}", kit.path(MODEL).display())
         );
         // The save records what the tag now references.
         let source = app.model.kits[0].source.as_ref().unwrap();
@@ -1309,7 +1309,7 @@ mod tests {
 
         // A clean, loaded tag saves even with nothing to save.
         app.model.kits[0].parsed_tags.get_mut(&key).unwrap().tag.endian = blam_tags::Endian::Le;
-        assert_eq!(app.save_tag_by_key(&key), Ok(kit.root.join(MODEL)));
+        assert_eq!(app.save_tag_by_key(&key), Ok(kit.path(MODEL)));
     }
 
     /// Everything before the file dialog: Save As refuses without a selection, an
@@ -1339,9 +1339,9 @@ mod tests {
         let mut app = app();
         kit.install(&mut app);
         let generation = app.model.kits[0].generation;
-        let copy = kit.write_mcc("objects/copies/crate_copy", "model", |_| {});
+        let copy = kit.write_mcc("objects\\copies\\crate_copy", "model", |_| {});
 
-        let key = kit.key("objects/copies/crate_copy.model");
+        let key = kit.key("objects\\copies\\crate_copy.model");
         let registered = app.register_saved_copy_if_in_loaded_folder(&copy);
         assert_eq!(registered.map(|entry| entry.map(|entry| entry.key)), Ok(Some(key.clone())));
 
@@ -1360,10 +1360,10 @@ mod tests {
     #[test]
     fn save_as_switches_the_editor_to_the_copy() {
         let (kit, mut app, key, _other) = edited("save-as-switch");
-        const COPY: &str = "objects/copies/crate_copy.model";
-        std::fs::create_dir_all(kit.root.join("objects/copies")).unwrap();
+        const COPY: &str = "objects\\copies\\crate_copy.model";
+        std::fs::create_dir_all(kit.path("objects\\copies")).unwrap();
 
-        app.save_tag_as_to(&key, &kit.root.join(COPY));
+        app.save_tag_as_to(&key, &kit.path(COPY));
 
         let copy = kit.key(COPY);
         assert!(app.model.status.starts_with("Saved as"), "{}", app.model.status);
@@ -1385,7 +1385,7 @@ mod tests {
         let (kit, mut app, key, other) = edited("save-as-over-modified");
         edit_field(&mut app, &other, DISTANCE, "3");
 
-        app.save_tag_as_to(&key, &kit.root.join(OTHER));
+        app.save_tag_as_to(&key, &kit.path(OTHER));
 
         assert!(app.model.status.contains("unsaved changes"), "{}", app.model.status);
         assert_eq!(distance_on_disk(&kit, OTHER), 0.0, "nothing was written");
@@ -1399,7 +1399,7 @@ mod tests {
     fn save_as_over_an_open_clean_tag_takes_its_place() {
         let (kit, mut app, key, other) = edited("save-as-over-clean");
 
-        app.save_tag_as_to(&key, &kit.root.join(OTHER));
+        app.save_tag_as_to(&key, &kit.path(OTHER));
 
         assert_eq!(distance_on_disk(&kit, OTHER), 12.5);
         assert_eq!(distance_in_document(&app, &other), 12.5);
@@ -1488,10 +1488,10 @@ mod tests {
     #[test]
     fn a_classic_tag_round_trips_through_undo_and_save() {
         let kit = LooseKit::new("undo-classic", "haloce_mcc");
-        kit.write_classic_ce("physics/pebble", "point_physics");
+        kit.write_classic_ce("physics\\pebble", "point_physics");
         let mut app = app();
         kit.install(&mut app);
-        let key = kit.open(&mut app, "physics/pebble.point_physics");
+        let key = kit.open(&mut app, "physics\\pebble.point_physics");
         let friction = |app: &Baboon| real_of(&app.model.kits[0].parsed_tags[&key].tag, "air friction");
         assert_eq!(
             app.model.kits[0].parsed_tags[&key].tag.classic_engine(),
@@ -1511,7 +1511,7 @@ mod tests {
         assert_eq!(friction(&app), Some(0.5));
 
         app.save_current_tag(&ctx());
-        let bytes = fs::read(kit.root.join("physics/pebble.point_physics")).unwrap();
+        let bytes = fs::read(kit.path("physics\\pebble.point_physics")).unwrap();
         assert!(blam_tags::classic::ClassicHeader::parse(&bytes).is_some());
         assert!(TagFile::read_from_bytes(&bytes).is_err(), "not an MCC tag");
         let saved = crate::core::source::read_tag_from_bytes(
@@ -1567,7 +1567,7 @@ mod tests {
         let crate_tag = saved.tags.iter().find(|tag| tag.key == key).expect("crate saved");
         assert!(saved.tags.iter().any(|tag| tag.key == other));
         assert_eq!(crate_tag.label, format!("{MODEL} - hlmt (model)"));
-        assert_eq!(crate_tag.path.as_deref(), Some(kit.root.join(MODEL).as_path()));
+        assert_eq!(crate_tag.path.as_deref(), Some(kit.path(MODEL).as_path()));
         assert_eq!(crate_tag.group_tag, group_tag("halo3_mcc", "model"));
         assert_eq!(saved.folders.len(), 1);
         assert_eq!(saved.folders[0].rel_path, PathBuf::from("objects/props"));
@@ -1668,12 +1668,12 @@ mod tests {
     fn closing_a_tab_keeps_another_tags_popup() {
         use crate::app::editor::{ColorPopupWindow, MaterialColorPopup};
         let kit = LooseKit::new("close-popups", "haloce_mcc");
-        kit.write_classic_ce("weapons/a", "weapon");
-        kit.write_classic_ce("weapons/b", "weapon");
+        kit.write_classic_ce("weapons\\a", "weapon");
+        kit.write_classic_ce("weapons\\b", "weapon");
         let mut app = app();
         kit.install(&mut app);
-        let a = kit.open(&mut app, "weapons/a.weapon");
-        let b = kit.open(&mut app, "weapons/b.weapon");
+        let a = kit.open(&mut app, "weapons\\a.weapon");
+        let b = kit.open(&mut app, "weapons\\b.weapon");
         let kit_id = app.model.kits[0].id;
         let popup = MaterialColorPopup::new("tint", 1.0, 0.5, 0.0, 1.0).with_write(&a, "tint");
         app.dialogs.open(ColorPopupWindow { popup: Some(popup), kit: kit_id, opened_at: None });
@@ -1690,10 +1690,10 @@ mod tests {
     #[test]
     fn undo_back_to_the_saved_state_is_unmodified() {
         let kit = LooseKit::new("undo-saved", "haloce_mcc");
-        kit.write_classic_ce("physics/pebble", "point_physics");
+        kit.write_classic_ce("physics\\pebble", "point_physics");
         let mut app = app();
         kit.install(&mut app);
-        let key = kit.open(&mut app, "physics/pebble.point_physics");
+        let key = kit.open(&mut app, "physics\\pebble.point_physics");
         fn doc<'a>(app: &'a Baboon, key: &str) -> &'a crate::core::document::TagDocument {
             &app.model.kits[0].parsed_tags[key]
         }
@@ -1727,10 +1727,10 @@ mod tests {
     #[test]
     fn a_save_prompt_acts_on_its_own_workspace() {
         let kit = LooseKit::new("prompt-kit", "haloce_mcc");
-        kit.write_classic_ce("physics/pebble", "point_physics");
+        kit.write_classic_ce("physics\\pebble", "point_physics");
         let mut app = app();
         kit.install(&mut app);
-        let key = kit.open(&mut app, "physics/pebble.point_physics");
+        let key = kit.open(&mut app, "physics\\pebble.point_physics");
         edit_field(&mut app, &key, "air friction", "0.5");
         let ctx = egui::Context::default();
         app.request_close_action(PendingCloseAction::CloseTab(key.clone()), &ctx);

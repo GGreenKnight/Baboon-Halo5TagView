@@ -180,16 +180,13 @@ impl Baboon {
             };
             return;
         }
-        let display = entry.display_path.replace('\\', "/");
+        let display = entry.display_path.clone();
         let (stem, extension) = match display.rsplit_once('.') {
             Some((stem, ext)) => (stem.to_owned(), ext.to_owned()),
             None => (display.clone(), String::new()),
         };
-        let leaf = stem.rsplit(['/', '\\']).next().unwrap_or(&stem).to_owned();
-        let fixed_parent = stem
-            .rsplit_once('/')
-            .map(|(parent, _)| parent.to_owned())
-            .unwrap_or_default();
+        let leaf = tag_path::name(&stem).to_owned();
+        let fixed_parent = tag_path::parent(&stem).unwrap_or_default().to_owned();
         let duplicate_parts = duplicate::duplicate_dialog_parts(&display);
         // A new tag edits its whole path (rename and move are the same in-memory
         // operation for it); everything else edits the leaf name only.
@@ -228,9 +225,7 @@ impl Baboon {
         };
         let (referrers, referrers_unavailable) = match self.model.references_to_entry(&entry) {
             Some(list) => (
-                list.iter()
-                    .map(|e| e.display_path.replace('\\', "/"))
-                    .collect(),
+                list.iter().map(|e| e.display_path.clone()).collect(),
                 false,
             ),
             None => (Vec::new(), true),
@@ -321,7 +316,7 @@ impl Baboon {
         // operation rather than a mistake. That is every tag in a pak, not just
         // an unsaved one — the field says so, and this has to agree with it or
         // the dialog invites a path and then refuses it.
-        if !whole_path_editable && new_name.contains(['/', '\\']) {
+        if !whole_path_editable && tag_path::from_input(&new_name).contains(tag_path::SEPARATOR) {
             self.model.status = "Enter a name only; use Move to choose a folder".to_owned();
             return;
         }
@@ -332,15 +327,7 @@ impl Baboon {
         let new_rel = if whole_path_editable {
             normalize_container_tag_rel(&new_name)
         } else {
-            let parent = old_display
-                .rsplit_once('/')
-                .map(|(parent, _)| parent)
-                .unwrap_or("");
-            if parent.is_empty() {
-                new_name
-            } else {
-                format!("{parent}/{new_name}")
-            }
+            tag_path::join(tag_path::parent(&old_display).unwrap_or(""), &new_name)
         };
 
         // A brand-new tag has no container to override — it exists only as the
@@ -473,24 +460,10 @@ impl Baboon {
             self.model.status = "Choose a destination inside the loaded tags folder".to_owned();
             return;
         }
-        let folder_rel = destination_parent
-            .strip_prefix(&root)
-            .unwrap_or(Path::new(""))
-            .to_string_lossy()
-            .replace('\\', "/");
-        let stem = entry
-            .display_path
-            .replace('\\', "/")
-            .rsplit('/')
-            .next()
-            .and_then(|name| name.rsplit_once('.').map(|(stem, _)| stem))
-            .unwrap_or(&entry.display_path)
-            .to_owned();
-        let new_rel = if folder_rel.is_empty() {
-            stem
-        } else {
-            format!("{folder_rel}/{stem}")
-        };
+        let folder_rel =
+            tag_path::relative_tag_path(destination_parent.strip_prefix(&root).unwrap_or(Path::new("")));
+        let stem = tag_path::without_extension(tag_path::name(&entry.display_path));
+        let new_rel = tag_path::join(&folder_rel, stem);
         self.start_tag_rename_job(root, entry, new_rel, "Moving tag");
     }
 
@@ -608,14 +581,13 @@ pub(in crate::app) fn run_tag_rename_job(
         .to_owned();
 
     // Compute the destination absolute path from the (extension-less) new rel.
-    let new_rel_norm = new_rel.replace('\\', "/");
-    if new_rel_norm
-        .split('/')
+    if new_rel
+        .split(tag_path::SEPARATOR)
         .any(|seg| seg.is_empty() || seg == "." || seg == "..")
     {
         return Err("Destination path is not a valid relative path".to_owned());
     }
-    let new_path = lexical_normalize_path(&root.join(format!("{new_rel_norm}.{extension}")));
+    let new_path = lexical_normalize_path(&tag_path::resolve_tag_path(&root, &new_rel, &extension));
     if !new_path.starts_with(&root) {
         return Err("Destination escapes the tags folder".to_owned());
     }
@@ -683,11 +655,7 @@ pub(in crate::app) fn run_tag_rename_job(
         .filter(|path| path.is_file());
 
     // The moved entry, post-rename.
-    let new_display = new_path
-        .strip_prefix(&root)
-        .unwrap_or(&new_path)
-        .to_string_lossy()
-        .replace('\\', "/");
+    let new_display = tag_path::relative_tag_path(new_path.strip_prefix(&root).unwrap_or(&new_path));
     let new_entry = TagEntry {
         key: file_entry_key(&new_path),
         display_path: new_display,
@@ -1163,11 +1131,8 @@ pub(in crate::app) fn transform_folder_entries(
             };
             let inner_rel = old_path.strip_prefix(source).ok()?;
             let new_path = destination.join(inner_rel);
-            let display_path = new_path
-                .strip_prefix(tags_root)
-                .unwrap_or(&new_path)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let display_path =
+                tag_path::relative_tag_path(new_path.strip_prefix(tags_root).unwrap_or(&new_path));
             Some(TagEntry {
                 key: file_entry_key(&new_path),
                 display_path,
@@ -1383,7 +1348,7 @@ pub(in crate::app) fn rewrite_reference_needles(rewrites: &HashMap<(u32, String)
     rewrites
         .keys()
         .filter_map(|(_, old_ref)| {
-            let lowered = old_ref.replace('/', "\\").to_ascii_lowercase().into_bytes();
+            let lowered = old_ref.to_ascii_lowercase().into_bytes();
             (!lowered.is_empty() && seen.insert(lowered.clone())).then_some(lowered)
         })
         .collect()
@@ -1476,11 +1441,11 @@ mod tests {
     use super::*;
     use crate::app::browser::BrowserAction;
 
-    const RENDER: &str = "objects/props/crate.render_model";
-    const MODEL: &str = "objects/props/crate.model";
+    const RENDER: &str = "objects\\props\\crate.render_model";
+    const MODEL: &str = "objects\\props\\crate.model";
     /// Outside the folder, referencing the render model inside it.
-    const USER: &str = "levels/test/crate_user.model";
-    const BARREL: &str = "objects/props/barrel.model";
+    const USER: &str = "levels\\test\\crate_user.model";
+    const BARREL: &str = "objects\\props\\barrel.model";
 
     /// `objects/props` holds a render model, a model referencing it and an
     /// unrelated model; `levels/test` holds a second model referencing it from
@@ -1488,18 +1453,18 @@ mod tests {
     fn kit(name: &str) -> LooseKit {
         let kit = LooseKit::new(name, "halo3_mcc");
         let mode = group_tag("halo3_mcc", "render_model");
-        kit.write_mcc("objects/props/crate", "render_model", |_| {});
-        for rel in ["objects/props/crate", "levels/test/crate_user"] {
+        kit.write_mcc("objects\\props\\crate", "render_model", |_| {});
+        for rel in ["objects\\props\\crate", "levels\\test\\crate_user"] {
             kit.write_mcc(rel, "model", |tag| {
                 set_reference(tag, "render model", mode, "objects\\props\\crate");
             });
         }
-        kit.write_mcc("objects/props/barrel", "model", |_| {});
+        kit.write_mcc("objects\\props\\barrel", "model", |_| {});
         kit
     }
 
     fn render_reference(kit: &LooseKit, rel: &str) -> Option<String> {
-        let tag = TagFile::read(kit.root.join(rel)).expect("the referrer reads");
+        let tag = TagFile::read(kit.path(rel)).expect("the referrer reads");
         reference_of(&tag, "render model")
     }
 
@@ -1512,19 +1477,13 @@ mod tests {
         pump_until(app, what, |app| app.tag_ops.folder_refactor.is_none());
     }
 
-    /// The paths of every tag in the kit, relative and with `/`.
+    /// The tag path of every tag file in the kit.
     fn tree(kit: &LooseKit) -> Vec<String> {
         let mut paths: Vec<String> = walkdir::WalkDir::new(&kit.root)
             .into_iter()
             .filter_map(Result::ok)
             .filter(|item| item.file_type().is_file())
-            .map(|item| {
-                item.path()
-                    .strip_prefix(&kit.root)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/")
-            })
+            .map(|item| tag_path::relative_tag_path(item.path().strip_prefix(&kit.root).unwrap()))
             .collect();
         paths.sort();
         paths
@@ -1562,14 +1521,14 @@ mod tests {
         );
         settle(&mut app, "the rename");
 
-        let new_rel = "objects/props/crate_renamed.render_model";
+        let new_rel = "objects\\props\\crate_renamed.render_model";
         let new_key = kit.key(new_rel);
         assert_eq!(
             app.model.status,
             "Renamed tag, updated 2 reference(s) in 2 tag(s)"
         );
-        assert!(!kit.root.join(RENDER).exists());
-        assert!(kit.root.join(new_rel).is_file());
+        assert!(!kit.path(RENDER).exists());
+        assert!(kit.path(new_rel).is_file());
         for referrer in [MODEL, USER] {
             assert_eq!(
                 render_reference(&kit, referrer).as_deref(),
@@ -1588,7 +1547,7 @@ mod tests {
         // Favorites follow it too.
         assert_eq!(
             app.model.prefs.editing_kit_favorites[0].tags,
-            vec![PathBuf::from(new_rel)]
+            vec![tag_path::to_relative(new_rel)]
         );
         // The browser and the reference index know the tag by its new path.
         let source = app.model.kits[0].source.as_ref().unwrap();
@@ -1627,7 +1586,7 @@ mod tests {
             app.dialogs.get::<RenameTagState>().is_some(),
             "the dialog stays open"
         );
-        assert!(kit.root.join(BARREL).is_file());
+        assert!(kit.path(BARREL).is_file());
 
         app.model.kits[0].parsed_tags.get_mut(&key).unwrap().dirty.clear();
         app.tag_ops.folder_refactor = Some(FolderRefactorUiState {
@@ -1670,7 +1629,7 @@ mod tests {
         let done = run_tag_rename_job(
             kit.root.clone(),
             entry,
-            "objects/moved/crate".to_owned(),
+            "objects\\moved\\crate".to_owned(),
             "Moving tag".to_owned(),
             kit.names(),
             Some(GameId::Halo3),
@@ -1682,8 +1641,8 @@ mod tests {
 
         assert_eq!(done.status, "Moved tag, updated 2 reference(s) in 2 tag(s)");
         assert!(done.moved);
-        assert!(kit.root.join("objects/moved/crate.render_model").is_file());
-        assert!(!kit.root.join(RENDER).exists());
+        assert!(kit.path("objects\\moved\\crate.render_model").is_file());
+        assert!(!kit.path(RENDER).exists());
         assert_eq!(
             render_reference(&kit, USER).as_deref(),
             Some("objects\\moved\\crate")
@@ -1718,7 +1677,7 @@ mod tests {
         let result = run_tag_rename_job(
             kit.root.clone(),
             entry,
-            "objects/props/Crate".to_owned(),
+            "objects\\props\\Crate".to_owned(),
             "Renaming tag".to_owned(),
             kit.names(),
             Some(GameId::Halo3),
@@ -1737,7 +1696,7 @@ mod tests {
             Some("objects\\props\\crate"),
             "nothing rewritten"
         );
-        assert!(kit.root.join(RENDER).is_file(), "the tag was not moved");
+        assert!(kit.path(RENDER).is_file(), "the tag was not moved");
 
         // Renaming a folder to a case variant is refused by name, everywhere.
         assert_eq!(
@@ -1757,14 +1716,14 @@ mod tests {
     fn a_referrer_that_cannot_be_rewritten_is_reported_and_passed_over() {
         let kit = kit("refactor-failure");
         let mode = group_tag("halo3_mcc", "render_model");
-        kit.write_mcc("levels/test/broken", "model", |tag| {
+        kit.write_mcc("levels\\test\\broken", "model", |tag| {
             set_reference(tag, "render model", mode, "objects\\props\\crate");
         });
         let entries = kit.entries();
         // Indexed while it still read, then corrupted: trailing bytes fail the
         // read, and the reference it holds is still there to be found.
         let index = kit.index();
-        let broken = kit.root.join("levels/test/broken.model");
+        let broken = kit.path("levels\\test\\broken.model");
         let mut bytes = fs::read(&broken).unwrap();
         bytes.extend_from_slice(b"not part of the tag");
         fs::write(&broken, &bytes).unwrap();
@@ -1778,7 +1737,7 @@ mod tests {
         let done = run_tag_rename_job(
             kit.root.clone(),
             entry,
-            "objects/props/crate2".to_owned(),
+            "objects\\props\\crate2".to_owned(),
             "Renaming tag".to_owned(),
             kit.names(),
             Some(GameId::Halo3),
@@ -1793,7 +1752,7 @@ mod tests {
             "Renamed tag, updated 2 reference(s) in 2 tag(s); 1 tag(s) could NOT be updated and \
          may still reference the old path (see terminal)"
         );
-        assert!(kit.root.join("objects/props/crate2.render_model").is_file());
+        assert!(kit.path("objects\\props\\crate2.render_model").is_file());
         assert_eq!(
             render_reference(&kit, USER).as_deref(),
             Some("objects\\props\\crate2")
@@ -1802,7 +1761,7 @@ mod tests {
         assert!(
             done.lines
                 .iter()
-                .any(|line| line.starts_with("Warning: not updated: levels/test/broken.model (")),
+                .any(|line| line.starts_with(r"Warning: not updated: levels\test\broken.model (")),
             "{:?}",
             done.lines
         );
@@ -1862,20 +1821,20 @@ mod tests {
         assert_eq!(
             tree(&kit),
             vec![
-                "levels/test/crate_user.model",
-                "objects/crates/barrel.model",
-                "objects/crates/crate.model",
-                "objects/crates/crate.render_model",
+                "levels\\test\\crate_user.model",
+                "objects\\crates\\barrel.model",
+                "objects\\crates\\crate.model",
+                "objects\\crates\\crate.render_model",
             ]
         );
-        for referrer in [USER, "objects/crates/crate.model"] {
+        for referrer in [USER, "objects\\crates\\crate.model"] {
             assert_eq!(
                 render_reference(&kit, referrer).as_deref(),
                 Some("objects\\crates\\crate"),
                 "{referrer}"
             );
         }
-        let new_key = kit.key("objects/crates/crate.render_model");
+        let new_key = kit.key("objects\\crates\\crate.render_model");
         assert!(app.model.kits[0].open_tabs.contains(&new_key));
         assert!(!app.model.kits[0].open_tabs.contains(&old_key));
         assert_eq!(
@@ -1899,7 +1858,7 @@ mod tests {
         let done = run_folder_refactor_job(
             kit.root.clone(),
             PathBuf::from("objects/props"),
-            kit.root.join("levels"),
+            kit.path("levels"),
             None,
             true,
             "Moving props".to_owned(),
@@ -1916,10 +1875,10 @@ mod tests {
         assert_eq!(
             tree(&kit),
             vec![
-                "levels/props/barrel.model",
-                "levels/props/crate.model",
-                "levels/props/crate.render_model",
-                "levels/test/crate_user.model",
+                "levels\\props\\barrel.model",
+                "levels\\props\\crate.model",
+                "levels\\props\\crate.render_model",
+                "levels\\test\\crate_user.model",
             ]
         );
         assert_eq!(
@@ -1927,7 +1886,7 @@ mod tests {
             Some("levels\\props\\crate")
         );
         assert_eq!(
-            render_reference(&kit, "levels/props/crate.model").as_deref(),
+            render_reference(&kit, "levels\\props\\crate.model").as_deref(),
             Some("levels\\props\\crate")
         );
         assert_eq!(done.old_to_new_keys.len(), 3);
@@ -1948,7 +1907,7 @@ mod tests {
         let done = run_folder_refactor_job(
             kit.root.clone(),
             PathBuf::from("objects/props"),
-            kit.root.join("levels"),
+            kit.path("levels"),
             None,
             false,
             "Copying props".to_owned(),
@@ -1965,13 +1924,13 @@ mod tests {
         assert_eq!(
             tree(&kit),
             vec![
-                "levels/props/barrel.model",
-                "levels/props/crate.model",
-                "levels/props/crate.render_model",
-                "levels/test/crate_user.model",
-                "objects/props/barrel.model",
-                "objects/props/crate.model",
-                "objects/props/crate.render_model",
+                "levels\\props\\barrel.model",
+                "levels\\props\\crate.model",
+                "levels\\props\\crate.render_model",
+                "levels\\test\\crate_user.model",
+                "objects\\props\\barrel.model",
+                "objects\\props\\crate.model",
+                "objects\\props\\crate.render_model",
             ]
         );
         assert_eq!(
@@ -1984,7 +1943,7 @@ mod tests {
             Some("objects\\props\\crate")
         );
         assert_eq!(
-            render_reference(&kit, "levels/props/crate.model").as_deref(),
+            render_reference(&kit, "levels\\props\\crate.model").as_deref(),
             Some("levels\\props\\crate")
         );
         assert_eq!(done.all_entries.len(), 7);
@@ -2004,20 +1963,20 @@ mod tests {
             .new_path_input = "crate_copy".to_owned();
         app.begin_rename_tag(&ctx());
 
-        let copy = kit.root.join("objects/props/crate_copy.model");
-        assert_eq!(fs::read(&copy).unwrap(), fs::read(kit.root.join(MODEL)).unwrap());
+        let copy = kit.path("objects\\props\\crate_copy.model");
+        assert_eq!(fs::read(&copy).unwrap(), fs::read(kit.path(MODEL)).unwrap());
         assert_eq!(
             app.model.status,
             format!("Duplicated {MODEL} → {}", copy.display())
         );
-        let copy_key = kit.key("objects/props/crate_copy.model");
+        let copy_key = kit.key("objects\\props\\crate_copy.model");
         assert!(app.model.entry_for_key(&copy_key).is_some(), "registered in the browser");
         assert!(app.model.kits[0].parsed_tags.contains_key(&copy_key), "and opened clean");
         assert!(!app.model.kits[0].parsed_tags[&copy_key].dirty.is_set());
         assert!(app.dialogs.get::<RenameTagState>().is_none());
 
         // A name already taken is refused, and nothing is written.
-        let barrel = fs::read(kit.root.join(BARREL)).unwrap();
+        let barrel = fs::read(kit.path(BARREL)).unwrap();
         app.handle_browser_action(BrowserAction::DuplicateTag(key.clone()), ctx());
         app.dialogs
             .get_mut::<RenameTagState>()
@@ -2028,7 +1987,7 @@ mod tests {
             app.dialogs.get::<RenameTagState>().is_some(),
             "the dialog stays open"
         );
-        assert_eq!(fs::read(kit.root.join(BARREL)).unwrap(), barrel);
+        assert_eq!(fs::read(kit.path(BARREL)).unwrap(), barrel);
         assert_eq!(app.model.status, "A tag with that name already exists in this source");
     }
 
@@ -2040,7 +1999,7 @@ mod tests {
         kit.install(&mut app);
         let key = kit.open(&mut app, MODEL);
         edit_field(&mut app, &key, "disappear distance", "9");
-        let original = fs::read(kit.root.join(MODEL)).unwrap();
+        let original = fs::read(kit.path(MODEL)).unwrap();
 
         app.handle_browser_action(BrowserAction::DuplicateTag(key.clone()), ctx());
         app.dialogs
@@ -2049,9 +2008,9 @@ mod tests {
             .new_path_input = "crate_edited".to_owned();
         app.begin_rename_tag(&ctx());
 
-        let copy = TagFile::read(kit.root.join("objects/props/crate_edited.model")).unwrap();
+        let copy = TagFile::read(kit.path("objects\\props\\crate_edited.model")).unwrap();
         assert_eq!(real_of(&copy, "disappear distance"), Some(9.0));
-        assert_eq!(fs::read(kit.root.join(MODEL)).unwrap(), original);
+        assert_eq!(fs::read(kit.path(MODEL)).unwrap(), original);
         assert!(app.model.kits[0].parsed_tags[&key].dirty.is_set(), "the original stays dirty");
     }
 
@@ -2060,9 +2019,9 @@ mod tests {
         let kit = kit("refactor-delete");
         // A leaf no other test deletes: the trash is shared by the test process
         // and keyed by the second.
-        let doomed = "objects/props/doomed_by_delete_test.model";
-        kit.write_mcc("objects/props/doomed_by_delete_test", "model", |_| {});
-        let bytes = fs::read(kit.root.join(doomed)).unwrap();
+        let doomed = "objects\\props\\doomed_by_delete_test.model";
+        kit.write_mcc("objects\\props\\doomed_by_delete_test", "model", |_| {});
+        let bytes = fs::read(kit.path(doomed)).unwrap();
         let mut app = app();
         kit.install(&mut app);
         let key = kit.open(&mut app, doomed);
@@ -2072,14 +2031,14 @@ mod tests {
         assert!(app.dialogs.get::<DeleteConfirm>().is_some());
         app.begin_delete_tag(ctx());
 
-        assert!(!kit.root.join(doomed).exists());
+        assert!(!kit.path(doomed).exists());
         let destination = app
             .model.status
             .strip_prefix(&format!("Deleted {doomed} — moved to "))
             .map(PathBuf::from)
             .unwrap_or_else(|| panic!("{}", app.model.status));
         assert_eq!(fs::read(&destination).unwrap(), bytes, "moved, not destroyed");
-        assert!(destination.ends_with(doomed));
+        assert!(destination.ends_with(tag_path::to_relative(doomed)));
         assert!(
             destination
                 .components()

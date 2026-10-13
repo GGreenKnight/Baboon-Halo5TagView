@@ -22,20 +22,13 @@ impl Dialog for ContainerDuplicateConfirm {
                     .rsplit_once('.')
                     .map(|(stem, extension)| (stem, extension))
                     .unwrap_or((&entry.display_path, ""));
-                let parent = stem
-                    .rsplit_once('/')
-                    .map(|(parent, _)| parent)
-                    .unwrap_or("");
+                let parent = tag_path::parent(stem).unwrap_or("");
                 let destination_display = if extension.is_empty() {
                     destination_leaf.clone()
                 } else {
                     format!("{destination_leaf}.{extension}")
                 };
-                let destination_display = if parent.is_empty() {
-                    destination_display
-                } else {
-                    format!("{parent}/{destination_display}")
-                };
+                let destination_display = tag_path::join(parent, &destination_display);
                 let (label, is_mod) = cx.model.container_label_for_tag(index, &key)?;
                 let utoc = match &entry.location {
                     TagEntryLocation::Container { container, .. } => cx.model.kits[index]

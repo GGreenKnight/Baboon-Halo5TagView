@@ -275,7 +275,7 @@ pub(in crate::app) fn normalized_reference_lookup_path(
     group_tag: u32,
     names: &TagNameIndex,
 ) -> String {
-    let mut path = sanitize_ref_path(path).replace('/', "\\");
+    let mut path = sanitize_ref_path(path);
     if let Some(extension) = names
         .name_for(group_tag)
         .or_else(|| group_tag_to_extension(group_tag))
@@ -319,7 +319,7 @@ pub(in crate::app) fn reference_path_without_group_extension(
     let extension = names
         .name_for(group_tag)
         .or_else(|| group_tag_to_extension(group_tag));
-    let mut path = path.replace('/', "\\");
+    let mut path = path.to_owned();
     if let Some(extension) = extension {
         let suffix = format!(".{extension}");
         if path
@@ -331,19 +331,11 @@ pub(in crate::app) fn reference_path_without_group_extension(
             return Some(path);
         }
     }
-    Path::new(&path)
-        .with_extension("")
-        .to_str()
-        .map(|path| path.replace('/', "\\"))
+    Some(tag_path::without_extension(&path).to_owned())
 }
 
 pub(in crate::app) fn dependency_leaf_key(rel_path: &str) -> String {
-    rel_path
-        .replace('/', "\\")
-        .rsplit('\\')
-        .next()
-        .unwrap_or(rel_path)
-        .to_ascii_lowercase()
+    tag_path::name(rel_path).to_ascii_lowercase()
 }
 
 pub(in crate::app) fn dependency_target_exists(tags_root: &Path, rel_path: &str, extension: &str) -> bool {
@@ -445,7 +437,7 @@ mod tests {
     #[test]
     fn normalize_ref_matches_dependency_key_form() {
         assert_eq!(
-            normalize_ref("Sound/Materials/Hard/Human_Weap_Melee"),
+            normalize_ref("Sound\\Materials\\Hard\\Human_Weap_Melee"),
             normalize_ref("sound\\materials\\hard\\human_weap_melee"),
         );
     }

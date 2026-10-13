@@ -429,12 +429,7 @@ pub(in crate::app) fn table_order_entries(
         .iter()
         .map(|&index| {
             let entry = &entries[index];
-            let name = entry
-                .display_path
-                .rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(&entry.display_path)
-                .to_ascii_lowercase();
+            let name = tag_path::name(&entry.display_path).to_ascii_lowercase();
             let path = entry_loose_file(entry);
             (
                 index,
@@ -671,7 +666,7 @@ mod tests {
         let ctx = egui::Context::default();
         let entry = TagEntry {
             key: "example".into(),
-            display_path: "objects/example.bitmap".into(),
+            display_path: "objects\\example.bitmap".into(),
             group_tag: u32::from_be_bytes(*b"bitm"),
             group_name: None,
             location: TagEntryLocation::Monolithic {

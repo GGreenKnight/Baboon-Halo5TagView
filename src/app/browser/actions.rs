@@ -124,7 +124,8 @@ impl Baboon {
             return;
         };
         if !root.join(&relative_path).is_dir() {
-            self.model.status = format!("Folder no longer exists: {}", relative_path.display());
+            self.model.status =
+                format!("Folder no longer exists: {}", tag_path::relative_tag_path(&relative_path));
             return;
         }
         let index = self.model.favorite_kit_index(&root).unwrap_or_else(|| {
@@ -147,12 +148,14 @@ impl Baboon {
             if favorites.tags.is_empty() && favorites.folders.is_empty() {
                 self.model.prefs.editing_kit_favorites.remove(index);
             }
-            self.model.status = format!("Removed {} from Favorites", relative_path.display());
+            self.model.status =
+                format!("Removed {} from Favorites", tag_path::relative_tag_path(&relative_path));
         } else {
             favorites.folders.push(relative_path.clone());
             self.model.kits[self.model.active].active_favorite_folders
                 .push(relative_path.clone());
-            self.model.status = format!("Added {} to Favorites", relative_path.display());
+            self.model.status =
+                format!("Added {} to Favorites", tag_path::relative_tag_path(&relative_path));
         }
     }
 
@@ -242,27 +245,16 @@ impl Baboon {
                 let matching_key = if open_in_new_tab {
                     None
                 } else {
-                    let normalized = rel_path.to_string_lossy().replace('\\', "/");
                     let base = folder_pane_key(&rel_path);
                     let panes = &self.views[self.model.kits[self.model.active].id].browser.folder_browsers;
                     panes
                         .get(&base)
-                        .filter(|pane| {
-                            pane.rel_path
-                                .to_string_lossy()
-                                .replace('\\', "/")
-                                .eq_ignore_ascii_case(&normalized)
-                        })
+                        .filter(|pane| paths_match_case_insensitive(&pane.rel_path, &rel_path))
                         .map(|_| base)
                         .or_else(|| {
                             let mut matches = panes
                                 .iter()
-                                .filter(|(_, pane)| {
-                                    pane.rel_path
-                                        .to_string_lossy()
-                                        .replace('\\', "/")
-                                        .eq_ignore_ascii_case(&normalized)
-                                })
+                                .filter(|(_, pane)| paths_match_case_insensitive(&pane.rel_path, &rel_path))
                                 .map(|(key, _)| key.clone())
                                 .collect::<Vec<_>>();
                             matches.sort();
@@ -332,7 +324,7 @@ impl Baboon {
                 self.begin_refactor_loose_folder(rel_path, label, false)
             }
             BrowserAction::ImportTagsIntoLooseFolder { rel_path } => {
-                self.open_tag_import_dialog(Some(rel_path.to_string_lossy().into_owned()))
+                self.open_tag_import_dialog(Some(tag_path::relative_tag_path(&rel_path)))
             }
             BrowserAction::OpenLooseFolderInExplorer { rel_path } => {
                 self.open_loose_folder_in_explorer(&rel_path)
@@ -412,13 +404,13 @@ impl Baboon {
             self.model.status = "Tag is no longer in the browser".to_owned();
             return;
         };
-        let copied_path = crate::core::format::to_native_path_string(&entry.display_path);
+        let copied_path = entry.display_path.clone();
         ctx.copy_text(copied_path.clone());
         self.model.status = format!("Copied {copied_path}");
     }
 
     pub(in crate::app) fn copy_folder_path(&mut self, path: &Path, ctx: &egui::Context) {
-        let copied_path = crate::core::format::to_native_path_string(&path.to_string_lossy());
+        let copied_path = tag_path::relative_tag_path(path);
         ctx.copy_text(copied_path.clone());
         self.model.status = format!("Copied {copied_path}");
     }
@@ -706,10 +698,10 @@ mod tests {
     // fails to compile here until it is given an index, and the table test then
     // fails until it is given a case.
 
-    const MODEL: &str = "objects/props/crate.model";
-    const RENDER: &str = "objects/props/crate.render_model";
-    const BARREL: &str = "objects/props/barrel.model";
-    const FOLDER: &str = "objects/props";
+    const MODEL: &str = "objects\\props\\crate.model";
+    const RENDER: &str = "objects\\props\\crate.render_model";
+    const BARREL: &str = "objects\\props\\barrel.model";
+    const FOLDER: &str = "objects\\props";
     const UNKNOWN: &str = "file:/no/such/tag.model";
 
     /// How many variants `BrowserAction` has. Bump it with `variant_index`.
@@ -774,11 +766,11 @@ mod tests {
     fn fixture() -> LooseKit {
         let kit = LooseKit::new("browser-actions", "halo3_mcc");
         let mode = group_tag("halo3_mcc", "render_model");
-        kit.write_mcc("objects/props/crate", "render_model", |_| {});
-        kit.write_mcc("objects/props/crate", "model", |tag| {
+        kit.write_mcc("objects\\props\\crate", "render_model", |_| {});
+        kit.write_mcc("objects\\props\\crate", "model", |tag| {
             set_reference(tag, "render model", mode, "objects\\props\\crate");
         });
-        kit.write_mcc("objects/props/barrel", "model", |_| {});
+        kit.write_mcc("objects\\props\\barrel", "model", |_| {});
         kit
     }
 
@@ -847,7 +839,7 @@ mod tests {
             // 0
             Case {
                 action: |_| A::OpenFolderBrowser {
-                    rel_path: PathBuf::from(FOLDER),
+                    rel_path: tag_path::to_relative(FOLDER),
                     label: "props".to_owned(),
                     open_in_new_tab: false,
                 },
@@ -855,10 +847,10 @@ mod tests {
                     kit.open(app, BARREL);
                 },
                 check: |app, _, _| {
-                    let pane = folder_pane_key(Path::new(FOLDER));
+                    let pane = folder_pane_key(&tag_path::to_relative(FOLDER));
                     let state = app.views[app.model.kits[0].id].browser.folder_browsers.get(&pane).ok_or("no pane")?;
                     ensure(state.label == "props", "label")?;
-                    ensure(state.rel_path == Path::new(FOLDER), "rel path")?;
+                    ensure(state.rel_path == tag_path::to_relative(FOLDER), "rel path")?;
                     ensure(app.model.kits[0].open_tabs.contains(&pane), "not a tab")?;
                     // The folder pane covers the barrel's tab, so no tag is
                     // selected: Save must not act on a tag nobody can see.
@@ -870,16 +862,16 @@ mod tests {
             },
             // 1
             Case {
-                action: |_| A::ToggleFolderFavorite(PathBuf::from(FOLDER)),
+                action: |_| A::ToggleFolderFavorite(tag_path::to_relative(FOLDER)),
                 setup: no_setup,
                 check: |app, kit, _| {
-                    status_is(app, "Added objects/props to Favorites")?;
+                    status_is(app, r"Added objects\props to Favorites")?;
                     let favorites = &app.model.prefs.editing_kit_favorites;
                     ensure(favorites.len() == 1, "one kit's favorites")?;
                     ensure(same_recent_path(&favorites[0].tags_root, &kit.root), "tags root")?;
-                    ensure(favorites[0].folders == vec![PathBuf::from(FOLDER)], "folders")?;
+                    ensure(favorites[0].folders == vec![tag_path::to_relative(FOLDER)], "folders")?;
                     ensure(
-                        app.model.kits[0].active_favorite_folders == vec![PathBuf::from(FOLDER)],
+                        app.model.kits[0].active_favorite_folders == vec![tag_path::to_relative(FOLDER)],
                         "kit favorites",
                     )
                 },
@@ -903,7 +895,7 @@ mod tests {
                 check: |app, kit, _| {
                     status_is(app, &format!("Added {MODEL} to Favorites"))?;
                     ensure(
-                        app.model.prefs.editing_kit_favorites[0].tags == vec![PathBuf::from(MODEL)],
+                        app.model.prefs.editing_kit_favorites[0].tags == vec![tag_path::to_relative(MODEL)],
                         "favorite tags",
                     )?;
                     ensure(
@@ -918,19 +910,19 @@ mod tests {
                 action: |kit| A::CopyTagName(kit.key(MODEL)),
                 setup: no_setup,
                 check: |app, _, outcome| {
-                    let native = crate::core::format::to_native_path_string(MODEL);
-                    ensure(outcome.copied_text == native, format!("copied {:?}", outcome.copied_text))?;
-                    status_is(app, &format!("Copied {native}"))
+                    let path = MODEL;
+                    ensure(outcome.copied_text == path, format!("copied {:?}", outcome.copied_text))?;
+                    status_is(app, &format!("Copied {path}"))
                 },
             },
             // 5
             Case {
-                action: |_| A::CopyFolderPath(PathBuf::from(FOLDER)),
+                action: |_| A::CopyFolderPath(tag_path::to_relative(FOLDER)),
                 setup: no_setup,
                 check: |app, _, outcome| {
-                    let native = crate::core::format::to_native_path_string(FOLDER);
-                    ensure(outcome.copied_text == native, format!("copied {:?}", outcome.copied_text))?;
-                    status_is(app, &format!("Copied {native}"))
+                    let path = FOLDER;
+                    ensure(outcome.copied_text == path, format!("copied {:?}", outcome.copied_text))?;
+                    status_is(app, &format!("Copied {path}"))
                 },
             },
             // 6: a known key reaches the save dialog.
@@ -968,7 +960,7 @@ mod tests {
             // returns before it.
             Case {
                 action: |_| A::DumpLooseFolderJson {
-                    rel_path: PathBuf::from(FOLDER),
+                    rel_path: tag_path::to_relative(FOLDER),
                     label: "props".to_owned(),
                 },
                 setup: |app, _| app.model.kits[0].source = None,
@@ -977,7 +969,7 @@ mod tests {
             // 10
             Case {
                 action: |_| A::RenameLooseFolder {
-                    rel_path: PathBuf::from(FOLDER),
+                    rel_path: tag_path::to_relative(FOLDER),
                     label: "props".to_owned(),
                 },
                 setup: |app, kit| {
@@ -989,7 +981,7 @@ mod tests {
                         .get::<LooseFolderRenameState>()
                         .ok_or("no dialog")?;
                     ensure(state.kit == app.model.kits[0].id, "kit")?;
-                    ensure(state.rel_path == Path::new(FOLDER), "rel path")?;
+                    ensure(state.rel_path == tag_path::to_relative(FOLDER), "rel path")?;
                     ensure(state.old_name == "props" && state.name_input == "props", "name")?;
                     ensure(state.parent_display == "objects", "parent")?;
                     ensure(state.tag_count == 3, format!("{} tags", state.tag_count))?;
@@ -1002,7 +994,7 @@ mod tests {
             // 11
             Case {
                 action: |_| A::MoveLooseFolder {
-                    rel_path: PathBuf::from(FOLDER),
+                    rel_path: tag_path::to_relative(FOLDER),
                     label: "props".to_owned(),
                 },
                 setup: dirty_model,
@@ -1011,7 +1003,7 @@ mod tests {
             // 12
             Case {
                 action: |_| A::CopyLooseFolder {
-                    rel_path: PathBuf::from(FOLDER),
+                    rel_path: tag_path::to_relative(FOLDER),
                     label: "props".to_owned(),
                 },
                 setup: |app, _| {
@@ -1026,7 +1018,7 @@ mod tests {
             // 13
             Case {
                 action: |_| A::ImportTagsIntoLooseFolder {
-                    rel_path: PathBuf::from(FOLDER),
+                    rel_path: tag_path::to_relative(FOLDER),
                 },
                 setup: no_setup,
                 check: |app, kit, _| {
@@ -1114,7 +1106,7 @@ mod tests {
             // 23: the whole scan is in memory, so the folder loads at once.
             Case {
                 action: |_| A::LoadFolderExtractables {
-                    rel_path: PathBuf::from(FOLDER),
+                    rel_path: tag_path::to_relative(FOLDER),
                     label: "props".to_owned(),
                 },
                 setup: |app, _| app.model.kits[0].source.as_mut().unwrap().entries.clear(),
@@ -1195,9 +1187,10 @@ mod tests {
                         format!("no tool import queued; status {:?}", app.model.status)
                     })?;
                     ensure(request.verb == "render", format!("verb {:?}", request.verb))?;
+                    // The tag's folder, never the tag name: `tool render`
+                    // looks for `render` under this directory.
                     ensure(
-                        request.source_dir == "objects\\props\\crate"
-                            || request.source_dir == "objects/props/crate",
+                        request.source_dir == "objects\\props",
                         format!("source dir {:?}", request.source_dir),
                     )
                 },
@@ -1344,7 +1337,7 @@ mod tests {
             // 45
             Case {
                 action: |_| A::NewTagInFolder {
-                    folder_rel: Some(format!("{FOLDER}/")),
+                    folder_rel: Some(format!(r"{FOLDER}\")),
                 },
                 setup: no_setup,
                 check: |app, _, _| {
@@ -1352,7 +1345,7 @@ mod tests {
                         return ensure(false, "the dialog opened");
                     };
                     ensure(
-                        dialog.rel_path == format!("{FOLDER}/"),
+                        dialog.rel_path == format!(r"{FOLDER}\"),
                         format!("path {:?}", dialog.rel_path),
                     )
                 },
@@ -1379,7 +1372,7 @@ mod tests {
             // 47
             Case {
                 action: |_| A::RenameContainerFolder {
-                    rel: "objects/props".to_owned(),
+                    rel: "objects\\props".to_owned(),
                 },
                 setup: no_setup,
                 check: |app, _, _| {
@@ -1396,13 +1389,13 @@ mod tests {
             // arm reports a removal anyway (QUIRK; the menu never offers it here).
             Case {
                 action: |_| A::DeleteContainerFolder {
-                    rel: "objects/props".to_owned(),
+                    rel: "objects\\props".to_owned(),
                 },
                 setup: no_setup,
                 check: |app, kit, _| {
-                    status_is(app, "Removed folder objects/props")?;
+                    status_is(app, r"Removed folder objects\props")?;
                     ensure(app.model.kits[0].pending_container_folders.is_empty(), "nothing pending")?;
-                    ensure(kit.root.join(FOLDER).is_dir(), "the folder on disk is untouched")
+                    ensure(kit.path(FOLDER).is_dir(), "the folder on disk is untouched")
                 },
             },
         ]
@@ -1471,7 +1464,7 @@ mod tests {
         let open = |app: &mut Baboon, new_tab: bool| {
             app.handle_browser_action(
                 BrowserAction::OpenFolderBrowser {
-                    rel_path: PathBuf::from(FOLDER),
+                    rel_path: tag_path::to_relative(FOLDER),
                     label: "props".to_owned(),
                     open_in_new_tab: new_tab,
                 },
@@ -1482,7 +1475,7 @@ mod tests {
         open(&mut app, false);
         assert_eq!(app.views[app.model.kits[0].id].browser.folder_browsers.len(), 1);
         open(&mut app, true);
-        let base = folder_pane_key(Path::new(FOLDER));
+        let base = folder_pane_key(&tag_path::to_relative(FOLDER));
         let mut keys: Vec<_> = app.views[app.model.kits[0].id].browser.folder_browsers.keys().cloned().collect();
         keys.sort();
         assert_eq!(keys, vec![base.clone(), format!("{base}#2")]);
@@ -1518,7 +1511,7 @@ mod tests {
         let mut tree = crate::core::source::build_folder_directory_tree(&root).unwrap();
         let mut entries = vec![TagEntry {
             key: "stale".to_owned(),
-            display_path: "objects/old/stale.weapon".to_owned(),
+            display_path: "objects\\old\\stale.weapon".to_owned(),
             group_tag: u32::from_be_bytes(*b"weap"),
             group_name: None,
             location: TagEntryLocation::LooseFile(root.join("objects/old/stale.weapon")),

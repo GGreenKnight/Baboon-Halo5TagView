@@ -40,18 +40,20 @@ fn owning_model_key(entries: &[TagEntry], clicked: &TagEntry) -> Option<String> 
         .iter()
         .find(|entry| {
             entry.group_tag == hlmt
-                && entry.display_path.replace('\\', "/").to_ascii_lowercase() == target
+                && entry.display_path.to_ascii_lowercase() == target
         })
         .map(|entry| entry.key.clone())
 }
 
-/// A display path lowercased, forward-slashed, and stripped of its group
-/// extension — the shape two tags' paths compare in.
+/// A display path lowercased and stripped of its group extension — the shape
+/// two tags' paths compare in.
 fn normalized_tag_stem(display_path: &str) -> String {
-    let normalized = display_path.replace('\\', "/").to_ascii_lowercase();
+    let normalized = display_path.to_ascii_lowercase();
     match normalized.rsplit_once('.') {
         // Only a dot in the leaf is an extension; a dot in a folder name is not.
-        Some((stem, extension)) if !extension.contains('/') && !stem.is_empty() => stem.to_owned(),
+        Some((stem, extension)) if !extension.contains(tag_path::SEPARATOR) && !stem.is_empty() => {
+            stem.to_owned()
+        }
         _ => normalized,
     }
 }
@@ -340,7 +342,7 @@ mod tests {
             display_path: display_path.to_owned(),
             group_tag: u32::from_be_bytes(*group),
             group_name: group_name.map(str::to_owned),
-            location: TagEntryLocation::LooseFile(PathBuf::from(display_path)),
+            location: TagEntryLocation::LooseFile(tag_path::to_relative(display_path)),
         }
     }
 
@@ -352,16 +354,16 @@ mod tests {
     #[test]
     fn render_geometry_is_listed_by_its_group_in_its_game() {
         let render_model = entry(
-            "objects/warthog.render_model",
+            "objects\\warthog.render_model",
             b"mode",
             Some("render_model"),
         );
-        let gbxmodel = entry("vehicles/hog.gbxmodel", b"mod2", Some("gbxmodel"));
-        let halo_ce_model = entry("weapons/rifle.model", b"mode", Some("model"));
-        let the_owning_model = entry("objects/warthog.model", b"hlmt", Some("model"));
-        let unnamed = entry("objects/warthog.render_model", b"mode", None);
-        let misnamed = entry("objects/a", b"____", Some("render_model"));
-        let a_bitmap = entry("bitmaps/e.bitmap", b"bitm", Some("bitmap"));
+        let gbxmodel = entry("vehicles\\hog.gbxmodel", b"mod2", Some("gbxmodel"));
+        let halo_ce_model = entry("weapons\\rifle.model", b"mode", Some("model"));
+        let the_owning_model = entry("objects\\warthog.model", b"hlmt", Some("model"));
+        let unnamed = entry("objects\\warthog.render_model", b"mode", None);
+        let misnamed = entry("objects\\a", b"____", Some("render_model"));
+        let a_bitmap = entry("bitmaps\\e.bitmap", b"bitm", Some("bitmap"));
 
         assert!(is_render_model_tag(&render_model));
         assert!(is_render_model_tag(&gbxmodel));
@@ -399,7 +401,7 @@ mod tests {
         );
         // Different separators and case, as two build steps can leave them.
         let model = entry(
-            "Objects/Vehicles/Warthog/Warthog.model",
+            "Objects\\Vehicles\\Warthog\\Warthog.model",
             b"hlmt",
             Some("model"),
         );
@@ -412,8 +414,8 @@ mod tests {
     /// not exist must resolve to `None`, not to a guessed key.
     #[test]
     fn a_render_model_with_no_model_beside_it_opens_itself() {
-        let render = entry("objects/orphan.render_model", b"mode", Some("render_model"));
-        let unrelated = entry("objects/other.model", b"hlmt", Some("model"));
+        let render = entry("objects\\orphan.render_model", b"mode", Some("render_model"));
+        let unrelated = entry("objects\\other.model", b"hlmt", Some("model"));
         let entries = vec![render.clone(), unrelated];
 
         assert_eq!(owning_model_key(&entries, &render), None);

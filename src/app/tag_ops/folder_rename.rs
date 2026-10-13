@@ -155,14 +155,14 @@ impl Baboon {
                 .full_entry_set()
                 .iter()
                 .filter(|entry| keys.contains(&entry.key))
-                .map(|entry| entry.display_path.replace('\\', "/"))
+                .map(|entry| entry.display_path.clone())
                 .collect::<Vec<_>>();
             paths.sort_by_cached_key(|path| crate::core::source::natural_key(path));
             Some(paths)
         });
         let parent_display = rel_path
             .parent()
-            .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+            .map(tag_path::relative_tag_path)
             .unwrap_or_default();
         self.dialogs.open(LooseFolderRenameState {
             kit: self.model.active_kit_id(),
@@ -312,7 +312,7 @@ mod tests {
         let model = parse_group_tag("hlmt").unwrap();
         let inside_vehicle = TagEntry {
             key: "file:tags/objects/vehicles/creep/shadow.vehicle".to_owned(),
-            display_path: "objects/vehicles/creep/shadow.vehicle".to_owned(),
+            display_path: r"objects\vehicles\creep\shadow.vehicle".to_owned(),
             group_tag: vehicle,
             group_name: Some("vehicle".to_owned()),
             location: TagEntryLocation::LooseFile(PathBuf::from(
@@ -321,7 +321,7 @@ mod tests {
         };
         let inside_model = TagEntry {
             key: "file:tags/objects/vehicles/creep/shadow.model".to_owned(),
-            display_path: "objects/vehicles/creep/shadow.model".to_owned(),
+            display_path: r"objects\vehicles\creep\shadow.model".to_owned(),
             group_tag: model,
             group_name: Some("model".to_owned()),
             location: TagEntryLocation::LooseFile(PathBuf::from(

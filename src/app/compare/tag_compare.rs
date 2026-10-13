@@ -126,8 +126,7 @@ fn commit_text(commit: &GitHistoryCommit) -> String {
 }
 
 fn path_text(ui: &Ui, path: &str, width: f32, font: egui::FontId) -> String {
-    let path = native_display_path(path);
-    truncate_start(&path, width, |text| {
+    truncate_start(path, width, |text| {
         ui.painter()
             .layout_no_wrap(text.to_owned(), font.clone(), text_dark())
             .size()
@@ -135,8 +134,7 @@ fn path_text(ui: &Ui, path: &str, width: f32, font: egui::FontId) -> String {
     })
 }
 
-fn path_label(ui: &mut Ui, path: &str, width: f32) {
-    let full = native_display_path(path);
+fn path_label(ui: &mut Ui, full: &str, width: f32) {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let short = path_text(ui, &full, width - 4.0, font.clone());
     let (rect, response) =
@@ -1080,7 +1078,11 @@ impl Dialog for TagDiffState {
                             })
                             .strong(),
                         );
-                        path_label(ui, key_label(&state.a_key), field_width);
+                        let current = match file_key_path(&state.a_key) {
+                            Some(path) => native_display_path(&path.display().to_string()),
+                            None => key_label(&state.a_key).to_owned(),
+                        };
+                        path_label(ui, &current, field_width);
                         ui.end_row();
 
                         ui.label(RichText::new("Compare Source:").strong());
@@ -1236,7 +1238,7 @@ impl Dialog for TagDiffState {
                                                 );
                                                 if ui
                                                     .selectable_label(selected, shown)
-                                                    .on_hover_text(native_display_path(label))
+                                                    .on_hover_text(label)
                                                     .clicked()
                                                 {
                                                     state.b_kit = Some(group.kit);
@@ -1256,7 +1258,7 @@ impl Dialog for TagDiffState {
                                     let path = state
                                         .b_path
                                         .as_ref()
-                                        .map(|path| path.display().to_string())
+                                        .map(|path| native_display_path(&path.display().to_string()))
                                         .unwrap_or_else(|| "No tag selected".to_owned());
                                     path_label(ui, &path, (field_width - 90.0).max(80.0));
                                     if ui.button("Browse…").clicked() {
@@ -1305,7 +1307,7 @@ impl Dialog for TagDiffState {
                                 ui.label(RichText::new("Compare With:").strong());
                                 let path = matched
                                     .as_ref()
-                                    .map(|path| path.display().to_string())
+                                    .map(|path| native_display_path(&path.display().to_string()))
                                     .unwrap_or_else(|| "Select an editing kit".to_owned());
                                 path_label(ui, &path, field_width);
                                 ui.end_row();
@@ -1314,7 +1316,9 @@ impl Dialog for TagDiffState {
                                 ui.label(RichText::new("Compare With:").strong());
                                 let label = current_path
                                     .as_ref()
-                                    .map(|path| format!("HEAD: {}", path.display()))
+                                    .map(|path| {
+                                        format!("HEAD: {}", native_display_path(&path.display().to_string()))
+                                    })
                                     .unwrap_or_else(|| "No loose tag selected".to_owned());
                                 path_label(ui, &label, field_width);
                                 ui.end_row();

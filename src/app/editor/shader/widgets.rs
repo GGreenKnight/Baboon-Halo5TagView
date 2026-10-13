@@ -485,7 +485,7 @@ fn structural_reference_edit(
     let current = if current_path.is_empty() {
         "NONE".to_owned()
     } else {
-        format!("{}.{extension}", current_path.replace('\\', "/"))
+        format!("{current_path}.{extension}")
     };
     Some(ShaderRowEdit {
         path: edit_path.to_owned(),

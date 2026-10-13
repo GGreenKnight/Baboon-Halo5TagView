@@ -1237,14 +1237,10 @@ fn draw_folder_pane_header(
     is_container: bool,
     action: &mut Option<BrowserAction>,
 ) {
-    let normalized = pane.rel_path.to_string_lossy().replace('\\', "/");
-    let (breadcrumbs, title) = pane_header_path_parts(&normalized);
+    let folder = tag_path::relative_tag_path(&pane.rel_path);
+    let (breadcrumbs, title) = pane_header_path_parts(&folder);
     let is_favorite = browser_favorite_folders(ui).is_some_and(|folders| {
-        folders.iter().any(|path| {
-            path.to_string_lossy()
-                .replace('\\', "/")
-                .eq_ignore_ascii_case(&normalized)
-        })
+        folders.iter().any(|path| paths_match_case_insensitive(path, &pane.rel_path))
     });
     let available = ui.available_width();
     let actions_single_row = available >= FOLDER_HEADER_ACTIONS_SINGLE_ROW_BREAKPOINT;
@@ -1378,7 +1374,7 @@ fn draw_folder_header_common_actions(
             CONTEXT_MENU_WIDTH,
             |ui| {
                 style_tag_context_menu(ui);
-                let extract_label = pane.rel_path.to_string_lossy().replace('\\', "/");
+                let extract_label = tag_path::relative_tag_path(&pane.rel_path);
                 let extract_label = if extract_label.is_empty() {
                     pane.label.clone()
                 } else {
@@ -1497,8 +1493,7 @@ pub(in crate::app) fn current_browser_item(kit: &Kit, view: &KitView) -> Option<
 fn follow_reveal(kit_id: KitId, kit: &Kit, item: &str) -> Option<RevealRequest> {
     let (key, ancestors, folder) = match item.strip_prefix(FOLDER_PANE_PREFIX) {
         Some(path) => {
-            let mut labels: Vec<String> =
-                path.split('/').filter(|label| !label.is_empty()).map(str::to_owned).collect();
+            let mut labels: Vec<String> = tag_path::segments(path).map(str::to_owned).collect();
             let label = labels.pop()?;
             (label, labels, true)
         }

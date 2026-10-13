@@ -412,15 +412,6 @@ fn write_block_index(out: &mut String, value: i64) {
     }
 }
 
-/// Converts a canonical, forward-slash-normalized tag display path into an
-/// OS-native path string for clipboard and export output only.
-///
-/// Internal storage, indexing, and comparison must continue to use the
-/// forward-slash form.
-pub fn to_native_path_string(display_path: &str) -> String {
-    display_path.replace('/', std::path::MAIN_SEPARATOR_STR)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,15 +469,6 @@ mod tests {
                 false
             ),
             ""
-        );
-    }
-
-    #[test]
-    fn tag_display_path_converts_to_native_separators() {
-        let separator = std::path::MAIN_SEPARATOR;
-        assert_eq!(
-            to_native_path_string("objects/weapons/rifle.weapon"),
-            format!("objects{separator}weapons{separator}rifle.weapon")
         );
     }
 

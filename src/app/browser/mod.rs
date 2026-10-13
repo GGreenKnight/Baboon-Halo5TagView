@@ -29,7 +29,7 @@ pub(super) use tree::*;
 #[derive(Default)]
 pub(in crate::app) struct ModifiedTags {
     keys: HashSet<String>,
-    /// Every folder above a modified tag, as a lowercased `/`-separated path.
+    /// Every folder above a modified tag, as a lowercased tag path.
     folders: HashSet<String>,
     /// The Groups-view node of every modified tag.
     groups: HashSet<String>,
@@ -37,9 +37,7 @@ pub(in crate::app) struct ModifiedTags {
 
 /// A tree node's or display path's folder in the form `folders` keys use.
 fn folder_key(path: &str) -> String {
-    path.replace('\\', "/")
-        .trim_matches('/')
-        .to_ascii_lowercase()
+    path.trim_matches(tag_path::SEPARATOR).to_ascii_lowercase()
 }
 
 impl ModifiedTags {
@@ -51,7 +49,7 @@ impl ModifiedTags {
         self.keys.insert(entry.key.clone());
         let path = folder_key(&entry.display_path);
         let mut folder = path.as_str();
-        while let Some((parent, _)) = folder.rsplit_once('/') {
+        while let Some(parent) = tag_path::parent(folder) {
             self.folders.insert(parent.to_owned());
             folder = parent;
         }
@@ -71,7 +69,7 @@ impl ModifiedTags {
             return false;
         }
         self.folders
-            .contains(&folder_key(&node.rel_path.to_string_lossy()))
+            .contains(&folder_key(&tag_path::relative_tag_path(&node.rel_path)))
             || self.groups.contains(&node.label)
     }
 }
@@ -559,7 +557,7 @@ mod tests {
         let mut modified = ModifiedTags::default();
         modified.insert(&TagEntry {
             key: "file:rifle".to_owned(),
-            display_path: "objects/Weapons/rifle.weapon".to_owned(),
+            display_path: "objects\\Weapons\\rifle.weapon".to_owned(),
             group_tag: u32::from_be_bytes(*b"weap"),
             group_name: Some("weapon".to_owned()),
             location: TagEntryLocation::LooseFile(PathBuf::from("rifle.weapon")),
@@ -567,7 +565,7 @@ mod tests {
 
         assert!(modified.subtree_has_modified(&node("objects", "objects")));
         assert!(
-            modified.subtree_has_modified(&node("objects/weapons", "weapons")),
+            modified.subtree_has_modified(&node("objects\\weapons", "weapons")),
             "unloaded, any case"
         );
         assert!(

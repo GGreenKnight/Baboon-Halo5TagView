@@ -65,9 +65,7 @@ impl Dialog for QueryResultsWindow {
                             let text = results
                                 .entries
                                 .iter()
-                                .map(|entry| {
-                                    crate::core::format::to_native_path_string(&entry.display_path)
-                                })
+                                .map(|entry| entry.display_path.as_str())
                                 .collect::<Vec<_>>()
                                 .join("\n");
                             ui.copy_text(text);
@@ -97,7 +95,7 @@ impl Dialog for QueryResultsWindow {
                                 fixed_height_row(ui, row_height, |ui| match *row {
                                     QueryResultRow::Entry(index) => {
                                         let entry = &results.entries[index];
-                                        let path = entry.display_path.replace('\\', "/");
+                                        let path = entry.display_path.clone();
                                         let label = match results.annotations.get(index) {
                                             Some(annotation) => format!("{annotation}  —  {path}"),
                                             None => path,
@@ -467,7 +465,7 @@ mod tests {
         let entries: Vec<TagEntry> = (0..5_000)
             .map(|index| TagEntry {
                 key: format!("file:sound/row_{index}.sound"),
-                display_path: format!("sound/row_{index}.sound"),
+                display_path: format!(r"sound\row_{index}.sound"),
                 group_tag: u32::from_be_bytes(*b"snd!"),
                 group_name: Some("sound".to_owned()),
                 location: TagEntryLocation::LooseFile(format!("sound/row_{index}.sound").into()),
@@ -503,11 +501,11 @@ mod tests {
                     egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
                     _ => None,
                 })
-                .filter(|text| text.starts_with("sound/row_"))
+                .filter(|text| text.starts_with(r"sound\row_"))
                 .collect();
         }
-        assert!(painted.contains(&"sound/row_0.sound".to_owned()));
-        assert!(!painted.contains(&"sound/row_4999.sound".to_owned()));
+        assert!(painted.contains(&r"sound\row_0.sound".to_owned()));
+        assert!(!painted.contains(&r"sound\row_4999.sound".to_owned()));
         let built = ROWS_BUILT.with(std::cell::Cell::get);
         assert!(built < 100, "laid out {built} of 5,000 rows");
     }
