@@ -776,7 +776,10 @@ pub(in crate::app) fn draw_foundation_flags_row(
     let display_flags = if options.is_empty() {
         flag_names
             .iter()
-            .map(|(bit, name)| (*bit, name.as_str(), true))
+            .map(|(bit, name)| {
+                let is_set = 1u64.checked_shl(*bit).is_some_and(|mask| raw & mask != 0);
+                (*bit, name.as_str(), is_set)
+            })
             .collect::<Vec<_>>()
     } else {
         options

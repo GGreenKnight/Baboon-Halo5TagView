@@ -2962,13 +2962,18 @@ pub(in crate::app) fn block_index_target_labels(
         .collect()
 }
 
+/// The block a block-index field points into, or whose elements a
+/// block-flags field's bits stand for: found the same way for both.
 pub(in crate::app) fn block_index_target_options(
     tag_struct: &TagStruct<'_>,
     field: &TagField<'_>,
     root: Option<TagStruct<'_>>,
     struct_path: &str,
 ) -> Option<BlockIndexTarget> {
-    let target = field.definition().block_index_target()?;
+    let definition = field.definition();
+    let target = definition
+        .block_index_target()
+        .or_else(|| definition.block_flags_target())?;
     crate::app::editor::declared_block_index_target(tag_struct, root, struct_path, target.name())
 }
 
