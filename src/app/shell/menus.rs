@@ -155,14 +155,71 @@ pub(in crate::app) fn draw_menu_bar(cx: &Ctx, ui: &mut egui::Ui, menu: &MenuStat
         });
 }
 
+/// Keep shortcut hints separate from labels so every menu row shares a right edge.
+fn shortcut_menu_button(
+    ui: &mut Ui,
+    label: &str,
+    icon: Option<ButtonIcon>,
+    modifiers: egui::Modifiers,
+    key: egui::Key,
+    enabled: bool,
+) -> egui::Response {
+    let hint = egui::RichText::new(shortcut_text(ui.ctx(), modifiers, key))
+        .color(ui.visuals().text_color().gamma_multiply(0.5));
+    let button = match icon {
+        Some(icon) => egui::Button::image_and_text(
+            button_icon_image(ui, icon, text_dark(), BUTTON_ICON_SIZE),
+            label,
+        ),
+        None => egui::Button::new(label),
+    };
+    ui.add_enabled(enabled, button.right_text(hint))
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn menu_shortcuts_share_a_right_edge_and_use_half_opacity_in_both_themes() {
+        for dark in [false, true] {
+            let ctx = egui::Context::default();
+            ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            let mut expected_color = Color32::TRANSPARENT;
+            let output = crate::app::run_ui_test(&ctx, Default::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                        ui.set_width(360.0);
+                        expected_color = ui.visuals().text_color().gamma_multiply(0.5);
+                        shortcut_menu_button(ui, "New Tag...", None, egui::Modifiers::COMMAND, egui::Key::N, true);
+                        shortcut_menu_button(ui, "A much longer action label", None, egui::Modifiers::COMMAND, egui::Key::S, true);
+                    });
+                });
+            });
+            let hints: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if [shortcut_text(&ctx, egui::Modifiers::COMMAND, egui::Key::N),
+                        shortcut_text(&ctx, egui::Modifiers::COMMAND, egui::Key::S)]
+                        .iter().any(|hint| hint == text.galley.text()) => Some(text),
+                _ => None,
+            }).collect();
+            assert_eq!(hints.len(), 2);
+            let right = |text: &egui::epaint::TextShape| text.pos.x + text.galley.rect.right();
+            assert!((right(hints[0]) - right(hints[1])).abs() < 1.0);
+            for hint in hints {
+                assert!(hint.galley.job.sections.iter().all(|section| section.format.color == expected_color));
+            }
+        }
+    }
+}
+
 /// The File menu: loading sources, saving tags and projects, and closing.
 fn draw_file_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
     style_list_menu(ui);
-    if ui
-        .add_enabled(
-            !cx.model.editing_kit_is_read_only(cx.model.active),
-            egui::Button::new("New Tag..."),
-        )
+    if shortcut_menu_button(
+        ui, "New Tag...", Some(ButtonIcon::NewTag), egui::Modifiers::COMMAND, egui::Key::N,
+        !cx.model.editing_kit_is_read_only(cx.model.active),
+    )
         .clicked()
     {
         close_menu(ui);
@@ -270,17 +327,18 @@ fn draw_file_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
         cx.send(AppAction::Recent(action));
     }
     ui.separator();
-    let save_shortcut = shortcut_text(ui.ctx(), egui::Modifiers::COMMAND, egui::Key::S);
     let save_label =
         if cx.model.prefs.enable_chimp && menu.chimp_surface {
-            format!("Save Chimp Changes...    {save_shortcut}")
+            "Save Chimp Changes..."
         } else {
-            format!("Save Current Tag    {save_shortcut}")
+            "Save Current Tag"
         };
-    if icon_text_button(
+    if shortcut_menu_button(
         ui,
-        ButtonIcon::Save,
         save_label,
+        Some(ButtonIcon::Save),
+        egui::Modifiers::COMMAND,
+        egui::Key::S,
         !cx.model.editing_kit_is_read_only(cx.model.active),
     )
     .clicked()
@@ -300,14 +358,10 @@ fn draw_file_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
         cx.send(AppAction::SaveCurrentTagAs);
     }
     if cx.model.current_source_is_container() {
-        if ui
-            .add_enabled(
-                cx.model.can_poke_current_tag(),
-                egui::Button::new(format!(
-                    "Poke Current Tag...    {}",
-                    shortcut_text(ui.ctx(), egui::Modifiers::COMMAND, egui::Key::P)
-                )),
-            )
+        if shortcut_menu_button(
+            ui, "Poke Current Tag...", None, egui::Modifiers::COMMAND, egui::Key::P,
+            cx.model.can_poke_current_tag(),
+        )
             .on_hover_text(
                 "Apply supported changes to this already-loaded tag in the verified Campaign Evolved process",
             )
@@ -381,14 +435,10 @@ fn draw_file_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
         }
     }
     ui.separator();
-    if ui
-        .add_enabled(
-            cx.model.kits[cx.model.active].selected_key.is_some(),
-            egui::Button::new(format!(
-                "Close Current Tag    {}",
-                shortcut_text(ui.ctx(), egui::Modifiers::COMMAND, egui::Key::W)
-            )),
-        )
+    if shortcut_menu_button(
+        ui, "Close Current Tag", None, egui::Modifiers::COMMAND, egui::Key::W,
+        cx.model.kits[cx.model.active].selected_key.is_some(),
+    )
         .clicked()
     {
         // Deferred, per upstream: the close runs after the
@@ -421,13 +471,12 @@ fn draw_file_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
 /// The Edit menu: undo and redo, and discarding unsaved changes.
 fn draw_edit_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
     style_list_menu(ui);
-    if icon_text_button(
+    if shortcut_menu_button(
         ui,
-        ButtonIcon::Undo,
-        &format!(
-            "Undo    {}",
-            shortcut_text(ui.ctx(), egui::Modifiers::COMMAND, egui::Key::Z)
-        ),
+        "Undo",
+        Some(ButtonIcon::Undo),
+        egui::Modifiers::COMMAND,
+        egui::Key::Z,
         menu.can_undo,
     )
     .clicked()
@@ -435,17 +484,12 @@ fn draw_edit_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
         close_menu(ui);
         cx.send(AppAction::Undo);
     }
-    if icon_text_button(
+    if shortcut_menu_button(
         ui,
-        ButtonIcon::Redo,
-        &format!(
-            "Redo    {}",
-            shortcut_text(
-                ui.ctx(),
-                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-                egui::Key::Z,
-            )
-        ),
+        "Redo",
+        Some(ButtonIcon::Redo),
+        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+        egui::Key::Z,
         menu.can_redo,
     )
     .clicked()

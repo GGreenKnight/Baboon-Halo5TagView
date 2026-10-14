@@ -124,13 +124,12 @@ pub(in crate::app) enum BrowserAction {
     ImportTagInFolder {
         folder_rel: Option<String>,
     },
-    /// Create a new Campaign Evolved tag at `folder_rel` (`None` = root).
+    /// Create a tag at `folder_rel` (`None` = root), using the New Tag dialog.
     NewTagInFolder {
         folder_rel: Option<String>,
     },
-    /// Make a folder inside `parent_rel` (`None` = container root). Nothing is
-    /// written to any pak: a folder only reaches the container's directory
-    /// index once a tag lands in it.
+    /// Make a folder inside `parent_rel` (`None` = root): on disk for a loose
+    /// kit, or in the pending-folder set for a container source.
     NewContainerFolder {
         parent_rel: Option<String>,
     },
@@ -179,11 +178,9 @@ pub(in crate::app) fn is_folder_pane_key(key: &str) -> bool {
     key.starts_with(FOLDER_PANE_PREFIX)
 }
 
-/// The New/Rename Folder dialog for a container source.
-///
-/// A folder here is a workspace-level intention, not a container edit: a pak's
-/// directory index cannot encode a directory with no file beneath it, so this
-/// only ever moves entries in the kit's pending-folder set.
+/// New Folder for loose and container sources, or Rename Folder for a pending
+/// container folder. Loose folders are created on disk; container folders live
+/// in the workspace's pending set until a tag lands inside them.
 pub(in crate::app) struct ContainerFolderDialog {
     /// Workspace this was raised from. Resolved on apply, because a modeless
     /// dialog outlives the frame that opened it and the user can focus another

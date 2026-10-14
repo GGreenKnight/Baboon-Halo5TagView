@@ -38,7 +38,6 @@ impl BrowserSearchScope {
 }
 
 pub(in crate::app) fn search_scope_controls(ui: &mut Ui, scope: &mut BrowserSearchScope) {
-    context_menu_separator(ui);
     ui.label(RichText::new("Search in").color(subtle_dark()));
     ui.checkbox(&mut scope.tags, "Tags");
     ui.checkbox(&mut scope.folders, "Folders");

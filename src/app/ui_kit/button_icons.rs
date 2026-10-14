@@ -77,6 +77,7 @@ pub(in crate::app) enum ButtonIcon {
     Sort,
     Stop,
     Tag,
+    NewTag,
     TableView,
     Bitmap,
     View,
@@ -166,6 +167,7 @@ pub(in crate::app) fn button_icon_svg(icon: ButtonIcon) -> &'static str {
         ButtonIcon::Sort => include_root_str!("assets/Button Icons/Sort.svg"),
         ButtonIcon::Stop => include_root_str!("assets/Button Icons/Stop.svg"),
         ButtonIcon::Tag => include_root_str!("assets/Button Icons/Tag.svg"),
+        ButtonIcon::NewTag => include_root_str!("assets/Button Icons/New Tag.svg"),
         ButtonIcon::TableView => include_root_str!("assets/Button Icons/Table View.svg"),
         ButtonIcon::View => include_root_str!("assets/Button Icons/View.svg"),
         ButtonIcon::Bitmap => {

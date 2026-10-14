@@ -292,8 +292,11 @@ pub(in crate::app) fn draw_folder_browser_pane(
                 }
             });
             ui.add_space(6.0);
-
-            let search_response = if folder_browser_search_stacks(ui.available_width()) {
+            egui::Frame::NONE.stroke(Stroke::new(1.0, ui.visuals().window_stroke.color))
+                .corner_radius(4).show(ui, |ui| {
+            let search_response = egui::Frame::NONE.fill(foundation_block_bar()).inner_margin(6)
+                .show(ui, |ui| {
+            if folder_browser_search_stacks(ui.available_width()) {
                 let search_response = browser_search_field(ui, &mut pane.filter, &search_hint);
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
@@ -302,6 +305,8 @@ pub(in crate::app) fn draw_folder_browser_pane(
                         &mut pane,
                         &mut show_browser_prefixes,
                         &mut folders_before_tags,
+                        (is_loose || is_container) && !cx.model.editing_kit_is_read_only(kit_index),
+                        &mut action,
                     );
                 });
                 search_response
@@ -312,12 +317,15 @@ pub(in crate::app) fn draw_folder_browser_pane(
                         &mut pane,
                         &mut show_browser_prefixes,
                         &mut folders_before_tags,
+                        (is_loose || is_container) && !cx.model.editing_kit_is_read_only(kit_index),
+                        &mut action,
                     );
                     ui.add_space(6.0);
                     browser_search_field(ui, &mut pane.filter, &search_hint)
                 })
                 .inner
-            };
+            }
+            }).inner;
             if pane.focus_search {
                 search_response.request_focus();
                 pane.focus_search = false;
@@ -329,7 +337,8 @@ pub(in crate::app) fn draw_folder_browser_pane(
                         .color(Color32::from_rgb(184, 134, 11)),
                 );
             }
-            ui.add_space(8.0);
+            egui::Frame::NONE.inner_margin(6).show(ui, |ui| {
+            ui.set_min_height((ui.available_height() - 6.0).max(0.0));
             let search_root = match &source.source {
                 TagSource::LooseFolder { root, .. } => Some(root.as_path()),
                 _ => None,
@@ -413,6 +422,8 @@ pub(in crate::app) fn draw_folder_browser_pane(
                     );
                     end_folder_table(ui);
                 });
+            });
+            });
         });
 
     queue_bitmap_hover_thumbnails(cx, kit_index, &mut view.bitmap_browser, &bitmap_hover_requests);
@@ -1139,29 +1150,7 @@ fn browser_toolbar_controls(
     ui.visuals_mut().widgets.active.bg_fill = browser_toolbar_active();
 
     let mut groups_clicked = false;
-    if show_modes {
-        if selectable_icon_text_button(
-            ui,
-            ButtonIcon::FolderOpen,
-            "Folders",
-            *mode == BrowserMode::Folders,
-        )
-        .clicked()
-        {
-            *mode = BrowserMode::Folders;
-        }
-        groups_clicked = selectable_icon_text_button(
-            ui,
-            ButtonIcon::Group,
-            "Groups",
-            *mode == BrowserMode::Groups,
-        )
-        .clicked();
-        if groups_clicked {
-            *mode = BrowserMode::Groups;
-        }
-    }
-    icon_menu_button(ui, ButtonIcon::Sort, "Sort", |ui| {
+    icon_text_dropdown_button(ui, ButtonIcon::Sort, "Sort", |ui| {
         style_list_menu(ui);
         for option in BrowserSort::ALL {
             if ui
@@ -1182,11 +1171,27 @@ fn browser_toolbar_controls(
                 close_menu(ui);
             }
         }
+        ui.separator();
+        ui.checkbox(folders_before_tags, "Folders before tags");
     });
+    if show_modes {
+        icon_text_dropdown_button(ui, ButtonIcon::View, "View", |ui| {
+            style_list_menu(ui);
+            if selectable_icon_text_button(ui, ButtonIcon::FolderOpen, "Folders", *mode == BrowserMode::Folders).clicked() {
+                *mode = BrowserMode::Folders;
+                close_menu(ui);
+            }
+            if selectable_icon_text_button(ui, ButtonIcon::Group, "Groups", *mode == BrowserMode::Groups).clicked() {
+                *mode = BrowserMode::Groups;
+                groups_clicked = true;
+                close_menu(ui);
+            }
+            ui.separator();
+            ui.checkbox(show_prefixes, "Show prefixes");
+        });
+    }
     icon_menu_button(ui, ButtonIcon::Other, "Other browser options", |ui| {
         style_list_menu(ui);
-        ui.checkbox(show_prefixes, "Show prefixes");
-        ui.checkbox(folders_before_tags, "Folders before tags");
         search_scope_controls(ui, search_scope);
     });
     groups_clicked
@@ -1200,8 +1205,25 @@ fn draw_folder_browser_controls(
     pane: &mut FolderBrowserState,
     show_prefixes: &mut bool,
     folders_before_tags: &mut bool,
+    can_create: bool,
+    action: &mut Option<BrowserAction>,
 ) {
     ui.spacing_mut().item_spacing.x = PANE_HEADER_ACTION_GAP;
+    ui.add_enabled_ui(can_create, |ui| {
+        icon_text_dropdown_button(ui, ButtonIcon::Add, "New", |ui| {
+            style_list_menu(ui);
+            let folder = tag_path::relative_tag_path(&pane.rel_path);
+            let folder_rel = (!folder.is_empty()).then_some(folder);
+            if icon_text_button(ui, ButtonIcon::NewTag, "New Tag...", true).clicked() {
+                *action = Some(BrowserAction::NewTagInFolder { folder_rel: folder_rel.clone() });
+                close_menu(ui);
+            }
+            if icon_text_button(ui, ButtonIcon::FolderOpen, "New Folder...", true).clicked() {
+                *action = Some(BrowserAction::NewContainerFolder { parent_rel: folder_rel });
+                close_menu(ui);
+            }
+        });
+    });
     if pane.assets_view {
         icon_menu_button(ui, ButtonIcon::Filter, "Filter asset types", |ui| {
             style_list_menu(ui);
@@ -1592,10 +1614,11 @@ mod tests {
                     });
                 });
             });
-            for label in ["Folders", "Groups"] {
-                let visible = output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label));
-                assert_eq!(visible, show_modes);
-            }
+            let visible = output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text.trim() == "View"));
+            assert_eq!(visible, show_modes);
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if matches!(text.galley.job.text.as_str(), "Folders" | "Groups"))));
         }
     }
 
