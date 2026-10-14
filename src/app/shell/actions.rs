@@ -70,6 +70,7 @@ pub(in crate::app) enum AppAction {
     LoadFolder,
     LoadMonolithic,
     LoadContainer,
+    OpenHalo5,
     OpenProject,
     OpenTagsFolder,
     OpenDataFolder,
@@ -147,6 +148,9 @@ impl Baboon {
             AppAction::LoadFolder => self.begin_load_folder(ctx.clone()),
             AppAction::LoadMonolithic => self.begin_load_monolithic(ctx.clone()),
             AppAction::LoadContainer => self.begin_load_iostore_container(ctx.clone()),
+            AppAction::OpenHalo5 => {
+                self.begin_load_single(ctx.clone());
+            }
             AppAction::OpenProject => self.begin_open_campaign_project(ctx.clone()),
             AppAction::OpenTagsFolder => self.open_loaded_tags_folder(),
             AppAction::OpenDataFolder => self.open_loaded_data_folder(),

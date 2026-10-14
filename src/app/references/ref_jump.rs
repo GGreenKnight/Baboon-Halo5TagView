@@ -82,7 +82,7 @@ impl Baboon {
             None => {
                 self.model.status = format!(
                     "Could not locate the referencing field in {}",
-                    key_label(&jump.tag_key)
+                    jump.tag_key.replace('\\', "/")
                 );
             }
         }
@@ -256,6 +256,22 @@ impl Baboon {
         let Some(req) = self.references.pending_open.take() else {
             return;
         };
+        if let Some(TagSource::Halo5 { source }) = self.model.source().map(|s|&s.source) {
+            let resolved = crate::core::source::halo5_reference_entry(source,req.group_tag,&req.rel_path);
+            let (backing,entry) = match resolved {
+                Ok(target)=>target,
+                Err(error)=> {self.model.status=format!("Could not open referenced tag: {error:#}"); return;}
+            };
+            let key = entry.key.clone();
+            let seeds = self.model.active_kit().folder_seeds();
+            if let Some(source) = self.source_mut() {
+                source.source = TagSource::Halo5 {source:backing};
+                if source.entry_for_key(&key).is_none() {source.upsert_entry(entry,&seeds);}
+            }
+            self.select_entry(key.clone(),ctx.clone());
+            if req.float {self.kit_and_view(self.model.active).open_tag_pane_beside(&key);}
+            return;
+        }
         let container_key = self.model.source().and_then(|source| {
             matches!(&source.source, TagSource::IoStoreContainerSet { .. }).then(|| {
                 container_entry_for_reference(
@@ -271,7 +287,7 @@ impl Baboon {
             let Some(key) = container_key else {
                 self.model.status = format!(
                     "Referenced Campaign Evolved tag not found: {} (group {})",
-                    req.rel_path,
+                    req.rel_path.replace('\\', "/"),
                     blam_tags::format_group_tag(req.group_tag)
                 );
                 return;
@@ -298,9 +314,9 @@ impl Baboon {
             .name_for(req.group_tag)
             .or_else(|| blam_tags::paths::group_tag_to_extension(req.group_tag))
             .unwrap_or("");
-        // Tolerate a path that already carries its extension (e.g. a shader
-        // bitmap ref), so we don't double-append.
-        let rel = without_extension(&req.rel_path, ext).to_owned();
+        // Normalize: tolerate forward slashes and a path that already carries
+        // its extension (e.g. a shader bitmap ref), so we don't double-append.
+        let rel = without_extension(&req.rel_path.replace('/', "\\"), ext).to_owned();
         let abs = blam_tags::paths::resolve_tag_path(&root, &rel, ext);
         if !abs.exists() {
             self.model.status = format!(

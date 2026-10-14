@@ -330,7 +330,7 @@ dependencies = [
 [[package]]
 name = "blam-tags"
 version = "0.1.0"
-source = "git+https://github.com/camden-smallwood/blam-tags?rev=d563e5b#d563e5bcc898c9676c74ed6d892246ef50effe25"
+source = "git+https://github.com/camden-smallwood/blam-tags?rev=6a1225b#6a1225b54ad8522b12c62fa1ad9e7377febde408"
 dependencies = [
  "anyhow",
  "bcdec_rs",
@@ -346,6 +346,7 @@ dependencies = [
  "num-traits",
  "oozextract",
  "opus",
+ "roxmltree",
  "ruzstd",
  "serde",
  "serde_json",
@@ -353,6 +354,7 @@ dependencies = [
  "strum",
  "tiff 0.9.1",
  "vorbis_rs",
+ "walkdir",
 ]
 
 [[package]]

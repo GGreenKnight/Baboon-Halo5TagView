@@ -196,6 +196,10 @@ fn draw_file_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
         close_menu(ui);
         cx.send(AppAction::LoadFolder);
     }
+    if ui.button("Open Halo 5: Guardians...").clicked() {
+        close_menu(ui);
+        cx.send(AppAction::OpenHalo5);
+    }
     if ui.button("Load Monolithic blob_index.dat...").clicked() {
         close_menu(ui);
         cx.send(AppAction::LoadMonolithic);
@@ -421,34 +425,32 @@ fn draw_file_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
 /// The Edit menu: undo and redo, and discarding unsaved changes.
 fn draw_edit_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
     style_list_menu(ui);
-    if icon_text_button(
-        ui,
-        ButtonIcon::Undo,
-        &format!(
-            "Undo    {}",
-            shortcut_text(ui.ctx(), egui::Modifiers::COMMAND, egui::Key::Z)
-        ),
-        menu.can_undo,
-    )
-    .clicked()
+    if ui
+        .add_enabled(
+            menu.can_undo,
+            egui::Button::new(format!(
+                "Undo    {}",
+                shortcut_text(ui.ctx(), egui::Modifiers::COMMAND, egui::Key::Z)
+            )),
+        )
+        .clicked()
     {
         close_menu(ui);
         cx.send(AppAction::Undo);
     }
-    if icon_text_button(
-        ui,
-        ButtonIcon::Redo,
-        &format!(
-            "Redo    {}",
-            shortcut_text(
-                ui.ctx(),
-                egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-                egui::Key::Z,
-            )
-        ),
-        menu.can_redo,
-    )
-    .clicked()
+    if ui
+        .add_enabled(
+            menu.can_redo,
+            egui::Button::new(format!(
+                "Redo    {}",
+                shortcut_text(
+                    ui.ctx(),
+                    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+                    egui::Key::Z,
+                )
+            )),
+        )
+        .clicked()
     {
         close_menu(ui);
         cx.send(AppAction::Redo);
@@ -474,10 +476,7 @@ fn draw_edit_menu(cx: &Ctx, ui: &mut Ui, menu: &MenuState) {
             });
         }
     }
-    if cx
-        .model
-        .current_source_is_campaign_project_capable(cx.model.active)
-    {
+    if cx.model.current_source_is_campaign_project_capable(cx.model.active) {
         let stashed = cx.model.stashed_campaign_tags(cx.model.active);
         let unsaved = cx.model.kits[cx.model.active]
             .parsed_tags

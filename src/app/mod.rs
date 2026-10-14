@@ -38,7 +38,6 @@ use serde_json::{Value, json};
 use crate::core::bundled::{
     definitions_missing_message, locate_definitions_root, locate_help_docs_root,
 };
-use crate::core::tag_path;
 use crate::core::tag_key::{file_entry_key, file_key_path, key_label, new_tag_entry_key};
 use crate::core::game::{GameFacts, GameId, game_for_launch_flag, game_for_saved_id};
 use crate::core::format::{TagNameIndex, format_value, group_label};
@@ -89,6 +88,7 @@ use audio::AudioCommand;
 mod runtime_poke;
 use runtime_poke::PokeFeature;
 mod chimp;
+mod halo5;
 use chimp::ChimpFeature;
 #[cfg(test)]
 mod loose_fixture;

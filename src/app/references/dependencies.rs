@@ -426,7 +426,7 @@ pub(in crate::app) fn collect_tag_references(
                 let Some((group_tag, rel_path)) = reference.group_tag_and_name else {
                     continue;
                 };
-                let rel_path = sanitize_ref_path(&rel_path);
+                let rel_path = sanitize_ref_path(&rel_path).replace('/', "\\");
                 if rel_path.is_empty() || rel_path.eq_ignore_ascii_case("none") {
                     continue;
                 }
@@ -471,7 +471,7 @@ pub(in crate::app) fn collect_tag_dependency_refs(
                 let Some((group_tag, rel_path)) = reference.group_tag_and_name else {
                     continue;
                 };
-                let rel_path = sanitize_ref_path(&rel_path);
+                let rel_path = sanitize_ref_path(&rel_path).replace('/', "\\");
                 if rel_path.is_empty() || rel_path.eq_ignore_ascii_case("none") {
                     continue;
                 }
@@ -571,6 +571,7 @@ pub(in crate::app) fn read_entry_dependencies(
     entry: &TagEntry,
 ) -> Result<Vec<DependencyRef>, String> {
     match &entry.location {
+        TagEntryLocation::Halo5 {..}=>return Err("Halo 5 dependency indexing is not implemented".into()),
         // A loose tag usually carries a `want` (dependency-list) stream, which
         // is far cheaper to read than the whole tag.
         TagEntryLocation::LooseFile(path) => {
@@ -581,7 +582,7 @@ pub(in crate::app) fn read_entry_dependencies(
                     .into_iter()
                     .map(|(group_tag, rel_path)| DependencyRef {
                         group_tag,
-                        rel_path: sanitize_ref_path(&rel_path),
+                        rel_path: sanitize_ref_path(&rel_path).replace('/', "\\"),
                     })
                     .collect());
             }
@@ -616,7 +617,7 @@ pub(in crate::app) fn reference_path_from_rel_file(
     group_tag: u32,
     names: &TagNameIndex,
 ) -> Option<String> {
-    reference_path_without_group_extension(&tag_path::relative_tag_path(rel_file), group_tag, names)
+    reference_path_without_group_extension(&rel_file.to_string_lossy(), group_tag, names)
 }
 
 impl Model {
@@ -677,17 +678,17 @@ mod tests {
             display_path: display_path.to_owned(),
             group_tag,
             group_name: None,
-            location: TagEntryLocation::LooseFile(tag_path::to_relative(display_path)),
+            location: TagEntryLocation::LooseFile(PathBuf::from(display_path)),
         }
     }
 
     fn abs_entry(root: &Path, display_path: &str, group_tag: u32) -> TagEntry {
         TagEntry {
-            key: file_entry_key(&root.join(tag_path::to_relative(display_path))),
+            key: file_entry_key(&root.join(display_path)),
             display_path: display_path.to_owned(),
             group_tag,
             group_name: None,
-            location: TagEntryLocation::LooseFile(root.join(tag_path::to_relative(display_path))),
+            location: TagEntryLocation::LooseFile(root.join(display_path)),
         }
     }
 
@@ -699,7 +700,7 @@ mod tests {
             group_name: None,
             location: TagEntryLocation::Container {
                 container: 0,
-                rel_path: format!("Tags/{}.ubulk", tag_path::to_unreal(display_path)),
+                rel_path: format!("Tags/{display_path}.ubulk"),
             },
         }
     }
@@ -742,8 +743,8 @@ mod tests {
         let source = loose_source_with_counts(
             "H3EK/tags (halo3_mcc)",
             vec![
-                entry("objects\\a.shader", shader),
-                entry("objects\\b.shader", shader),
+                entry("objects/a.shader", shader),
+                entry("objects/b.shader", shader),
             ],
         );
 
@@ -757,7 +758,7 @@ mod tests {
     fn dependency_entry_reference_path_strips_only_group_extension() {
         let names = TagNameIndex::default();
         let bitmap = parse_group_tag("bitm").unwrap();
-        let entry = entry("objects\\weapons\\decal_road_1.bitmap.bitmap", bitmap);
+        let entry = entry("objects/weapons/decal_road_1.bitmap.bitmap", bitmap);
 
         assert_eq!(
             dependency_entry_reference_path(&entry, &names).unwrap(),
@@ -770,7 +771,7 @@ mod tests {
         let names = TagNameIndex::default();
         let render_model = parse_group_tag("mode").unwrap();
         let weapon = parse_group_tag("weap").unwrap();
-        let display_stem = "objects\\shared\\example";
+        let display_stem = "objects/shared/example";
         let entries = vec![
             entry(&format!("{display_stem}.render_model"), render_model),
             container_entry(
@@ -788,7 +789,7 @@ mod tests {
         let model = container_entry_for_reference(
             &entries,
             render_model,
-            "OBJECTS\\SHARED\\EXAMPLE.RENDER_MODEL",
+            "OBJECTS/SHARED/EXAMPLE.RENDER_MODEL",
             &names,
         )
         .expect("render-model reference should resolve");
@@ -818,7 +819,7 @@ mod tests {
         let names = TagNameIndex::default();
         let camera_track = parse_group_tag("trak").unwrap();
         let entries = vec![new_container_entry(
-            "test\\example.camera_track",
+            "test/example.camera_track",
             camera_track,
             "camera_track",
         )];
@@ -841,7 +842,7 @@ mod tests {
     #[test]
     fn a_new_container_tag_has_the_expected_capabilities() {
         let camera_track = parse_group_tag("trak").unwrap();
-        let entry = new_container_entry("test\\example.camera_track", camera_track, "camera_track");
+        let entry = new_container_entry("test/example.camera_track", camera_track, "camera_track");
         let tag = TagFile::new("definitions/haloce_evolved/camera_track.json").unwrap();
 
         assert!(
@@ -936,7 +937,7 @@ mod tests {
     /// drifted would strand the renamed tag.
     #[test]
     fn renaming_a_new_tag_derives_the_same_identity_as_creating_it_there() {
-        let created = new_container_package("objects\\foo\\bar", "camera_track");
+        let created = new_container_package("objects/foo/bar", "camera_track");
         assert_eq!(created, "/Game/Tags/objects/foo/bar-camera_track");
         assert_eq!(
             new_tag_entry_key(&created),
@@ -958,8 +959,8 @@ mod tests {
         let bitmap = parse_group_tag("bitm").unwrap();
         let shader = parse_group_tag("rmsh").unwrap();
         let entries = vec![
-            entry("objects\\new\\run.bitmap", bitmap),
-            entry("objects\\new\\run.shader", shader),
+            entry("objects/new/run.bitmap", bitmap),
+            entry("objects/new/run.shader", shader),
         ];
 
         let index = build_dependency_candidate_index(&entries, &names);
@@ -989,7 +990,7 @@ mod tests {
         let destination = root.join("objects/new/old");
         let entries = vec![abs_entry(
             root,
-            "objects\\old\\decal_road_1.bitmap.bitmap",
+            "objects/old/decal_road_1.bitmap.bitmap",
             bitmap,
         )];
 
@@ -1028,10 +1029,10 @@ mod tests {
     fn affected_move_entries_include_moved_tags_and_external_dependents() {
         let shader = parse_group_tag("rmsh").unwrap();
         let model = parse_group_tag("hlmt").unwrap();
-        let old_shader = entry("objects\\characters\\jackal\\jackal.shader", shader);
-        let new_shader = entry("zoeph_test\\jackal\\jackal.shader", shader);
-        let outside_model = entry("objects\\characters\\shared\\shared.model", model);
-        let unrelated = entry("objects\\characters\\brute\\brute.model", model);
+        let old_shader = entry("objects/characters/jackal/jackal.shader", shader);
+        let new_shader = entry("zoeph_test/jackal/jackal.shader", shader);
+        let outside_model = entry("objects/characters/shared/shared.model", model);
+        let unrelated = entry("objects/characters/brute/brute.model", model);
         let all_entries = vec![old_shader.clone(), outside_model.clone(), unrelated];
         let old_entries = vec![old_shader.clone()];
         let new_entries = vec![new_shader.clone()];
@@ -1111,7 +1112,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let known = TagEntry {
             key: "file:objects/a.model".to_owned(),
-            display_path: "objects\\a.model".to_owned(),
+            display_path: "objects/a.model".to_owned(),
             group_tag: u32::from_be_bytes(*b"hlmt"),
             group_name: None,
             location: TagEntryLocation::LooseFile(root.join("objects/a.model")),

@@ -248,7 +248,7 @@ pub(in crate::app) fn save_as_file_name(entry: &TagEntry, extension: Option<&str
         TagEntryLocation::LooseFile(path) => path,
         TagEntryLocation::Monolithic { .. }
         | TagEntryLocation::Container { .. }
-        | TagEntryLocation::NewContainer { .. } => Path::new(&entry.display_path),
+        | TagEntryLocation::Halo5 {..} | TagEntryLocation::NewContainer { .. } => Path::new(&entry.display_path),
     };
     let mut file_name = path
         .file_name()
@@ -275,7 +275,7 @@ pub(in crate::app) fn save_as_start_dir(entry: &TagEntry) -> Option<PathBuf> {
         TagEntryLocation::LooseFile(path) => path.parent().map(Path::to_path_buf),
         TagEntryLocation::Monolithic { .. }
         | TagEntryLocation::Container { .. }
-        | TagEntryLocation::NewContainer { .. } => None,
+        | TagEntryLocation::Halo5 {..} | TagEntryLocation::NewContainer { .. } => None,
     }
 }
 
@@ -292,8 +292,11 @@ pub(in crate::app) fn entries_for_keys(source: &LoadedSourceData, keys: &[String
         .collect()
 }
 
-fn clean_file_name(display_path: &str) -> String {
-    let mut name = tag_path::name(display_path)
+fn clean_file_name(value: &str) -> String {
+    let mut name = value
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("tag")
         .trim()
         .to_owned();
     name.retain(|ch| !matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'));
@@ -397,7 +400,7 @@ pub(in crate::app) fn new_tag_output_path_from_dialog(
     {
         return Err("Choose a tag name inside the loaded tags folder".to_owned());
     }
-    let display = tag_path::relative_tag_path(rel);
+    let display = rel.to_string_lossy().replace('\\', "/");
     Ok((output, display))
 }
 
@@ -467,6 +470,9 @@ impl Baboon {
     }
 
     pub(in crate::app) fn save_tag_by_key(&mut self, key: &str) -> Result<PathBuf, String> {
+        if self.model.kits[self.model.active].halo5_documents.contains_key(key) {
+            return self.save_halo5_tag_by_key(key,false);
+        }
         if self.refuse_read_only_edit(self.model.active) {
             return Err(self.model.status.clone());
         }
@@ -547,6 +553,12 @@ impl Baboon {
     }
 
     pub(in crate::app) fn save_current_tag_as(&mut self) {
+        if let Some(key)=self.model.kits[self.model.active].selected_key.clone()
+            && self.model.kits[self.model.active].halo5_documents.contains_key(&key)
+        {
+            self.model.status=match self.save_halo5_tag_by_key(&key,true) {Ok(path)=>format!("Saved {}",path.display()),Err(error)=>error};
+            return;
+        }
         if self.refuse_read_only_edit(self.model.active) {
             return;
         }
@@ -1067,17 +1079,17 @@ mod tests {
                 .any(|node| node.label == "saved")
         );
         assert!(source.entries.iter().any(|entry| {
-            entry.display_path == r"saved\cyborg.gbxmodel"
+            entry.display_path == "saved/cyborg.gbxmodel"
                 && entry.group_tag == u32::from_be_bytes(*b"mod2")
         }));
         assert!(source.all_entries.iter().any(|entry| {
-            entry.display_path == r"saved\cyborg.gbxmodel"
+            entry.display_path == "saved/cyborg.gbxmodel"
                 && entry.group_tag == u32::from_be_bytes(*b"mod2")
         }));
         assert!(source.group_tree.children.iter().any(|node| {
             node.entries
                 .iter()
-                .any(|&index| source.all_entries[index].display_path == r"saved\cyborg.gbxmodel")
+                .any(|&index| source.all_entries[index].display_path == "saved/cyborg.gbxmodel")
         }));
     }
 
@@ -1106,7 +1118,7 @@ mod tests {
             new_tag_output_path_from_dialog(root, Path::new("C:/kit/tags/objects/foo"), "shader")
                 .unwrap();
         assert_eq!(output, PathBuf::from("C:/kit/tags/objects/foo.shader"));
-        assert_eq!(display, r"objects\foo.shader");
+        assert_eq!(display, "objects/foo.shader");
 
         let (output, display) = new_tag_output_path_from_dialog(
             root,
@@ -1115,7 +1127,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output, PathBuf::from("C:/kit/tags/objects/foo.shader"));
-        assert_eq!(display, r"objects\foo.shader");
+        assert_eq!(display, "objects/foo.shader");
 
         assert!(
             new_tag_output_path_from_dialog(root, Path::new("C:/other/foo.shader"), "shader")

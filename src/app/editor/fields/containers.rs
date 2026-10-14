@@ -354,6 +354,9 @@ pub(in crate::app) fn draw_field(
         if is_hidden_value(&value) {
             return;
         }
+        let editable = edit.editable;
+        edit.editable &= edit.access.and_then(|access| access.writable_fields.as_ref())
+            .is_none_or(|fields| fields.contains(&field_path));
         if glow || scroll_here {
             let fill = if glow {
                 glow_fill
@@ -395,6 +398,7 @@ pub(in crate::app) fn draw_field(
                 tag_reference_value_width,
             );
         }
+        edit.editable = editable;
         return;
     }
 
@@ -706,56 +710,8 @@ pub(super) fn inline_mapping_function_from_struct(
     tag_struct: TagStruct<'_>,
     struct_path: &str,
 ) -> Option<(FunctionView, String)> {
-    // A Halo 2 `mapping_function` holds its function in a `data` byte-block,
-    // which is always the H2 encoding. An empty block (a new element) opens as
-    // what the engine grows it to on its first edit, a zeroed header: identity.
-    // Nothing is written unless the function is edited.
-    if let Some(bytes) = halo2_function_bytes_from_struct(tag_struct) {
-        let function = if bytes.is_empty() {
-            Some(TagFunction::H2(H2Function::new(FunctionType::Identity)))
-        } else {
-            h2_tag_function(&bytes)
-        };
-        if let Some(function) = function {
-            return Some((
-                FunctionView::from_function(function),
-                append_field_path(struct_path, "data"),
-            ));
-        }
-    }
-
-    for field in tag_struct.fields_all() {
-        if field.field_type() != TagFieldType::Data {
-            continue;
-        }
-        let data_path = append_field_path(struct_path, field.name());
-        if let Some(function) = field.as_function() {
-            return Some((FunctionView::from_function(function), data_path));
-        }
-        let bytes = field.as_data()?.to_vec();
-        if bytes.is_empty() {
-            // A function field with no bytes still gets the function editor,
-            // seeded with what a fresh one would hold. Falling through left a
-            // dead `data [0 bytes]` row that could not author the function it
-            // was standing in for. New elements are seeded at creation now, so
-            // this is for tags an earlier build already wrote that way.
-            //
-            // The seed is the editor's own default rather than what the runtime
-            // would make of these bytes: `ensure_valid` repairs a short blob to
-            // 32 *zeroes*, an identity clamped to 0..0, which is not what
-            // creating one gives you. Matching creation keeps the two paths
-            // showing the same thing. Nothing is written until the user edits.
-            if field.is_function_data()
-                && let Ok(function) = TagFunction::parse(
-                    &blam_tags::default_function_definition_bytes(blam_tags::io::Endian::Le),
-                )
-            {
-                return Some((FunctionView::from_function(function), data_path));
-            }
-            continue;
-        }
-    }
-    None
+    let (function, data_field) = tag_struct.mapping_function()?;
+    Some((FunctionView::from_function(function), append_field_path(struct_path, &data_field)))
 }
 
 pub(in crate::app) fn draw_foundation_group(
@@ -1098,7 +1054,7 @@ pub(in crate::app) fn draw_foundation_block(
         sel,
         count,
         Some(block.definition().max_count()),
-        edit.editable,
+        edit.editable && !edit.access.is_some_and(|access| access.fixed_blocks),
         true, // is a real block — add/delete allowed
         edit.view_scope,
         edit.tag_key,
@@ -2962,18 +2918,13 @@ pub(in crate::app) fn block_index_target_labels(
         .collect()
 }
 
-/// The block a block-index field points into, or whose elements a
-/// block-flags field's bits stand for: found the same way for both.
 pub(in crate::app) fn block_index_target_options(
     tag_struct: &TagStruct<'_>,
     field: &TagField<'_>,
     root: Option<TagStruct<'_>>,
     struct_path: &str,
 ) -> Option<BlockIndexTarget> {
-    let definition = field.definition();
-    let target = definition
-        .block_index_target()
-        .or_else(|| definition.block_flags_target())?;
+    let target = field.definition().block_index_target()?;
     crate::app::editor::declared_block_index_target(tag_struct, root, struct_path, target.name())
 }
 
@@ -4480,11 +4431,7 @@ mod tests {
             let mut texts = Vec::new();
             with_test_edit_context(|edit| {
                 for _ in 0..2 {
-                    let output = crate::app::run_ui_test(&ctx, egui::RawInput {
-                        // Keep the editor below the tag's preceding fields visible.
-                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 2000.0))),
-                        ..Default::default()
-                    }, |ui| {
+                    let output = crate::app::run_ui_test(&ctx, egui::RawInput::default(), |ui| {
                         egui::CentralPanel::default().show(ui, |ui| {
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 draw_fields_with_docs(ui, &tag.root(), &TagNameIndex::default(), 0, false, "", edit, None);
@@ -4504,10 +4451,10 @@ mod tests {
             texts
         };
         let bitmap = painted("bitmap", "processed pixel data");
-        assert!(!bitmap.iter().any(|text| text == "Function Type"), "a bitmap's pixels drew a function editor");
+        assert!(!bitmap.iter().any(|text| text == "Function type:"), "a bitmap's pixels drew a function editor");
         assert!(bitmap.iter().any(|text| text.starts_with("Data size:")), "{bitmap:?}");
         let widget = painted("gui_widget_color_animation_definition", "default function/data");
-        assert!(widget.iter().any(|text| text == "Function Type"), "a function field drew no function editor: {widget:?}");
+        assert!(widget.iter().any(|text| text == "Function type:"), "a function field drew no function editor");
     }
 
     /// An explanation is drawn as it was written: in a fixed-pitch face,

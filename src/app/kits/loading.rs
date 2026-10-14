@@ -58,6 +58,8 @@ impl Baboon {
                         matches!(&source.source, TagSource::IoStoreContainerSet { .. })
                     });
         let initial_tag = loaded.initial_tag.take();
+        let halo5_single=matches!(&loaded.source,TagSource::Halo5 {source} if source.root.is_file())
+            .then(||loaded.entries.first().map(|entry|entry.key.clone())).flatten();
         let game = loaded.game.clone();
         if let Some(path) = recent_path {
             self.remember_recent_folder(path);
@@ -81,6 +83,7 @@ impl Baboon {
         self.apply_pending_campaign_project(installed, ctx.input(|input| input.time), ctx);
         self.refresh_favorite_entries_for(installed);
         self.model.kits[self.model.active].generation = self.model.kits[self.model.active].generation.wrapping_add(1);
+        if let Some(key)=halo5_single {self.select_entry(key,ctx.clone());}
         let campaign_evolved = self.model.kits[installed]
             .source
             .as_ref()
@@ -386,6 +389,10 @@ impl Baboon {
     /// Starts source work off the UI thread and reports completion through `WorkerMessage`.
     /// Captured source identity prevents stale results from replacing newer state.
     pub(in crate::app) fn begin_load_single_path(&mut self, path: PathBuf, ctx: egui::Context) {
+        if blam_tags::halo5::is_halo5_file(&path) {
+            self.begin_load_halo5_path(path, ctx);
+            return;
+        }
         if self.open_kit_for(&path) {
             self.model.status = format!("Switched to {}", path.display());
             return;
@@ -400,7 +407,7 @@ impl Baboon {
             &tx,
             &ctx,
             move || {
-                let result = load_single_file(path, &names).map_err(|e| e.to_string());
+                let result = load_single_file(path, &names).map_err(|e| format!("{e:#}"));
                 WorkerMessage::SourceLoaded {
                     kit,
                     result,
@@ -428,6 +435,10 @@ impl Baboon {
     /// Starts source work off the UI thread and reports completion through `WorkerMessage`.
     /// Captured source identity prevents stale results from replacing newer state.
     pub(in crate::app) fn begin_load_folder_path(&mut self, path: PathBuf, ctx: egui::Context) {
+        if blam_tags::halo5::is_halo5_folder(&path) {
+            self.begin_load_halo5_path(path, ctx);
+            return;
+        }
         // A UE5 `Paks` directory (Halo: Campaign Evolved) is mounted as a
         // container set rather than walked as loose files.
         if let Some(paks) = crate::core::source::find_paks_dir(&path) {
@@ -696,6 +707,10 @@ impl Baboon {
     pub(in crate::app) fn open_dropped_file(&mut self, path: PathBuf, ctx: egui::Context) -> Result<bool, String> {
         if !path.is_file() {
             return Ok(false);
+        }
+        if blam_tags::halo5::is_halo5_file(&path) {
+            self.begin_load_halo5_path(path, ctx);
+            return Ok(true);
         }
 
         let Some(source) = self.model.source() else {
@@ -1087,8 +1102,9 @@ impl Baboon {
 }
 
 pub(in crate::app) fn extraction_scope_key(path: &Path) -> String {
-    tag_path::relative_tag_path(path)
-        .trim_matches(tag_path::SEPARATOR)
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim_matches('/')
         .to_ascii_lowercase()
 }
 
@@ -1097,7 +1113,7 @@ pub(in crate::app) fn scope_contains(parent: &str, child: &str) -> bool {
         || child == parent
         || child
             .strip_prefix(parent)
-            .is_some_and(|rest| rest.starts_with(tag_path::SEPARATOR))
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 pub(in crate::app) fn mark_tree_loaded(tree: &mut TagTree) {
@@ -1651,15 +1667,15 @@ mod tests {
             display_path: format!("{path}.sound"),
             group_tag: u32::from_be_bytes(*b"snd!"),
             group_name: Some("sound".to_owned()),
-            location: TagEntryLocation::LooseFile(
-                PathBuf::from("C:/kit/tags").join(tag_path::to_relative(&format!("{path}.sound"))),
-            ),
+            location: TagEntryLocation::LooseFile(PathBuf::from(format!(
+                "C:/kit/tags/{path}.sound"
+            ))),
         }
     }
 
     #[test]
     fn loading_an_extraction_scope_materializes_its_nested_tags() {
-        let entries = vec![sound(r"sound\a"), sound(r"sound\sub\b")];
+        let entries = vec![sound("sound/a"), sound("sound/sub/b")];
         let mut tree = TagTree {
             children: vec![TagTreeNode {
                 label: "sound".to_owned(),
@@ -1677,14 +1693,14 @@ mod tests {
         assert!(sound_node.children_loaded && sound_node.entries_loaded);
         assert_eq!(
             crate::app::browser::collect_sound_keys(sound_node, &entries),
-            vec![r"sound\a".to_owned(), r"sound\sub\b".to_owned()]
+            vec!["sound/a".to_owned(), "sound/sub/b".to_owned()]
         );
     }
 
     // Lazily listed tags have to be keyed exactly as the full scan keys them:
     // an index refresh drops the lazy entries, and a tab whose key the full
     // index spells differently is orphaned with "no longer in the source".
-    // A folder path restored from a session holds '/', so on Windows, where
+    // The browser holds relative folder paths with '/', so on Windows, where
     // both separators work, a path joined as it was came out mixed.
 
     /// Removes the fixture's folder however the test ends.
@@ -1732,12 +1748,12 @@ mod tests {
         (app, cleanup, tag)
     }
 
-    /// The key the full scan gives the tag at `rel`.
+    /// The key the full scan gives the tag at `rel` (with '/').
     fn full_scan_key(root: &Path, rel: &str) -> String {
         crate::core::source::scan_folder_subtree_entries(root, Path::new(""), &TagNameIndex::default())
             .unwrap()
             .into_iter()
-            .find(|entry| entry.display_path == tag_path::from_input(rel))
+            .find(|entry| entry.display_path.replace('\\', "/") == rel)
             .unwrap_or_else(|| panic!("the full scan has no {rel}"))
             .key
     }

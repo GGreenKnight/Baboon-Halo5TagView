@@ -350,6 +350,7 @@ pub(in crate::app) fn draw_tag_pane(
         tag_reference_picker: &mut tag_reference_picker,
         status: Some(&mut status),
         editable: !kit_read_only && is_editable_tag(entry, &doc.tag),
+        access: Some(&doc.access),
         expert_mode,
         show_block_sizes: cx.model.prefs.show_block_sizes,
         buffers: &mut view.edit_buffers,
@@ -395,15 +396,9 @@ pub(in crate::app) fn draw_tag_pane(
         expand_all,
         nested_default: cx.model.prefs.nested_default,
         row_heights: Some(row_heights),
-        string_editor_tag: source.map(|source| crate::app::editor::fields::string_editors::EditedTag {
-            tag: &doc.tag,
-            entry,
-            stamp: (doc.id, doc.dirty.revision()),
-            source,
-        }),
     };
 
-    if is_bitmap_tag(entry) {
+    if is_bitmap_tag(entry) && !doc.access.fields_only {
         let preview = view.caches.bitmap_previews.entry(key.clone()).or_default();
         preview.apply_view_settings(bitmap_preview_view);
         draw_bitmap_tag(
@@ -768,7 +763,7 @@ fn draw_tag_header_specific_actions(cx: &Ctx, ui: &mut Ui, kit_index: usize, ent
             if icon_text_button(ui, ButtonIcon::Import, "Reimport", can_reimport)
                 .on_disabled_hover_text("Reimport requires a loose editing-kit bitmap tag")
                 .on_hover_text(
-                    "Import this bitmap's source image from the data folder again with tool, then reload the tag. A Halo CE or Halo 2 source image missing from the data folder is recovered from the tag first.",
+                    "Run tool bitmaps for this bitmap source path, then reload the tag",
                 )
                 .clicked()
             {

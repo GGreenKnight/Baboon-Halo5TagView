@@ -11,6 +11,14 @@ use blam_tags::TagFile;
 
 use journal::EditJournal;
 
+/// Storage capabilities of a document, independent of its game's format.
+#[derive(Default)]
+pub(crate) struct DocumentAccess {
+    pub(crate) writable_fields: Option<std::collections::HashSet<String>>,
+    pub(crate) fixed_blocks: bool,
+    pub(crate) fields_only: bool,
+}
+
 /// Whether a document diverges from its last save, and how many times it has
 /// been changed.
 ///
@@ -55,6 +63,7 @@ pub(crate) struct TagDocument {
     /// alone would take the reload for the tag it replaced.
     pub(crate) id: u64,
     pub(crate) tag: TagFile,
+    pub(crate) access: DocumentAccess,
     pub(crate) dirty: Dirty,
     pub(crate) journal: EditJournal,
     /// Advances whenever blocks may have gained, lost or moved elements: a
@@ -79,6 +88,7 @@ impl TagDocument {
         Self {
             id: next_document_id(),
             tag,
+            access: DocumentAccess::default(),
             dirty: Dirty::default(),
             journal: EditJournal::default(),
             layout_revision: 0,
@@ -96,6 +106,7 @@ impl TagDocument {
         Self {
             id: next_document_id(),
             tag,
+            access: DocumentAccess::default(),
             dirty,
             journal: EditJournal::default(),
             layout_revision: 0,
