@@ -3606,24 +3606,14 @@ mod tests {
                 &["Baboon Help", "The Pillar of Autumn"],
             ),
             case(
-                "settings_startup",
+                "settings_general",
                 &["dialog:SettingsWindow"],
                 &["shell/settings.rs"],
                 welcome,
                 |h| {
-                    h.app.open_settings(Some(SettingsTab::Startup));
+                    h.app.open_settings(Some(SettingsTab::General));
                 },
-                &["Settings", "When reopening Baboon with a previous session:"],
-            ),
-            case(
-                "settings_browser",
-                &["dialog:SettingsWindow"],
-                &["shell/settings.rs"],
-                welcome,
-                |h| {
-                    h.app.open_settings(Some(SettingsTab::Browser));
-                },
-                &["Settings", "Double-click to open tags"],
+                &["Settings", "Session Restore"],
             ),
             case(
                 "settings_editing_kits",
@@ -3636,24 +3626,14 @@ mod tests {
                 &["Settings", "Auto Detect"],
             ),
             case(
-                "settings_appearance",
+                "settings_interface",
                 &["dialog:SettingsWindow"],
                 &["shell/settings.rs"],
                 welcome,
                 |h| {
-                    h.app.open_settings(Some(SettingsTab::Appearance));
+                    h.app.open_settings(Some(SettingsTab::Interface));
                 },
-                &["Settings", "Angles in degrees"],
-            ),
-            case(
-                "settings_tools",
-                &["dialog:SettingsWindow"],
-                &["shell/settings.rs"],
-                welcome,
-                |h| {
-                    h.app.open_settings(Some(SettingsTab::Tools));
-                },
-                &["Settings", "Chimp — Unreal mappings"],
+                &["Settings", "Display Angles as"],
             ),
             case(
                 "settings_custom_kit_draft",
@@ -5168,12 +5148,12 @@ mod tests {
     #[test]
     fn a_settings_checkbox_changes_the_live_preference() {
         let mut h = Harness::new();
-        h.app.open_settings(Some(SettingsTab::Browser));
+        h.app.open_settings(Some(SettingsTab::Interface));
         for _ in 0..4 {
             h.frame(Vec::new());
         }
         let before = h.app.model.prefs.clone();
-        h.click("Double-click to open tags", 0);
+        h.click("Double-Click to Open", 0);
         for _ in 0..2 {
             h.frame(Vec::new());
         }
@@ -5334,6 +5314,7 @@ mod tests {
     #[test]
     fn closing_the_current_tab_reveals_the_next_one_in_the_browser() {
         let mut h = Harness::new();
+        h.app.model.prefs.reveal_active_tab_in_browser = true;
         fixture::install_kit(&mut h.app, fixture::synthetic_entries(2, 1, 1));
         let first = fixture::open_document(&mut h.app, "folder_00\\sub_00\\tag_000.biped", fixture::new_tag("biped"));
         idle(&mut h);
@@ -5362,6 +5343,30 @@ mod tests {
         let active = h.app.model.active;
         assert_eq!(h.app.model.kits[active].selected_key, Some(first));
         assert_eq!(tree_subfolders(&h), 2, "the browser did not open folder_00 to the tab now in front");
+    }
+
+    #[test]
+    fn switching_and_closing_tabs_preserve_browser_place_unless_explicitly_revealed() {
+        let mut h = Harness::new();
+        fixture::install_kit(&mut h.app, fixture::synthetic_entries(2, 1, 2));
+        assert!(!h.app.model.prefs.reveal_active_tab_in_browser);
+        let first = fixture::open_document(&mut h.app, "folder_00\\sub_00\\tag_000.biped", fixture::new_tag("biped"));
+        let second = fixture::open_document(&mut h.app, "folder_01\\sub_00\\tag_001.biped", fixture::new_tag("biped"));
+        idle(&mut h);
+        let count = |h: &Harness| h.painted_rects.iter().filter(|(text, rect)| text == "sub_00" && rect.left() < 300.0).count();
+        assert_eq!(count(&h), 0, "opening tabs must not expand their browser folders");
+        h.app.reveal_in_browser(&second);
+        idle(&mut h);
+        assert_eq!(count(&h), 1);
+        press_tab(&mut h, "tag_000.biped", egui::PointerButton::Primary);
+        assert_eq!(count(&h), 1, "switching to the first tag must not expand its folder");
+        press_key(&mut h, egui::Key::W, CTRL);
+        idle(&mut h);
+        assert_eq!(count(&h), 1, "closing the tab must preserve browser expansion");
+        assert!(h.app.browser.reveal_target.is_none());
+        h.app.reveal_in_browser(&first);
+        idle(&mut h);
+        assert_eq!(count(&h), 2, "explicit reveal still opens the requested folder");
     }
 
     /// Click the warning badge a tag on another layout carries on its header

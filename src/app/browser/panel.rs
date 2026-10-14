@@ -354,7 +354,7 @@ pub(in crate::app) fn draw_folder_browser_pane(
                     &table_keywords,
                     ui.ctx(),
                 );
-                if pane.filter_cache.is_searching() {
+                if pane.filter_cache.waiting_for_results() {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(RichText::new("Searching assets…").color(subtle_dark()));
@@ -558,7 +558,7 @@ fn draw_folder_pane_tree(
             pane.filter_cache.entries.as_slice(),
         )
     };
-    let searching = !filter.is_empty() && pane.filter_cache.is_searching();
+    let searching = !filter.is_empty() && pane.filter_cache.waiting_for_results();
     if searching {
         ui.horizontal(|ui| {
             ui.spinner();
@@ -835,11 +835,11 @@ fn draw_kit_browser_inner(
         // screen, whichever drew first would otherwise swallow a reveal
         // meant for the other and scroll to a tag it does not have.
         //
-        // The tree follows the current tab, as an editor's explorer does:
-        // when the tag or folder whose tab the user is on changes, it opens
-        // down to it and scrolls it into view. An explicit reveal already
-        // waiting goes first.
-        if selected != view.browser.followed_item && browser.reveal_target.is_none() {
+        // Following the active tab is opt-in. An explicit reveal already
+        // waiting always takes precedence over automatic navigation.
+        if !cx.model.prefs.reveal_active_tab_in_browser {
+            view.browser.followed_item = None;
+        } else if selected != view.browser.followed_item && browser.reveal_target.is_none() {
             view.browser.followed_item = selected.clone();
             browser.reveal_target = selected.as_deref().and_then(|item| follow_reveal(kit_id, kit, item));
         }
@@ -961,7 +961,7 @@ fn draw_kit_browser_inner(
                             ui.ctx(),
                         );
                         let cache = &view.browser.filter_cache;
-                        if cache.is_searching() {
+                        if cache.waiting_for_results() {
                             ui.horizontal(|ui| {
                                 ui.spinner();
                                 ui.label(RichText::new("Searching…").color(subtle_dark()));

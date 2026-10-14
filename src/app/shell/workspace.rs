@@ -18,7 +18,8 @@ impl Baboon {
         if self.dialogs.get::<FirstRunWizardState>().is_some() {
             // Setup draws alone, over an empty window.
             ctx.set_zoom_factor(self.model.prefs.ui_scale);
-            set_dark_mode(self.model.prefs.dark_mode);
+            set_dark_mode(self.model.prefs.effective_dark_mode(ctx.system_theme()));
+            ctx.set_theme(if is_dark_mode() { egui::Theme::Dark } else { egui::Theme::Light });
             ctx.set_visuals(foundation_visuals());
             egui::CentralPanel::default().show(ui, |_ui| {});
             self.dialogs.draw(&cx!(self, ctx), &app_reads!(self));
@@ -259,7 +260,8 @@ impl Baboon {
         ctx.set_zoom_factor(self.model.prefs.ui_scale);
         self.handle_pixels_per_point_change(ctx);
         self.maybe_refresh_entry_index(ctx.clone());
-        set_dark_mode(self.model.prefs.dark_mode);
+        set_dark_mode(self.model.prefs.effective_dark_mode(ctx.system_theme()));
+        ctx.set_theme(if is_dark_mode() { egui::Theme::Dark } else { egui::Theme::Light });
         // Pushed the same way and for the same reason as the theme: the two
         // halves of the angle conversion are free functions on opposite sides
         // of the frame, and neither can reach `Baboon`.

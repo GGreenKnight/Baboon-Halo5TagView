@@ -88,9 +88,23 @@ pub(in crate::app) fn foundation_visuals() -> egui::Visuals {
     } else {
         Color32::from_rgb(188, 207, 216)
     };
+    if !is_dark_mode() {
+        // Sliders paint both their rail and handle with bg_fill, while
+        // buttons use weak_bg_fill. Share the button palette so the light
+        // slider no longer disappears into its surrounding panel.
+        opaque_widget_fills(&mut visuals, editor_bg());
+    }
     visuals.menu_corner_radius = egui::CornerRadius::same(5);
     visuals.window_stroke = Stroke::new(1.0_f32, foundation_group_edge());
     visuals
+}
+
+/// Match translucent button colors without showing the slider rail through
+/// its handle. Resolve against the surface the controls are drawn on.
+pub(in crate::app) fn opaque_widget_fills(visuals: &mut egui::Visuals, background: Color32) {
+    visuals.widgets.inactive.bg_fill = background.blend(visuals.widgets.inactive.weak_bg_fill);
+    visuals.widgets.hovered.bg_fill = background.blend(visuals.widgets.hovered.weak_bg_fill);
+    visuals.widgets.active.bg_fill = background.blend(visuals.widgets.active.weak_bg_fill);
 }
 
 fn neutral_button_fill(dark_mode: bool, alpha: u8) -> Color32 {
@@ -936,6 +950,34 @@ mod tests {
         assert_eq!(window_moved_by_drag(false, body), Vec2::new(100.0, 50.0));
         assert_eq!(window_moved_by_drag(true, body), Vec2::ZERO);
         assert_eq!(window_moved_by_drag(true, Vec2::new(150.0, 10.0)), Vec2::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn theme_switches_preserve_font_sizes_spacing_and_widget_dimensions() {
+        let ctx = egui::Context::default();
+        crate::app::Baboon::configure_context(&ctx);
+        ctx.set_zoom_factor(1.25);
+        let expected = foundation_style();
+        let mut previous = None;
+        for theme in [egui::Theme::Light, egui::Theme::Dark, egui::Theme::Light] {
+            ctx.set_theme(theme);
+            let style = ctx.global_style();
+            assert_eq!(style.text_styles, expected.text_styles);
+            assert_eq!(style.spacing.item_spacing, expected.spacing.item_spacing);
+            assert_eq!(style.spacing.button_padding, expected.spacing.button_padding);
+            assert_eq!(style.spacing.interact_size, expected.spacing.interact_size);
+            assert_eq!(style.visuals.dark_mode, theme == egui::Theme::Dark);
+            let mut sizes = None;
+            let _ = crate::app::run_ui_test(&ctx, Default::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    sizes = Some((ui.label("Stable text").rect.size(), ui.button("Stable button").rect.size()));
+                });
+            });
+            if let Some(previous) = previous {
+                assert_eq!(sizes, Some(previous));
+            }
+            previous = sizes;
+        }
     }
 
     /// The egui defaults that changed between 0.29 and 0.36 and that Baboon sets

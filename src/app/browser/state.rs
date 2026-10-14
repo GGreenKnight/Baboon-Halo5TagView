@@ -480,6 +480,7 @@ impl BrowserSort {
 #[derive(Default)]
 pub(in crate::app) struct FilterCache {
     scoped_signature: Option<u64>,
+    query_signature: Option<u64>,
     snapshot_for: Option<(u64, usize, usize)>,
     snapshot: Arc<Vec<TagEntry>>,
     folder_paths_for: Option<(u64, PathBuf)>,
@@ -522,6 +523,10 @@ impl FilterCache {
         self.pending_since.is_some() || self.receiver.is_some()
     }
 
+    pub(in crate::app) fn waiting_for_results(&self) -> bool {
+        self.is_searching() && self.entries.is_empty() && self.tree.children.is_empty()
+    }
+
     /// Unchanged frames only check the request and reply. One source snapshot
     /// is shared across queries; filtering, directory walking and tree building
     /// happen on a cancellable worker after typing pauses.
@@ -551,6 +556,9 @@ impl FilterCache {
         )
             .hash(&mut hasher);
         let signature = hasher.finish();
+        let mut query_hasher = std::collections::hash_map::DefaultHasher::new();
+        (query, groups, folder, root, scope).hash(&mut query_hasher);
+        let query_signature = query_hasher.finish();
         if self.scoped_signature != Some(signature) {
             if let Some(cancel) = self.job_cancel.take() {
                 cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -558,8 +566,13 @@ impl FilterCache {
             self.receiver = None;
             self.scoped_signature = Some(signature);
             self.pending_since = Some(std::time::Instant::now());
-            self.entries.clear();
-            self.tree = TagTree::default();
+            // A different query discards stale matches. A source refresh of
+            // the same query keeps them visible until replacement results land.
+            if self.query_signature != Some(query_signature) {
+                self.entries.clear();
+                self.tree = TagTree::default();
+            }
+            self.query_signature = Some(query_signature);
         }
         if let Some(receiver) = &self.receiver {
             match receiver.try_recv() {
@@ -800,6 +813,26 @@ fn run_browser_search(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_refresh_keeps_search_rows_until_replacement_but_query_changes_clear_them() {
+        let entries = vec![TagEntry { key: "tag".to_owned(), display_path: "tag.bitmap".to_owned(),
+            group_tag: u32::from_be_bytes(*b"bitm"), group_name: None,
+            location: crate::core::source::TagEntryLocation::LooseFile("tag.bitmap".into()) }];
+        let ctx = egui::Context::default();
+        let keywords = Arc::new(std::collections::BTreeMap::new());
+        let mut cache = FilterCache::default();
+        cache.refresh_scoped_async(1, "tag", &entries, false, Path::new(""), None, BrowserSearchScope::default(), &keywords, &ctx);
+        cache.entries = entries.clone();
+        cache.tree = crate::core::source::build_tree(&cache.entries);
+        cache.refresh_scoped_async(2, "tag", &entries, false, Path::new(""), None, BrowserSearchScope::default(), &keywords, &ctx);
+        assert!(cache.is_searching());
+        assert!(!cache.waiting_for_results());
+        assert_eq!(cache.entries.len(), 1);
+        cache.refresh_scoped_async(2, "different", &entries, false, Path::new(""), None, BrowserSearchScope::default(), &keywords, &ctx);
+        assert!(cache.waiting_for_results());
+        assert!(cache.entries.is_empty());
+    }
 
     #[test]
     fn typing_is_debounced_and_only_the_latest_query_is_published() {

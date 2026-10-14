@@ -117,11 +117,9 @@ impl NestedDefault {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::app) enum SettingsTab {
-    Startup,
-    Browser,
+    General,
+    Interface,
     EditingKits,
-    Appearance,
-    Tools,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -461,6 +459,7 @@ pub(in crate::app) struct GuiPrefs {
     pub(in crate::app) show_browser_prefixes: bool,
     pub(in crate::app) folders_before_tags: bool,
     pub(in crate::app) double_click_to_open_tags: bool,
+    pub(in crate::app) reveal_active_tab_in_browser: bool,
     pub(in crate::app) session_restore: SessionRestore,
     pub(in crate::app) update_channel: UpdateChannel,
     pub(in crate::app) check_updates_on_startup: bool,
@@ -482,6 +481,8 @@ pub(in crate::app) struct GuiPrefs {
     pub(in crate::app) chimp_usmap_path: Option<PathBuf>,
     pub(in crate::app) expert_mode: bool,
     pub(in crate::app) dark_mode: bool,
+    /// Follow the OS appearance; dark_mode remains the fallback if unavailable.
+    pub(in crate::app) follow_system_theme: bool,
     pub(in crate::app) ui_scale: f32,
     /// Multiplier on mouse-wheel and trackpad scrolling in scroll areas.
     /// 1.0 is egui's own speed, which is what Baboon always scrolled at.
@@ -518,6 +519,18 @@ pub(in crate::app) struct UnusableKitEntries {
     pub(in crate::app) aliases: Vec<serde_json::Value>,
 }
 
+impl GuiPrefs {
+    pub(in crate::app) fn effective_dark_mode(&self, system_theme: Option<egui::Theme>) -> bool {
+        if self.follow_system_theme {
+            system_theme
+                .map(|theme| theme == egui::Theme::Dark)
+                .unwrap_or(self.dark_mode)
+        } else {
+            self.dark_mode
+        }
+    }
+}
+
 impl Default for GuiPrefs {
     fn default() -> Self {
         Self {
@@ -528,6 +541,7 @@ impl Default for GuiPrefs {
             show_browser_prefixes: false,
             folders_before_tags: false,
             double_click_to_open_tags: false,
+            reveal_active_tab_in_browser: false,
             show_block_sizes: false,
             angles_in_degrees: true,
             scroll_to_cycle_dropdowns: true,
@@ -538,6 +552,7 @@ impl Default for GuiPrefs {
             chimp_usmap_path: None,
             expert_mode: false,
             dark_mode: false,
+            follow_system_theme: true,
             ui_scale: DEFAULT_UI_SCALE,
             scroll_speed: DEFAULT_SCROLL_SPEED,
             zoom_speed: DEFAULT_ZOOM_SPEED,
