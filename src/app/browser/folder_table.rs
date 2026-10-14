@@ -156,9 +156,7 @@ pub(in crate::app) fn begin_folder_table(
         Sense::hover(),
     );
     ui.painter()
-        .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
-    ui.painter()
-        .rect_stroke(rect, 0.0, Stroke::new(1.0_f32, foundation_input_edge()), egui::StrokeKind::Middle);
+        .rect_filled(rect, 0.0, editor_bg());
     let mut x = rect.left();
     let mut columns = Vec::new();
     let mut reorder = None;

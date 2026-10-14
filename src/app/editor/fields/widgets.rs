@@ -842,7 +842,7 @@ pub(in crate::app) fn picker_search_field(
     let search = ui.add(
         egui::TextEdit::singleline(filter)
             .hint_text(placeholder_text(hint))
-            .desired_width((ui.available_width() - 32.0).max(1.0))
+            .desired_width(ui.available_width())
             .margin(egui::Margin {
                 left: 4,
                 right: 28,

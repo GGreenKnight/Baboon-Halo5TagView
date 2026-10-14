@@ -1,5 +1,5 @@
-//! Folder authoring for container sources: create, rename and retire folders a
-//! Campaign Evolved pak does not yet hold a tag in.
+//! Folder creation for loose kits, and creating, renaming and retiring pending
+//! folders a Campaign Evolved pak does not yet hold a tag in.
 //! It owns the pending-folder workflow and its naming contract; the tree seeding
 //! itself belongs to `crate::core::source`, and drawing belongs to the browser UI.
 
@@ -124,7 +124,7 @@ fn container_folder_rel(parent_rel: Option<&str>, leaf: &str) -> String {
 impl Baboon {
 
 
-    /// Raise the New Folder dialog for `parent_rel` (`None` = container root).
+    /// Raise the New Folder dialog for `parent_rel` (`None` = tags root).
     pub(in crate::app) fn open_new_container_folder(&mut self, parent_rel: Option<String>) {
         let kit = self.model.kits[self.model.active].id;
         self.dialogs.open(ContainerFolderDialog {
@@ -166,6 +166,53 @@ impl Baboon {
         let parent_rel = dialog.parent_rel.clone();
         let renaming = dialog.renaming.clone();
         let raw = dialog.name_input.clone();
+        if self.model.editing_kit_is_read_only(kit_index) {
+            self.dialogs.get_mut::<ContainerFolderDialog>().unwrap().error =
+                Some("This editing kit is read-only".to_owned());
+            return false;
+        }
+        let loose_root = self.model.kits[kit_index].source.as_ref().and_then(|source| {
+            if let TagSource::LooseFolder { root, .. } = &source.source { Some(root.clone()) } else { None }
+        });
+        if let Some(root) = loose_root {
+            let result = (|| -> Result<_, String> {
+                if renaming.is_some() {
+                    return Err("Use Rename Folder to move a folder on disk".to_owned());
+                }
+                let parent = tag_path::to_relative(parent_rel.as_deref().unwrap_or_default());
+                if parent.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+                    return Err("Choose a folder inside the tags directory".to_owned());
+                }
+                let directory = root.join(&parent);
+                let siblings = fs::read_dir(&directory).map_err(|error| error.to_string())?
+                    .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+                    .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+                let leaf = validate_folder_leaf_name(&raw, &siblings)?;
+                let relative = parent.join(&leaf);
+                fs::create_dir(root.join(&relative)).map_err(|error| error.to_string())?;
+                Ok((parent, relative, leaf))
+            })();
+            match result {
+                Ok((parent, relative, leaf)) => {
+                    let kit = &mut self.model.kits[kit_index];
+                    if let Some(source) = kit.source.as_mut() {
+                        insert_loose_folder(&mut source.tree, Path::new(""), &parent, &relative, &leaf);
+                    }
+                    kit.generation = kit.generation.wrapping_add(1);
+                    for pane in self.views[kit.id].browser.folder_browsers.values_mut() {
+                        insert_loose_folder(&mut pane.tree, &pane.rel_path, &parent, &relative, &leaf);
+                        pane.cached_generation = kit.generation;
+                        pane.group_tree_for = None;
+                    }
+                    self.model.status = format!("Created folder {}", tag_path::relative_tag_path(&relative));
+                    return true;
+                }
+                Err(error) => {
+                    self.dialogs.get_mut::<ContainerFolderDialog>().unwrap().error = Some(error);
+                    return false;
+                }
+            }
+        }
 
         // A rename keeps its own leaf available, or renaming a folder to the
         // case-variant of its current name would collide with itself.
@@ -279,6 +326,27 @@ impl Baboon {
         // this a folder created while a filter is active would not appear.
         self.model.kits[kit_index].generation = self.model.kits[kit_index].generation.wrapping_add(1);
     }
+}
+
+/// Add to materialized parents without rebuilding or collapsing unrelated folders.
+fn insert_loose_folder(tree: &mut TagTree, tree_root: &Path, parent: &Path, relative: &Path, leaf: &str) {
+    fn insert(children: &mut Vec<TagTreeNode>, relative: &Path, leaf: &str) {
+        if children.iter().any(|node| node.rel_path == relative) { return; }
+        children.push(TagTreeNode { label: leaf.to_owned(), rel_path: relative.to_owned(),
+            children_loaded: true, entries_loaded: true, ..Default::default() });
+        children.sort_by_key(|node| node.label.to_lowercase());
+    }
+    fn visit(nodes: &mut [TagTreeNode], parent: &Path, relative: &Path, leaf: &str) {
+        for node in nodes {
+            if node.rel_path == parent {
+                insert(&mut node.children, relative, leaf);
+            } else {
+                visit(&mut node.children, parent, relative, leaf);
+            }
+        }
+    }
+    if tree_root == parent { insert(&mut tree.children, relative, leaf); }
+    else { visit(&mut tree.children, parent, relative, leaf); }
 }
 
 #[cfg(test)]

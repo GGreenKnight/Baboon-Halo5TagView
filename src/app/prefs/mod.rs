@@ -125,6 +125,8 @@ fn prefs_from_value(value: &Value) -> GuiPrefs {
             .get("double_click_to_open_tags")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        reveal_active_tab_in_browser: value.get("reveal_active_tab_in_browser")
+            .and_then(Value::as_bool).unwrap_or(false),
         session_restore: value
             .get("session_restore")
             .and_then(Value::as_str)
@@ -190,6 +192,10 @@ fn prefs_from_value(value: &Value) -> GuiPrefs {
             .get("dark_mode")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        follow_system_theme: value
+            .get("follow_system_theme")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| value.get("dark_mode").and_then(Value::as_bool).is_none()),
         ui_scale: value
             .get("ui_scale")
             .and_then(Value::as_f64)
@@ -802,6 +808,8 @@ fn prefs_to_value(
         "first_run_complete": first_run_complete,
         "terminal_open_games": games,
     });
+    value["follow_system_theme"] = Value::Bool(prefs.follow_system_theme);
+    value["reveal_active_tab_in_browser"] = Value::Bool(prefs.reveal_active_tab_in_browser);
     value["browser_search_scope"] = json!({
         "tags": prefs.browser_search_scope.tags,
         "folders": prefs.browser_search_scope.folders,
@@ -1357,6 +1365,37 @@ mod tests {
 
     fn stored(prefs: &GuiPrefs) -> GuiPrefs {
         prefs_from_value(&prefs_to_value(prefs, &HashSet::new(), true))
+    }
+
+    #[test]
+    fn automatic_browser_reveal_is_opt_in_and_survives_save() {
+        let mut prefs = prefs_from_value(&json!({}));
+        assert!(!prefs.reveal_active_tab_in_browser);
+        prefs.reveal_active_tab_in_browser = true;
+        assert!(stored(&prefs).reveal_active_tab_in_browser);
+        prefs.reveal_active_tab_in_browser = false;
+        assert!(!stored(&prefs).reveal_active_tab_in_browser);
+    }
+
+    #[test]
+    fn system_theme_defaults_preserve_legacy_choices_and_round_trip() {
+        let fresh = prefs_from_value(&json!({}));
+        assert!(fresh.follow_system_theme);
+        assert!(fresh.effective_dark_mode(Some(egui::Theme::Dark)));
+        assert!(!fresh.effective_dark_mode(Some(egui::Theme::Light)));
+        assert!(!fresh.effective_dark_mode(None));
+        for dark in [false, true] {
+            let mut legacy = prefs_from_value(&json!({ "dark_mode": dark }));
+            assert!(!legacy.follow_system_theme);
+            assert_eq!(legacy.effective_dark_mode(Some(egui::Theme::Light)), dark);
+            assert_eq!(legacy.effective_dark_mode(Some(egui::Theme::Dark)), dark);
+            legacy.follow_system_theme = true;
+            let restored = stored(&legacy);
+            assert!(restored.follow_system_theme);
+            assert_eq!(restored.effective_dark_mode(None), dark);
+            assert!(restored.effective_dark_mode(Some(egui::Theme::Dark)));
+            assert!(!restored.effective_dark_mode(Some(egui::Theme::Light)));
+        }
     }
 
     #[test]

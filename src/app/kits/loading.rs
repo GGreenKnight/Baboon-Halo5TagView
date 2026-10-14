@@ -2,7 +2,6 @@
 //! It owns application actions and workflow coordination; widget layout and persistent state definitions belong elsewhere.
 
 use super::*;
-use crate::app::browser::actions::reset_lazy_folder_browser;
 
 /// How often a loaded loose folder's entry index is checked against disk.
 const ENTRY_INDEX_REFRESH_INTERVAL_SECS: f64 = 30.0;
@@ -1022,6 +1021,7 @@ impl Baboon {
     ) {
         let EntryIndexRefresh {
             entries,
+            changed,
             added,
             updated,
             removed,
@@ -1031,7 +1031,13 @@ impl Baboon {
             ..
         } = refresh;
         let n = entries.len();
-        let browser_refresh_error = self.install_complete_entry_set(kit_index, entries);
+        let initialized = self.model.kits[kit_index].source.as_ref()
+            .is_some_and(|source| source.complete_scan && source.all_entries.len() == n);
+        let browser_refresh_error = if changed || !initialized {
+            self.install_complete_entry_set(kit_index, entries)
+        } else {
+            None
+        };
         // Patched, not dropped: the worker read the changed tags' references
         // and already wrote them (and the index rows) to disk. Dropping it, as
         // this used to, left "References to" unavailable until a manual
@@ -1061,7 +1067,7 @@ impl Baboon {
     }
 
     /// Adopt a complete entry set for a kit: the full list and its group tree,
-    /// a reset lazy browser, and a new generation so panes and caches rebuild.
+    /// preserving the lazy folders already loaded, and advancing its generation.
     /// Shared by the full scan and the periodic refresh, which used to do this
     /// separately and had drifted (only one of them moved the generation).
     /// Returns the browser reset's error, if it failed.
@@ -1075,17 +1081,128 @@ impl Baboon {
         source.group_tree = crate::core::source::build_group_tree(&entries);
         source.all_entries = entries;
         source.complete_scan = true;
+        let new_generation = kit.generation.wrapping_add(1);
+        let browser = &mut self.views[kit.id].browser;
         let error = if let TagSource::LooseFolder { root, .. } = &source.source {
-            reset_lazy_folder_browser(root, &mut source.tree, &mut source.entries).err()
+            // Stage the complete browser before replacing it: even one frame
+            // with unloaded descendants clamps the scroll area back to the top.
+            let rebuilt = (|| -> Result<_, String> {
+                let mut rebuild = MaterializedFolderRefresh::new(root, &source.all_entries);
+                let tree = rebuild.tree(Path::new(""), &source.tree, false)?;
+                let mut panes = Vec::new();
+                for (key, pane) in &browser.folder_browsers {
+                    let tree = if root.join(&pane.rel_path).exists() {
+                        rebuild.tree(&pane.rel_path, &pane.tree, true)?
+                    } else {
+                        TagTree::default()
+                    };
+                    panes.push((key.clone(), tree));
+                }
+                Ok((tree, rebuild.entries, panes))
+            })();
+            match rebuilt {
+                Ok((tree, entries, panes)) => {
+                    source.tree = tree;
+                    source.entries = entries;
+                    for (key, tree) in panes {
+                        let pane = browser.folder_browsers.get_mut(&key).unwrap();
+                        pane.tree = tree;
+                        pane.cached_generation = new_generation;
+                        pane.group_tree_for = None;
+                    }
+                    None
+                }
+                Err(error) => Some(error),
+            }
         } else {
             None
         };
         kit.field_index.invalidate();
-        kit.generation = kit.generation.wrapping_add(1);
+        kit.generation = new_generation;
         error
     }
 }
 
+/// Rebuild loaded folders from the worker's index snapshot, without re-reading
+/// tag headers on the UI thread. Folder listings still include empty directories.
+struct MaterializedFolderRefresh<'a> {
+    root: &'a Path,
+    by_folder: HashMap<String, Vec<&'a TagEntry>>,
+    entry_indices: HashMap<&'a str, usize>,
+    entries: Vec<TagEntry>,
+}
+
+impl<'a> MaterializedFolderRefresh<'a> {
+    fn new(root: &'a Path, indexed: &'a [TagEntry]) -> Self {
+        let mut by_folder: HashMap<String, Vec<&TagEntry>> = HashMap::new();
+        for entry in indexed {
+            let relative = tag_path::to_relative(&entry.display_path);
+            let folder = relative.parent().unwrap_or_else(|| Path::new(""));
+            by_folder.entry(extraction_scope_key(folder)).or_default().push(entry);
+        }
+        Self { root, by_folder, entry_indices: HashMap::new(), entries: Vec::new() }
+    }
+
+    fn direct_entries(&mut self, folder: &Path) -> Vec<usize> {
+        let mut indices = Vec::new();
+        if let Some(entries) = self.by_folder.get(&extraction_scope_key(folder)) {
+            for entry in entries {
+                let index = if let Some(&index) = self.entry_indices.get(entry.key.as_str()) {
+                    index
+                } else {
+                    let index = self.entries.len();
+                    self.entries.push((*entry).clone());
+                    self.entry_indices.insert(entry.key.as_str(), index);
+                    index
+                };
+                indices.push(index);
+            }
+        }
+        indices
+    }
+
+    fn directories(&self, folder: &Path) -> Result<TagTree, String> {
+        let mut tree = crate::core::source::build_folder_directory_tree(&self.root.join(folder))
+            .map_err(|error| error.to_string())?;
+        for node in &mut tree.children {
+            node.rel_path = folder.join(&node.rel_path);
+        }
+        Ok(tree)
+    }
+
+    fn tree(&mut self, folder: &Path, previous: &TagTree, direct_entries: bool) -> Result<TagTree, String> {
+        fn remember(nodes: &[TagTreeNode], loaded: &mut HashMap<String, (bool, bool)>) {
+            for node in nodes {
+                loaded.insert(extraction_scope_key(&node.rel_path), (node.children_loaded, node.entries_loaded));
+                remember(&node.children, loaded);
+            }
+        }
+        let mut loaded = HashMap::new();
+        remember(&previous.children, &mut loaded);
+        let mut tree = self.directories(folder)?;
+        if direct_entries || !previous.entries.is_empty() {
+            tree.entries = self.direct_entries(folder);
+        }
+        self.restore(&mut tree.children, &loaded)?;
+        Ok(tree)
+    }
+
+    fn restore(&mut self, nodes: &mut [TagTreeNode], loaded: &HashMap<String, (bool, bool)>) -> Result<(), String> {
+        for node in nodes {
+            let Some(&(children_loaded, entries_loaded)) = loaded.get(&extraction_scope_key(&node.rel_path)) else { continue; };
+            if entries_loaded {
+                node.entries = self.direct_entries(&node.rel_path);
+                node.entries_loaded = true;
+            }
+            if children_loaded {
+                node.children = self.directories(&node.rel_path)?.children;
+                node.children_loaded = true;
+                self.restore(&mut node.children, loaded)?;
+            }
+        }
+        Ok(())
+    }
+}
 pub(in crate::app) fn extraction_scope_key(path: &Path) -> String {
     tag_path::relative_tag_path(path)
         .trim_matches(tag_path::SEPARATOR)
@@ -1732,6 +1849,107 @@ mod tests {
         (app, cleanup, tag)
     }
 
+    #[test]
+    fn repeated_index_refreshes_preserve_loaded_sidebar_and_folder_pane_trees() {
+        let (mut app, cleanup, tag) = lazy_shader_kit(false);
+        let root = cleanup.0.clone();
+        let ctx = egui::Context::default();
+        {
+            let source = app.model.kits[0].source.as_mut().unwrap();
+            for path in ["objects", "objects/characters", "objects/characters/brute", "objects/characters/brute/shaders"] {
+                let node = find_tree_node_mut(&mut source.tree.children, &extraction_scope_key(Path::new(path))).unwrap();
+                crate::core::source::load_folder_node_entries(&root, node, &mut source.entries, &source.names).unwrap();
+            }
+        }
+        app.handle_browser_action(crate::app::browser::BrowserAction::OpenFolderBrowser {
+            rel_path: PathBuf::from("objects/characters/brute"), label: "brute".to_owned(), open_in_new_tab: false
+        }, ctx.clone());
+        let kit_id = app.model.kits[0].id;
+        let pane_key = app.views[kit_id].browser.folder_browsers.keys().next().unwrap().clone();
+        app.refresh_folder_browser_pane(0, &pane_key, &ctx);
+        {
+            let source = app.model.kits[0].source.as_mut().unwrap();
+            let pane = app.views[kit_id].browser.folder_browsers.get_mut(&pane_key).unwrap();
+            crate::core::source::load_folder_node_entries(&root, &mut pane.tree.children[0], &mut source.entries, &source.names).unwrap();
+        }
+        let scan = || crate::core::source::scan_folder_subtree_entries(&root, Path::new(""), &TagNameIndex::default()).unwrap();
+        let refresh = |entries, changed| EntryIndexRefresh {
+            entries, changed, added: 0, updated: 0, removed: 0, touched: Vec::new(),
+            removed_keys: Vec::new(), touched_dependencies: Vec::new(), errors: Vec::new()
+        };
+        app.apply_entry_index_refresh(0, refresh(scan(), true), ctx.clone());
+        let generation = app.model.kits[0].generation;
+        let snapshot = app.model.kits[0].source.as_ref().unwrap().all_entries.as_ptr();
+        for _ in 0..3 {
+            app.apply_entry_index_refresh(0, refresh(scan(), false), ctx.clone());
+            assert_eq!(app.model.kits[0].generation, generation);
+            assert_eq!(app.model.kits[0].source.as_ref().unwrap().all_entries.as_ptr(), snapshot);
+        }
+        std::fs::write(root.join("objects/characters/brute/another.shader"), tag.write_to_bytes().unwrap()).unwrap();
+        app.apply_entry_index_refresh(0, refresh(scan(), true), ctx.clone());
+        let source = app.model.kits[0].source.as_mut().unwrap();
+        assert_eq!(source.entries.len(), 3, "loaded entries stay materialized without pane duplicates");
+        let node = find_tree_node_mut(&mut source.tree.children, &extraction_scope_key(Path::new("objects/characters/brute/shaders"))).unwrap();
+        assert!(node.entries_loaded && node.children_loaded);
+        assert_eq!(node.entries.len(), 1);
+        let pane = &app.views[kit_id].browser.folder_browsers[&pane_key];
+        assert_eq!(pane.cached_generation, app.model.kits[0].generation);
+        assert_eq!(pane.tree.entries.len(), 2, "new tags appear in the loaded folder");
+        assert!(pane.tree.children[0].entries_loaded);
+        assert_eq!(pane.tree.children[0].entries.len(), 1);
+    }
+
+    /// A background replacement must not briefly reduce the scrollable height.
+    #[test]
+    fn refreshing_a_scrolled_browser_does_not_clamp_it_back_to_the_top() {
+        let (mut app, cleanup, tag) = lazy_shader_kit(false);
+        let root = cleanup.0.clone();
+        let bytes = tag.write_to_bytes().unwrap();
+        for index in 0..80 {
+            std::fs::write(root.join(format!("objects/characters/brute/tag_{index:03}.shader")), &bytes).unwrap();
+        }
+        {
+            let source = app.model.kits[0].source.as_mut().unwrap();
+            for path in ["objects", "objects/characters", "objects/characters/brute"] {
+                let node = find_tree_node_mut(&mut source.tree.children, &extraction_scope_key(Path::new(path))).unwrap();
+                crate::core::source::load_folder_node_entries(&root, node, &mut source.entries, &source.names).unwrap();
+            }
+        }
+        let ctx = egui::Context::default();
+        Baboon::configure_context(&ctx);
+        ctx.global_style_mut(|style| style.animation_time = 0.0);
+        let draw = |app: &Baboon, offset: Option<f32>| {
+            let mut scroll = 0.0;
+            let _ = crate::app::run_ui_test(&ctx, egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 240.0))),
+                ..Default::default()
+            }, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let source = app.model.kits[0].source.as_ref().unwrap();
+                    let mut area = ScrollArea::vertical().id_salt("refresh_scroll_test").auto_shrink([false, false]);
+                    if let Some(offset) = offset { area = area.vertical_scroll_offset(offset); }
+                    let shown = area.show(ui, |ui| {
+                        crate::app::browser::draw_tree(ui, &source.tree, &source.entries, None,
+                            "", true, false, false, false, None, crate::app::browser::BrowserSort::Natural,
+                            false, None, false, None);
+                    });
+                    scroll = shown.state.offset.y;
+                });
+            });
+            scroll
+        };
+        draw(&app, Some(500.0));
+        let before = draw(&app, Some(500.0));
+        assert!(before > 400.0, "the test browser must actually be scrolled");
+        let entries = crate::core::source::scan_folder_subtree_entries(&root, Path::new(""), &TagNameIndex::default()).unwrap();
+        app.apply_entry_index_refresh(0, EntryIndexRefresh {
+            entries, changed: true, added: 0, updated: 0, removed: 0, touched: Vec::new(),
+            removed_keys: Vec::new(), touched_dependencies: Vec::new(), errors: Vec::new()
+        }, ctx.clone());
+        let after = draw(&app, None);
+        assert!((before - after).abs() <= 1.0, "refresh moved the browser from {before} to {after}");
+    }
+
     /// The key the full scan gives the tag at `rel`.
     fn full_scan_key(root: &Path, rel: &str) -> String {
         crate::core::source::scan_folder_subtree_entries(root, Path::new(""), &TagNameIndex::default())
@@ -1773,7 +1991,10 @@ mod tests {
                 },
                 ctx.clone(),
             );
-            assert!(app.model.kits[0].source.as_ref().unwrap().entries.is_empty());
+            let source = app.model.kits[0].source.as_ref().unwrap();
+            assert!(source.entries.iter().all(|entry|
+                source.all_entries.iter().any(|indexed| indexed.key == entry.key)),
+                "materialized browser entries must still belong to the refreshed index");
             assert!(
                 app.model.entry_for_key_in(0, key).is_some(),
                 "the full index still resolves the open tab"

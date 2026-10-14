@@ -3606,24 +3606,14 @@ mod tests {
                 &["Baboon Help", "The Pillar of Autumn"],
             ),
             case(
-                "settings_startup",
+                "settings_general",
                 &["dialog:SettingsWindow"],
                 &["shell/settings.rs"],
                 welcome,
                 |h| {
-                    h.app.open_settings(Some(SettingsTab::Startup));
+                    h.app.open_settings(Some(SettingsTab::General));
                 },
-                &["Settings", "When reopening Baboon with a previous session:"],
-            ),
-            case(
-                "settings_browser",
-                &["dialog:SettingsWindow"],
-                &["shell/settings.rs"],
-                welcome,
-                |h| {
-                    h.app.open_settings(Some(SettingsTab::Browser));
-                },
-                &["Settings", "Double-click to open tags"],
+                &["Settings", "Session Restore"],
             ),
             case(
                 "settings_editing_kits",
@@ -3636,24 +3626,14 @@ mod tests {
                 &["Settings", "Auto Detect"],
             ),
             case(
-                "settings_appearance",
+                "settings_interface",
                 &["dialog:SettingsWindow"],
                 &["shell/settings.rs"],
                 welcome,
                 |h| {
-                    h.app.open_settings(Some(SettingsTab::Appearance));
+                    h.app.open_settings(Some(SettingsTab::Interface));
                 },
-                &["Settings", "Angles in degrees"],
-            ),
-            case(
-                "settings_tools",
-                &["dialog:SettingsWindow"],
-                &["shell/settings.rs"],
-                welcome,
-                |h| {
-                    h.app.open_settings(Some(SettingsTab::Tools));
-                },
-                &["Settings", "Chimp — Unreal mappings"],
+                &["Settings", "Display Angles as"],
             ),
             case(
                 "settings_custom_kit_draft",
@@ -5071,6 +5051,154 @@ mod tests {
     // pointed Choose... at the other game's folder.
 
     #[test]
+    fn ctrl_n_opens_the_new_tag_window() {
+        let mut h = Harness::new();
+        press_key(&mut h, egui::Key::N, CTRL);
+        h.idle(2);
+        assert!(h.app.dialogs.get::<crate::app::tag_ops::NewTagDialog>().is_some());
+        assert!(h.painted_contains("New Tag"), "{:?}", h.painted);
+    }
+
+    #[test]
+    fn new_tag_places_group_beside_engine_and_actions_below_the_path() {
+        let kit = LooseKit::new("new-tag-layout", "halo3_mcc");
+        let mut h = Harness::new();
+        kit.install(&mut h.app);
+        h.app.open_new_tag_dialog();
+        {
+            let dialog = h.app.dialogs.get_mut::<crate::app::tag_ops::NewTagDialog>().unwrap();
+            dialog.selected_group = dialog.groups.iter().position(|group| group.name == "scenery").unwrap();
+            dialog.rel_path = "objects\\new_tag".to_owned();
+        }
+        h.idle(3);
+        let rect = |label: &str| h.painted_rects.iter()
+            .find(|(text, _)| text == label)
+            .unwrap_or_else(|| panic!("missing {label}: {:?}", h.painted)).1;
+        let engine = rect("Game Engine");
+        let group = rect("Tag Group");
+        assert!((engine.top() - group.top()).abs() < 1.0);
+        assert!(group.left() > engine.right());
+        let path = rect("Path & Name");
+        assert!(path.top() > engine.bottom());
+        let browse = rect("Browse");
+        let extension = rect(".scenery");
+        assert!(extension.left() > path.right());
+        assert!(extension.right() < browse.left());
+        assert!((extension.center().y - browse.center().y).abs() < 1.0);
+        let create = rect("Create");
+        let cancel = rect("Cancel");
+        assert!(create.top() > browse.bottom());
+        assert!((create.center().y - cancel.center().y).abs() < 1.0);
+        assert!(cancel.left() > create.right());
+    }
+
+    #[test]
+    fn hovering_new_tag_keeps_the_dialog_size_stable() {
+        let kit = LooseKit::new("new-tag-stable-layout", "halo3_mcc");
+        let mut h = Harness::new();
+        kit.install(&mut h.app);
+        h.app.open_new_tag_dialog();
+        h.idle(3);
+        let bounds = |h: &Harness| {
+            let rect = |label: &str| h.painted_rects.iter().find(|(text, _)| text == label).unwrap().1;
+            egui::Rect::from_min_max(rect("Game Engine").min, rect("Cancel").max)
+        };
+        let before = bounds(&h);
+        for _ in 0..40 {
+            h.frame(vec![egui::Event::PointerMoved(bounds(&h).center())]);
+        }
+        let after = bounds(&h);
+        assert!((before.width() - after.width()).abs() < 1.0, "{before:?} -> {after:?}");
+        assert!((before.height() - after.height()).abs() < 1.0, "{before:?} -> {after:?}");
+    }
+
+    #[test]
+    fn new_tag_defaults_to_the_active_tag_or_folder_without_a_name() {
+        use crate::app::tag_ops::NewTagDialog;
+        let mut h = Harness::new();
+        fixture::install_kit(&mut h.app, fixture::synthetic_entries(2, 1, 1));
+        fixture::open_document(&mut h.app, "folder_00\\sub_00\\tag_000.biped", fixture::new_tag("biped"));
+        h.app.open_new_tag_dialog();
+        let dialog = h.app.dialogs.get::<NewTagDialog>().unwrap();
+        assert_eq!(dialog.rel_path, "folder_00\\sub_00\\");
+        assert!(!dialog.has_tag_name());
+        assert!(dialog.output_path.is_none());
+
+        h.app.handle_browser_action(BrowserAction::OpenFolderBrowser {
+            rel_path: PathBuf::from("folder_01/sub_00"),
+            label: "sub_00".to_owned(),
+            open_in_new_tab: false,
+        }, h.ctx.clone());
+        h.app.open_new_tag_dialog();
+        assert_eq!(h.app.dialogs.get::<NewTagDialog>().unwrap().rel_path, "folder_01\\sub_00\\");
+        h.app.open_new_tag_dialog_in_folder(None);
+        assert_eq!(h.app.dialogs.get::<NewTagDialog>().unwrap().rel_path, "");
+    }
+
+    #[test]
+    fn folder_new_menu_opens_new_tag_and_creates_a_folder_in_the_viewed_directory() {
+        use crate::app::tag_ops::NewTagDialog;
+        let kit = LooseKit::new("folder-new-menu", "halo3_mcc");
+        kit.write_mcc("objects\\existing", "scenery", |_| {});
+        let mut h = Harness::new();
+        kit.install(&mut h.app);
+        h.app.handle_browser_action(BrowserAction::OpenFolderBrowser {
+            rel_path: PathBuf::from("objects"), label: "objects".to_owned(), open_in_new_tab: false,
+        }, h.ctx.clone());
+        h.idle(3);
+        let view_menu = h.painted.iter().find(|text| text.trim() == "View" && text.as_str() != "View").unwrap().clone();
+        let view_index = h.painted.iter().filter(|text| **text == view_menu).count() - 1;
+        h.click(&view_menu, view_index);
+        h.idle(2);
+        h.click("Groups", 0);
+        h.idle(2);
+        let kit_id = h.app.model.kits[h.app.model.active].id;
+        let key = h.app.model.kits[h.app.model.active].current_pane.clone().unwrap();
+        assert_eq!(h.app.views[kit_id].browser.folder_browsers[&key].mode, BrowserMode::Groups);
+        h.click(&view_menu, view_index);
+        h.idle(2);
+        h.click("Folders", 0);
+        h.idle(2);
+        let open_new = |h: &mut Harness| {
+            let label = h.painted.iter().find(|text| text.trim() == "New").unwrap().clone();
+            h.click(&label, 0);
+            h.idle(2);
+        };
+        open_new(&mut h);
+        h.click("New Tag...", 0);
+        h.idle(2);
+        assert_eq!(h.app.dialogs.get::<NewTagDialog>().unwrap().rel_path, "objects\\");
+        h.app.dialogs.close::<NewTagDialog>();
+        h.idle(2);
+        open_new(&mut h);
+        h.click("New Folder...", 0);
+        h.idle(2);
+        let dialog = h.app.dialogs.get_mut::<ContainerFolderDialog>().unwrap();
+        assert_eq!(dialog.parent_rel.as_deref(), Some("objects"));
+        dialog.name_input = "New Child".to_owned();
+        h.idle(2);
+        h.click("Create Folder", 0);
+        h.idle(3);
+        assert!(kit.root.join("objects/New Child").is_dir());
+        assert!(h.app.dialogs.get::<ContainerFolderDialog>().is_none());
+        assert!(h.painted_contains("New Child"), "{:?}", h.painted);
+        assert!(h.app.model.kits[h.app.model.active].pending_container_folders.is_empty());
+        h.app.open_new_container_folder(Some("objects".to_owned()));
+        h.app.dialogs.get_mut::<ContainerFolderDialog>().unwrap().name_input = "new child".to_owned();
+        assert!(!h.app.apply_container_folder_dialog());
+        assert!(h.app.dialogs.get::<ContainerFolderDialog>().unwrap().error.is_some());
+        let alternate = kit.root.join("alternate");
+        fs::create_dir(&alternate).unwrap();
+        let dialog = h.app.dialogs.get_mut::<ContainerFolderDialog>().unwrap();
+        assert!(dialog.select_parent_directory(&kit.root, &kit.base).is_err());
+        dialog.select_parent_directory(&kit.root, &alternate).unwrap();
+        assert_eq!(dialog.parent_rel.as_deref(), Some("alternate"));
+        dialog.name_input = "Elsewhere".to_owned();
+        assert!(h.app.apply_container_folder_dialog());
+        assert!(alternate.join("Elsewhere").is_dir());
+    }
+
+    #[test]
     fn the_new_tag_window_reads_the_kit_it_was_opened_for() {
         let kit = LooseKit::new("new-tag-kit", "halo3_mcc");
         kit.write_mcc("objects\\weapons\\rifle\\assault_rifle", "biped", |_| {});
@@ -5168,12 +5296,12 @@ mod tests {
     #[test]
     fn a_settings_checkbox_changes_the_live_preference() {
         let mut h = Harness::new();
-        h.app.open_settings(Some(SettingsTab::Browser));
+        h.app.open_settings(Some(SettingsTab::Interface));
         for _ in 0..4 {
             h.frame(Vec::new());
         }
         let before = h.app.model.prefs.clone();
-        h.click("Double-click to open tags", 0);
+        h.click("Double-Click to Open", 0);
         for _ in 0..2 {
             h.frame(Vec::new());
         }
@@ -5334,6 +5462,7 @@ mod tests {
     #[test]
     fn closing_the_current_tab_reveals_the_next_one_in_the_browser() {
         let mut h = Harness::new();
+        h.app.model.prefs.reveal_active_tab_in_browser = true;
         fixture::install_kit(&mut h.app, fixture::synthetic_entries(2, 1, 1));
         let first = fixture::open_document(&mut h.app, "folder_00\\sub_00\\tag_000.biped", fixture::new_tag("biped"));
         idle(&mut h);
@@ -5362,6 +5491,30 @@ mod tests {
         let active = h.app.model.active;
         assert_eq!(h.app.model.kits[active].selected_key, Some(first));
         assert_eq!(tree_subfolders(&h), 2, "the browser did not open folder_00 to the tab now in front");
+    }
+
+    #[test]
+    fn switching_and_closing_tabs_preserve_browser_place_unless_explicitly_revealed() {
+        let mut h = Harness::new();
+        fixture::install_kit(&mut h.app, fixture::synthetic_entries(2, 1, 2));
+        assert!(!h.app.model.prefs.reveal_active_tab_in_browser);
+        let first = fixture::open_document(&mut h.app, "folder_00\\sub_00\\tag_000.biped", fixture::new_tag("biped"));
+        let second = fixture::open_document(&mut h.app, "folder_01\\sub_00\\tag_001.biped", fixture::new_tag("biped"));
+        idle(&mut h);
+        let count = |h: &Harness| h.painted_rects.iter().filter(|(text, rect)| text == "sub_00" && rect.left() < 300.0).count();
+        assert_eq!(count(&h), 0, "opening tabs must not expand their browser folders");
+        h.app.reveal_in_browser(&second);
+        idle(&mut h);
+        assert_eq!(count(&h), 1);
+        press_tab(&mut h, "tag_000.biped", egui::PointerButton::Primary);
+        assert_eq!(count(&h), 1, "switching to the first tag must not expand its folder");
+        press_key(&mut h, egui::Key::W, CTRL);
+        idle(&mut h);
+        assert_eq!(count(&h), 1, "closing the tab must preserve browser expansion");
+        assert!(h.app.browser.reveal_target.is_none());
+        h.app.reveal_in_browser(&first);
+        idle(&mut h);
+        assert_eq!(count(&h), 2, "explicit reveal still opens the requested folder");
     }
 
     /// Click the warning badge a tag on another layout carries on its header

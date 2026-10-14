@@ -266,7 +266,8 @@ impl Baboon {
         let suppress_startup_popups = startup_arguments.suppresses_startup_popups();
         let first_run_wizard = (!suppress_startup_popups && !load_first_run_complete())
             .then(|| FirstRunWizardState::new(storage.mode, &prefs));
-        set_dark_mode(prefs.dark_mode);
+        set_dark_mode(prefs.effective_dark_mode(cc.egui_ctx.system_theme()));
+        cc.egui_ctx.set_theme(if is_dark_mode() { egui::Theme::Dark } else { egui::Theme::Light });
         cc.egui_ctx.set_visuals(foundation_visuals());
         let names = TagNameIndex::load_from_definitions(&locate_definitions_root());
         names.publish_as_process_group_names();
@@ -319,7 +320,16 @@ impl Baboon {
     /// window's is.
     pub(crate) fn configure_context(ctx: &egui::Context) {
         ctx.set_fonts(foundation_fonts());
-        ctx.set_global_style(foundation_style());
+        // egui stores an independent style for each theme. Configure both
+        // so changing appearance never falls back to egui's font sizes.
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let mut style = foundation_style();
+            style.visuals = match theme {
+                egui::Theme::Light => egui::Visuals::light(),
+                egui::Theme::Dark => egui::Visuals::dark(),
+            };
+            ctx.set_style_of(theme, style);
+        }
         egui_extras::install_image_loaders(ctx);
         // A drag hovering Sapien's window asks for a copy or not-allowed
         // cursor (see `track_kit_tool_drop`). It is applied at the end of the

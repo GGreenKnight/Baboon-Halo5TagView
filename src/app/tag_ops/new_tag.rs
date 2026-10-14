@@ -32,6 +32,18 @@ impl Baboon {
             authorability: None,
         };
         dialog.refresh_groups(&self.model);
+        let kit = &self.model.kits[self.model.active];
+        let view = &self.views[kit.id];
+        let folder = kit.current_pane.as_deref()
+            .and_then(|pane| view.browser.folder_browsers.get(pane))
+            .map(|folder| tag_path::relative_tag_path(&folder.rel_path))
+            .or_else(|| {
+                let entry = kit.entry_for_key(kit.selected_key.as_deref()?)?;
+                let path = tag_path::from_input(&entry.display_path);
+                Some(tag_path::parent(&path).unwrap_or_default().to_owned())
+            })
+            .unwrap_or_default();
+        dialog.set_folder(&folder);
         dialog
     }
 
@@ -39,10 +51,7 @@ impl Baboon {
     /// right-clicked folder node), leaving the leaf name for the user to type.
     pub(in crate::app) fn open_new_tag_dialog_in_folder(&mut self, folder_rel: Option<String>) {
         let mut dialog = self.new_tag_dialog();
-        if let Some(folder) = folder_rel.filter(|f| !f.is_empty()) {
-            // Pre-fill the path field with the folder + a trailing separator.
-            dialog.rel_path = format!("{}{}", folder.trim_end_matches(tag_path::SEPARATOR), tag_path::SEPARATOR);
-        }
+        dialog.set_folder(folder_rel.as_deref().unwrap_or_default());
         self.dialogs.open(dialog);
     }
 
@@ -85,9 +94,16 @@ impl Baboon {
             dialog.error = Some("Choose a tag group".to_owned());
             return false;
         };
-        let Some(output) = dialog.output_path.clone() else {
-            dialog.error = Some("Choose a tag name and location".to_owned());
-            return false;
+        let output = if let Some(output) = dialog.output_path.clone() {
+            output
+        } else {
+            match new_tag_typed_output_path(&root, &dialog.rel_path, &group.extension) {
+                Ok((output, _)) => output,
+                Err(error) => {
+                    dialog.error = Some(error);
+                    return false;
+                }
+            }
         };
         let output = match new_tag_output_path_from_dialog(&root, &output, &group.extension) {
             Ok((output, rel_path)) => {
@@ -181,6 +197,10 @@ impl Baboon {
             dialog.error = Some("Choose a tag group".to_owned());
             return false;
         };
+        if !dialog.has_tag_name() {
+            dialog.error = Some("Enter a name for the new tag".to_owned());
+            return false;
+        }
         let rel = normalize_container_tag_rel(&dialog.rel_path);
         if rel.is_empty() {
             dialog.error = Some(r"Enter a tag path (e.g. objects\foo\bar)".to_owned());
@@ -784,6 +804,18 @@ pub(in crate::app) fn register_created_tag_in_source(
 }
 
 impl NewTagDialog {
+    pub(in crate::app) fn set_folder(&mut self, folder: &str) {
+        let folder = tag_path::from_input(folder);
+        let folder = folder.trim_matches(tag_path::SEPARATOR);
+        self.rel_path = if folder.is_empty() { String::new() } else { format!("{folder}\\") };
+        self.output_path = None;
+    }
+
+    pub(in crate::app) fn has_tag_name(&self) -> bool {
+        let path = tag_path::from_input(self.rel_path.trim());
+        !matches!(tag_path::name(&path).trim(), "" | "." | "..")
+    }
+
     /// Whether the kit the dialog was opened for is a Campaign Evolved
     /// container set, where a new tag is made in memory.
     pub(in crate::app) fn kit_is_container(&self, model: &Model) -> bool {
@@ -822,14 +854,12 @@ impl NewTagDialog {
                 self.selected_group = self
                     .selected_group
                     .min(self.groups.len() - 1);
-                self.rel_path.clear();
                 self.output_path = None;
                 self.error = None;
             }
             Err(error) => {
                 self.groups.clear();
                 self.selected_group = 0;
-                self.rel_path.clear();
                 self.output_path = None;
                 self.error = Some(error);
             }
@@ -887,7 +917,6 @@ impl NewTagDialog {
         let mut dialog = rfd::FileDialog::new()
             .set_title(format!("Create New {}", group.name))
             .set_directory(&root)
-            .set_file_name(format!("new_tag.{}", group.extension))
             .add_filter(
                 format!("{} tag", group.extension),
                 &[group.extension.as_str()],
@@ -896,6 +925,16 @@ impl NewTagDialog {
             && let Some(parent) = output.parent()
         {
             dialog = dialog.set_directory(parent);
+        } else {
+            let path = tag_path::from_input(&self.rel_path);
+            let folder = tag_path::parent(&path).unwrap_or_default();
+            let directory = root.join(tag_path::to_relative(folder));
+            if directory.is_dir() {
+                dialog = dialog.set_directory(directory);
+            }
+            if self.has_tag_name() {
+                dialog = dialog.set_file_name(tag_path::name(&path));
+            }
         }
         let Some(picked) = dialog.save_file() else {
             return;
@@ -903,7 +942,7 @@ impl NewTagDialog {
         match new_tag_output_path_from_dialog(&root, &picked, &group.extension) {
             Ok((output, rel_path)) => {
                 self.output_path = Some(output);
-                self.rel_path = rel_path;
+                self.rel_path = tag_path::without_extension(&rel_path).to_owned();
                 self.error = None;
             }
             Err(error) => {
@@ -913,6 +952,22 @@ impl NewTagDialog {
             }
         }
     }
+}
+
+fn new_tag_typed_output_path(root: &Path, input: &str, extension: &str) -> Result<(PathBuf, String), String> {
+    let path = tag_path::from_input(input.trim());
+    if matches!(tag_path::name(&path).trim(), "" | "." | "..") {
+        return Err("Enter a name for the new tag".to_owned());
+    }
+    let relative = PathBuf::from(path.replace('\\', "/"));
+    // Unix treats Windows drive paths as relative filenames. Tag paths must
+    // stay relative on every host, including drive-relative forms like C:foo.
+    let has_drive_prefix = path.as_bytes().get(1) == Some(&b':');
+    if has_drive_prefix || relative.components().any(|part| matches!(part,
+        std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+        return Err("Enter a path inside the loaded tags folder".to_owned());
+    }
+    new_tag_output_path_from_dialog(root, &root.join(relative), extension)
 }
 
 impl Model {
@@ -1446,6 +1501,38 @@ mod tests {
         assert!(created, "{}", app.model.status);
         assert!(app.dialogs.get::<NewTagDialog>().is_none());
         assert_eq!(app.model.status, format!("Created {}", output.display()));
+    }
+
+    #[test]
+    fn a_typed_tag_path_creates_the_selected_group_and_requires_a_name() {
+        let (mut app, root) = loose_app();
+        app.open_new_tag_dialog_in_folder(Some("objects/new".to_owned()));
+        app.create_new_tag();
+        assert_eq!(app.dialogs.get::<NewTagDialog>().unwrap().error.as_deref(),
+            Some("Enter a name for the new tag"));
+        {
+            let dialog = app.dialogs.get_mut::<NewTagDialog>().unwrap();
+            dialog.selected_group = dialog.groups.iter().position(|group| group.name == "scenery").unwrap();
+            dialog.rel_path.push_str("new_tag");
+        }
+        app.create_new_tag();
+        assert!(app.dialogs.get::<NewTagDialog>().is_none(), "{}", app.model.status);
+        let output = root.join("objects/new/new_tag.scenery");
+        assert!(output.exists());
+        assert!(TagFile::read(&output).is_ok());
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn typed_tag_paths_cannot_escape_the_tags_folder_or_name_a_folder() {
+        let root = std::env::temp_dir().join("baboon-new-tag-path-test").join("tags");
+        for path in ["", "objects/", "objects/..", "../outside", "objects/../../outside",
+            "C:/outside", "C:\\outside", "C:outside", "z:/outside", "/outside", "\\\\server\\share\\outside"] {
+            assert!(new_tag_typed_output_path(&root, path, "scenery").is_err(), "{path}");
+        }
+        let (output, display) = new_tag_typed_output_path(&root, "objects/new_tag.biped", "scenery").unwrap();
+        assert_eq!(output, root.join("objects/new_tag.scenery"));
+        assert_eq!(display, "objects\\new_tag.scenery");
     }
 
     /// A Halo CE or Halo 2 kit gets a classic tag, with the header its tool

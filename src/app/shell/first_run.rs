@@ -230,7 +230,7 @@ fn draw_first_run_interface(ui: &mut Ui, s: &mut FirstRunDraw) {
     draw_nested_default_picker(ui, &mut s.prefs.nested_default);
     ui.add_space(12.0);
     ui.label(RichText::new("Appearance").strong());
-    ui.checkbox(&mut s.prefs.dark_mode, "Dark mode");
+    crate::app::shell::settings::draw_theme_picker(ui, &mut s.prefs);
     ui.horizontal(|ui| {
         ui.label("UI scale");
         let response = ui.add(egui::Slider::new(

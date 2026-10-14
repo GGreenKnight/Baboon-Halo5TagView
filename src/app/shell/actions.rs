@@ -16,6 +16,7 @@ use super::recents::RecentAction;
 /// a plain Ctrl+Z pattern — so Ctrl+Shift+Z has to come first; checked the
 /// other way round it was an undo.
 pub(in crate::app) const SHORTCUTS: &[(egui::Modifiers, egui::Key, fn() -> AppAction)] = &[
+    (egui::Modifiers::COMMAND, egui::Key::N, || AppAction::NewTag),
     (egui::Modifiers::COMMAND, egui::Key::F, || AppAction::OpenFind),
     (egui::Modifiers::COMMAND, egui::Key::S, || {
         AppAction::Defer(DeferredFileAction::SaveCurrentTag)
@@ -134,7 +135,11 @@ impl Baboon {
                 }
             }
             AppAction::Defer(action) => self.defer_file_action(action, ctx),
-            AppAction::NewTag => self.open_new_tag_dialog(),
+            AppAction::NewTag => {
+                if !self.model.editing_kit_is_read_only(active) {
+                    self.open_new_tag_dialog();
+                }
+            }
             AppAction::OpenFind => self.open_find(),
             AppAction::ImportTags => {
                 if self.model.current_source_is_container() {
@@ -289,6 +294,13 @@ mod tests {
     #[test]
     fn an_unlisted_key_asks_for_nothing() {
         assert!(pressed(egui::Modifiers::COMMAND, egui::Key::Q).is_empty());
+    }
+
+    #[test]
+    fn ctrl_n_creates_a_tag_and_plain_n_does_nothing() {
+        let ctrl = egui::Modifiers::CTRL.plus(egui::Modifiers::COMMAND);
+        assert!(matches!(pressed(ctrl, egui::Key::N).as_slice(), [AppAction::NewTag]));
+        assert!(pressed(egui::Modifiers::NONE, egui::Key::N).is_empty());
     }
 
     /// Cmd+S saves on macOS, which reports Cmd as `mac_cmd` with `command`;

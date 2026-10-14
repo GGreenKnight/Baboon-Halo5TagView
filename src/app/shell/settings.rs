@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::app::shell::frame::draw_kit_banner_tile;
-use crate::app::shell::frame::recheck_cached;
 use crate::app::shell::frame::editing_kit_title_text;
+use crate::app::shell::frame::recheck_cached;
 
 #[derive(Clone)]
 struct EditingKitDrag(String);
@@ -90,15 +90,16 @@ fn editing_kit_card_with_read_only(
             Color32::from_rgb(255, 222, 216)
         }
     } else {
-        foundation_group_bg()
+        settings_card_fill(is_dark_mode())
     };
     let mut load = false;
     let mut edit = false;
     let mut remove = false;
     let card = Frame::NONE
         .fill(fill)
-        .corner_radius(egui::CornerRadius::same(6))
-        .inner_margin(egui::Margin::same(2))
+        .stroke(Stroke::new(1.0, foundation_group_edge()))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::same(5))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             // Center within a fixed row, not the remaining scroll area's height.
@@ -236,7 +237,6 @@ fn editing_kit_card_with_read_only(
     } else if let Some(warning) = icon_warning {
         card.response.on_hover_text(warning);
     }
-    ui.add_space(4.0);
     (load, edit, remove)
 }
 
@@ -356,7 +356,11 @@ fn draw_editing_kit_form(
             .show_ui(&mut columns[1], |ui| {
                 for game in GameId::ALL {
                     if ui
-                        .selectable_value(&mut draft.game, game.as_str().to_owned(), game.display_name())
+                        .selectable_value(
+                            &mut draft.game,
+                            game.as_str().to_owned(),
+                            game.display_name(),
+                        )
                         .changed()
                     {
                         refill_kit_folders(draft);
@@ -661,11 +665,9 @@ fn settings_window_body(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 for (tab, label) in [
-                    (SettingsTab::Startup, "Startup"),
-                    (SettingsTab::Browser, "Browser"),
+                    (SettingsTab::General, "General"),
+                    (SettingsTab::Interface, "Interface"),
                     (SettingsTab::EditingKits, "Editing Kits"),
-                    (SettingsTab::Appearance, "Appearance"),
-                    (SettingsTab::Tools, "Tools"),
                 ] {
                     if view_text_tab_button(ui, label, *selected == tab).clicked() {
                         *selected = tab;
@@ -693,6 +695,229 @@ fn settings_window_body(
         });
 }
 
+/// Cards always consume the available width, including after a window resize.
+fn settings_card_fill(dark_mode: bool) -> Color32 {
+    if dark_mode {
+        Color32::from_rgba_premultiplied(13, 13, 13, 13)
+    } else {
+        Color32::from_black_alpha(13)
+    }
+}
+
+fn settings_card<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
+    Frame::NONE
+        .fill(settings_card_fill(is_dark_mode()))
+        .stroke(Stroke::new(1.0, foundation_group_edge()))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(12, 9))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if !ui.visuals().dark_mode {
+                let background = editor_bg().blend(settings_card_fill(false));
+                opaque_widget_fills(ui.visuals_mut(), background);
+            }
+            content(ui)
+        })
+        .inner
+}
+
+fn settings_section(ui: &mut Ui, title: &str) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(title).strong().color(text_dark()));
+}
+
+fn settings_description(ui: &mut Ui, title: &str, help: &str) {
+    ui.label(RichText::new(title).strong().color(text_dark()));
+    if !help.is_empty() {
+        settings_hint(ui, help);
+    }
+}
+
+fn settings_hint(ui: &mut Ui, help: &str) {
+    let width = ui.available_width().min(300.0);
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, 0.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.add(egui::Label::new(RichText::new(help).small().color(subtle_dark())).wrap());
+        },
+    );
+}
+
+fn settings_dropdown_option<T: PartialEq>(
+    ui: &mut Ui,
+    selected: &mut T,
+    value: T,
+    title: &str,
+    hint: &str,
+) -> egui::Response {
+    ui.set_width(300.0);
+    let mut text = egui::text::LayoutJob::default();
+    text.append(
+        &format!("{title}\n"),
+        0.0,
+        egui::TextFormat {
+            font_id: bold_font(TextStyle::Button.resolve(ui.style()).size),
+            color: text_dark(),
+            ..Default::default()
+        },
+    );
+    text.append(
+        hint,
+        0.0,
+        egui::TextFormat {
+            font_id: TextStyle::Small.resolve(ui.style()),
+            color: subtle_dark(),
+            ..Default::default()
+        },
+    );
+    ui.selectable_value(selected, value, text)
+}
+
+fn settings_actions<R>(ui: &mut Ui, actions: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), BUTTON_HEIGHT),
+        egui::Layout::right_to_left(egui::Align::Center),
+        actions,
+    )
+    .inner
+}
+
+fn settings_label_layout(help: &str) -> egui::Layout {
+    if help.is_empty() {
+        egui::Layout::left_to_right(egui::Align::Center)
+    } else {
+        egui::Layout::top_down(egui::Align::Min)
+    }
+}
+
+/// Anchor actions to the right edge, including when narrow rows stack.
+/// Action closures draw from right to left, starting with the last button.
+fn settings_row<R>(
+    ui: &mut Ui,
+    title: &str,
+    help: &str,
+    control_width: f32,
+    control: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    ui.push_id(title, |ui| {
+        settings_card(ui, |ui| {
+            let min_label_width = if help.is_empty() { 90.0 } else { 180.0 };
+            if ui.available_width() < control_width + min_label_width {
+                settings_description(ui, title, help);
+                ui.add_space(4.0);
+                settings_actions(ui, control)
+            } else {
+                ui.horizontal(|ui| {
+                    let label_width =
+                        ui.available_width() - control_width - ui.spacing().item_spacing.x;
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(label_width, BUTTON_HEIGHT),
+                        settings_label_layout(help),
+                        |ui| {
+                            ui.set_min_width(label_width);
+                            settings_description(ui, title, help);
+                        },
+                    );
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(control_width, BUTTON_HEIGHT),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        control,
+                    )
+                    .inner
+                })
+                .inner
+            }
+        })
+    })
+    .inner
+}
+
+fn settings_switch(ui: &mut Ui, value: &mut bool, label: &str) -> egui::Response {
+    let (rect, mut response) = ui.allocate_exact_size(Vec2::new(46.0, 24.0), Sense::click());
+    if response.clicked() {
+        *value = !*value;
+        response.mark_changed();
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, label)
+    });
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, *value);
+        let fill = if *value {
+            ui.visuals().selection.bg_fill
+        } else {
+            ui.visuals().extreme_bg_color
+        };
+        ui.painter().rect(
+            rect,
+            12.0,
+            fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let center = egui::pos2(
+            if *value {
+                rect.right() - 12.0
+            } else {
+                rect.left() + 12.0
+            },
+            rect.center().y,
+        );
+        ui.painter().circle_filled(
+            center,
+            9.0,
+            if *value {
+                Color32::WHITE
+            } else {
+                visuals.fg_stroke.color
+            },
+        );
+    }
+    response
+}
+
+fn settings_toggle(ui: &mut Ui, title: &str, help: &str, value: &mut bool) -> bool {
+    ui.push_id(title, |ui| {
+        settings_card(ui, |ui| {
+            ui.horizontal(|ui| {
+                let label_width =
+                    (ui.available_width() - 46.0 - ui.spacing().item_spacing.x).max(0.0);
+                let label_clicked = ui
+                    .allocate_ui_with_layout(
+                        Vec2::new(label_width, BUTTON_HEIGHT),
+                        settings_label_layout(help),
+                        |ui| {
+                            ui.set_min_width(label_width);
+                            let clicked = ui
+                                .add(
+                                    egui::Label::new(
+                                        RichText::new(title).strong().color(text_dark()),
+                                    )
+                                    .sense(Sense::click()),
+                                )
+                                .clicked();
+                            if !help.is_empty() {
+                                settings_hint(ui, help);
+                            }
+                            clicked
+                        },
+                    )
+                    .inner;
+                if label_clicked {
+                    *value = !*value;
+                }
+                settings_switch(ui, value, title)
+                    .on_hover_text(title)
+                    .changed()
+                    || label_clicked
+            })
+            .inner
+        })
+    })
+    .inner
+}
+
 impl Baboon {
     pub(in crate::app) fn set_editing_kit_path_input(
         &mut self,
@@ -701,15 +926,21 @@ impl Baboon {
     ) {
         let trimmed = input.trim().to_owned();
         if trimmed.is_empty() {
-            self.model.prefs.editing_kit_paths.remove(shortcut.game.as_str());
+            self.model
+                .prefs
+                .editing_kit_paths
+                .remove(shortcut.game.as_str());
         } else {
-            self.model.prefs
+            self.model
+                .prefs
                 .editing_kit_paths
                 .insert(shortcut.game.as_str().to_owned(), PathBuf::from(&trimmed));
         }
-        self.kit_tools.editing_kit_path_inputs
+        self.kit_tools
+            .editing_kit_path_inputs
             .insert(shortcut.game.as_str().to_owned(), input);
-        if self.kit_tools.editing_kit_path_attention.as_deref() == Some(shortcut.game.as_str()) && !trimmed.is_empty()
+        if self.kit_tools.editing_kit_path_attention.as_deref() == Some(shortcut.game.as_str())
+            && !trimmed.is_empty()
         {
             self.kit_tools.editing_kit_path_attention = None;
         }
@@ -767,7 +998,8 @@ impl Baboon {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let existing_profile = self
-            .model.prefs
+            .model
+            .prefs
             .custom_editing_kit_profiles
             .iter()
             .find(|profile| profile.id == id)
@@ -810,14 +1042,18 @@ impl Baboon {
         let previous_profiles = self.model.prefs.custom_editing_kit_profiles.clone();
         let previous = existing_profile;
         if let Some(index) = self
-            .model.prefs
+            .model
+            .prefs
             .custom_editing_kit_profiles
             .iter()
             .position(|existing| existing.id == id)
         {
             self.model.prefs.custom_editing_kit_profiles[index] = profile.clone();
         } else {
-            self.model.prefs.custom_editing_kit_profiles.push(profile.clone());
+            self.model
+                .prefs
+                .custom_editing_kit_profiles
+                .push(profile.clone());
         }
         let prefs = self.current_prefs();
         if let Err(error) = save_gui_prefs(&prefs, &self.kit_tools.terminal_open_games, true) {
@@ -825,8 +1061,10 @@ impl Baboon {
             if previous.as_ref().and_then(|profile| profile.icon.as_ref()) != profile.icon.as_ref()
                 && let Some(icon) = &profile.icon
             {
-                let _ =
-                    remove_unreferenced_custom_icon(icon, &self.model.prefs.custom_editing_kit_profiles);
+                let _ = remove_unreferenced_custom_icon(
+                    icon,
+                    &self.model.prefs.custom_editing_kit_profiles,
+                );
             }
             draft.error = Some(error);
             return false;
@@ -872,12 +1110,14 @@ impl Baboon {
     fn remove_custom_editing_kit_profile(&mut self, removal: &CustomEditingKitRemoval) {
         let previous_profiles = self.model.prefs.custom_editing_kit_profiles.clone();
         let removed = self
-            .model.prefs
+            .model
+            .prefs
             .custom_editing_kit_profiles
             .iter()
             .find(|profile| profile.id == removal.id)
             .cloned();
-        self.model.prefs
+        self.model
+            .prefs
             .custom_editing_kit_profiles
             .retain(|profile| profile.id != removal.id);
         let prefs = self.current_prefs();
@@ -900,8 +1140,10 @@ impl Baboon {
             }
         }
         if let Some(icon) = removed.and_then(|profile| profile.icon)
-            && let Err(error) =
-                remove_unreferenced_custom_icon(&icon, &self.model.prefs.custom_editing_kit_profiles)
+            && let Err(error) = remove_unreferenced_custom_icon(
+                &icon,
+                &self.model.prefs.custom_editing_kit_profiles,
+            )
         {
             self.model.status = error;
             return;
@@ -949,7 +1191,11 @@ pub(in crate::app) enum SettingsCommand {
 }
 
 impl Baboon {
-    pub(in crate::app) fn apply_settings_command(&mut self, command: SettingsCommand, ctx: &egui::Context) {
+    pub(in crate::app) fn apply_settings_command(
+        &mut self,
+        command: SettingsCommand,
+        ctx: &egui::Context,
+    ) {
         match command {
             SettingsCommand::MountChimpEverywhere => {
                 let indices: Vec<usize> = self
@@ -990,7 +1236,9 @@ impl Baboon {
                     self.dialogs.open(draft);
                 }
             }
-            SettingsCommand::RemoveEditingKit(removal) => self.remove_custom_editing_kit_profile(&removal),
+            SettingsCommand::RemoveEditingKit(removal) => {
+                self.remove_custom_editing_kit_profile(&removal)
+            }
             SettingsCommand::ChooseBlenderPath => self.choose_blender_path(),
             SettingsCommand::CommitChimpUsmapInput(input) => {
                 self.commit_chimp_usmap_path_input(&input, ctx.clone())
@@ -1010,7 +1258,7 @@ impl Baboon {
             }
             None => self.dialogs.open(SettingsWindow::new(
                 &self.model.prefs,
-                tab.unwrap_or(SettingsTab::Startup),
+                tab.unwrap_or(SettingsTab::General),
             )),
         }
     }
@@ -1025,7 +1273,8 @@ impl Baboon {
     /// Move an editing kit in the list as dragged, and save the order.
     fn reorder_editing_kits(&mut self, request: &EditingKitReorderRequest) {
         let previous = self.model.prefs.custom_editing_kit_profiles.clone();
-        if reorder_editing_kit_profiles(&mut self.model.prefs.custom_editing_kit_profiles, request) {
+        if reorder_editing_kit_profiles(&mut self.model.prefs.custom_editing_kit_profiles, request)
+        {
             let prefs = self.current_prefs();
             if let Err(error) = save_gui_prefs(
                 &prefs,
@@ -1036,7 +1285,8 @@ impl Baboon {
                 self.model.status = error;
             } else {
                 self.saved_prefs = prefs;
-                self.kit_tools.saved_terminal_open_games = self.kit_tools.terminal_open_games.clone();
+                self.kit_tools.saved_terminal_open_games =
+                    self.kit_tools.terminal_open_games.clone();
                 self.model.status = "Editing kit order saved".to_owned();
             }
         }
@@ -1051,11 +1301,11 @@ impl Baboon {
 /// before it becomes a preference.
 pub(in crate::app) struct SettingsWindow {
     pub(in crate::app) tab: SettingsTab,
-    /// The UI scale while its slider is dragged, applied on release.
+    /// The UI scale draft, committed only by the Apply button.
     pub(in crate::app) pending_ui_scale: f32,
     /// The Blender path as typed, applied when it names a file.
     pub(in crate::app) blender_path_input: String,
-    /// The Chimp USMAP path as typed, applied on Enter or Apply.
+    /// The Chimp USMAP path as typed, applied on Enter.
     pub(in crate::app) usmap_input: String,
 }
 
@@ -1105,11 +1355,9 @@ impl Dialog for SettingsWindow {
             .show(ctx, |ui| {
                 let mut selected = s.window.tab;
                 settings_window_body(ui, &mut open, &mut selected, |ui, tab| match tab {
-                    SettingsTab::Startup => draw_settings_startup_tab(cx, ui, &mut s),
-                    SettingsTab::Browser => draw_settings_browser_tab(ui, &mut s),
+                    SettingsTab::General => draw_settings_general_tab(cx, ui, &mut s),
                     SettingsTab::EditingKits => draw_settings_editing_kits_tab(cx, ui, &mut s),
-                    SettingsTab::Appearance => draw_settings_appearance_tab(cx, ui, &mut s),
-                    SettingsTab::Tools => draw_settings_tools_tab(cx, ui, &mut s),
+                    SettingsTab::Interface => draw_settings_interface_tab(cx, ui, &mut s),
                 });
                 s.window.tab = selected;
             });
@@ -1134,95 +1382,165 @@ impl Dialog for SettingsWindow {
     }
 }
 
-fn draw_settings_startup_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
-    ui.label(
-        RichText::new("When reopening Baboon with a previous session:").color(text_dark()),
-    );
-    ui.add_space(2.0);
-    ui.radio_value(
-        &mut s.prefs.session_restore,
-        SessionRestore::Ask,
-        "Ask which windows to reopen",
-    );
-    ui.radio_value(
-        &mut s.prefs.session_restore,
-        SessionRestore::Always,
-        "Reopen the last session automatically",
-    );
-    ui.radio_value(
-        &mut s.prefs.session_restore,
-        SessionRestore::Never,
-        "Start fresh (never reopen)",
+fn draw_settings_general_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
+    let restore_label = |restore| match restore {
+        SessionRestore::Ask => "Ask every time",
+        SessionRestore::Always => "Reopen last session",
+        SessionRestore::Never => "Start fresh",
+    };
+    settings_row(
+        ui,
+        "Session Restore",
+        "Choose what happens when opening Baboon after exiting with open windows.",
+        170.0,
+        |ui| {
+            egui::ComboBox::from_id_salt("session_restore")
+                .width(170.0)
+                .selected_text(restore_label(s.prefs.session_restore))
+                .show_ui(ui, |ui| {
+                    for option in [
+                        SessionRestore::Ask,
+                        SessionRestore::Always,
+                        SessionRestore::Never,
+                    ] {
+                        settings_dropdown_option(
+                            ui,
+                            &mut s.prefs.session_restore,
+                            option,
+                            restore_label(option),
+                            match option {
+                            SessionRestore::Ask => "Ask which windows to reopen from the previous session each time Baboon starts.",
+                            SessionRestore::Always => "Automatically reopen all windows from the previous session.",
+                            SessionRestore::Never => "Start with a fresh workspace without restoring or prompting about previous windows.",
+                            },
+                        );
+                    }
+                });
+        },
     );
 
-    ui.add_space(10.0);
-    ui.separator();
-    ui.label(RichText::new("Saving").color(text_dark()).strong());
-    ui.add_space(4.0);
-    if s.prefs.expert_mode {
-        ui.checkbox(
-            &mut s.prefs.confirm_container_overwrite,
-            "Confirm before Save overwrites Campaign Evolved game files",
+    settings_section(ui, "Updates");
+    settings_card(ui, |ui| {
+        settings_row_contents_channel(ui, &mut s.prefs, &mut s.effects);
+        ui.separator();
+        settings_description(
+            ui,
+            "Current Version",
+            &format!(
+                "{} · {}",
+                env!("CARGO_PKG_VERSION"),
+                BABOON_BUILD_COMMIT.chars().take(7).collect::<String>()
+            ),
         );
-        ui.label(
-            RichText::new(
-                "Expert mode lets Save write a tag straight back into the game's own pak files. That edits the installed game in place; File \u{2192} Export Mod\u{2026} bundles the same changes into a separate mod instead.",
+    });
+    settings_card(ui, |ui| {
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 46.0 - ui.spacing().item_spacing.x).max(0.0);
+            ui.allocate_ui_with_layout(
+                Vec2::new(width, BUTTON_HEIGHT),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(width);
+                    settings_description(
+                        ui,
+                        "Check for Updates",
+                        "Automatically check the selected update channel on app startup.",
+                    );
+                },
+            );
+            settings_switch(
+                ui,
+                &mut s.prefs.check_updates_on_startup,
+                "Check for updates on startup",
             )
-            .color(subtle_dark())
-            .small(),
+            .on_hover_text("Check for updates on startup");
+        });
+        ui.separator();
+        settings_actions(ui, |ui| {
+            if ui.button("Check Now").clicked() {
+                s.effects.push(SettingsCommand::CheckForUpdates);
+            }
+            let width = ui.available_width();
+            ui.allocate_ui_with_layout(
+                Vec2::new(width, BUTTON_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    draw_update_check_result(ui, s.app.shell);
+                },
+            );
+        });
+    });
+
+    settings_section(ui, "Runtime Poking");
+    settings_toggle(
+        ui,
+        "Confirm before Poking game",
+        "Show the preflight plan and wait for confirmation before writing to the running game.",
+        &mut s.prefs.confirm_runtime_poke,
+    );
+    settings_section(ui, "Campaign Evolved");
+    if s.prefs.expert_mode {
+        settings_toggle(
+            ui,
+            "Confirm before overwriting Campaign Evolved game files",
+            "Save can write directly into the installed game's pak files. Export Mod bundles changes into a separate mod instead.",
+            &mut s.prefs.confirm_container_overwrite,
         );
     } else {
-        // The setting guards a route that is not reachable outside expert
-        // mode, and a checkbox for something that cannot happen is worse
-        // than no checkbox.
-        ui.label(
-            RichText::new(
-                "Saving a tag loaded from a Campaign Evolved container keeps the change in this workspace and offers to export it as a mod; the game's own pak files are never written. Turn on expert mode below to allow overwriting them in place.",
-            )
-            .color(subtle_dark())
-            .small(),
-        );
+        settings_card(ui, |ui| {
+            settings_description(
+                ui,
+                "Saving Campaign Evolved game files",
+                "Saving keeps changes in this workspace and offers to export a mod. Turn on expert mode to allow overwriting the game's pak files in place.",
+            );
+        });
     }
 
-    ui.add_space(10.0);
-    ui.separator();
-    ui.label(
-        RichText::new("Chimp — Unreal packages")
-            .color(text_dark())
-            .strong(),
+    let chimp_changed = settings_toggle(
+        ui,
+        "Enable Chimp workspace",
+        "Edit Unreal package properties using Campaign Evolved's configured path. Changes are written to a separate _P mod container.",
+        &mut s.prefs.enable_chimp,
     );
-    ui.add_space(4.0);
-    let chimp_changed = ui
-        .checkbox(
-            &mut s.prefs.enable_chimp,
-            "Enable Chimp workspace for Campaign Evolved",
-        )
-        .changed();
-    ui.label(
-        RichText::new(
-            "Chimp shares Campaign Evolved's configured path and writes supported property edits to a separate _P mod container.",
-        )
-        .color(subtle_dark())
-        .small(),
-    );
-    ui.horizontal(|ui| {
-        let output = s
-            .prefs
-            .chimp_output_dir
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "Default: Paks/~mods/Chimp".to_owned());
-        ui.label(RichText::new(output).color(subtle_dark()).small());
-        if ui.button("Output folder…").clicked()
-            && let Some(path) = rfd::FileDialog::new()
-                .set_title("Choose Chimp mod output folder")
-                .pick_folder()
-        {
-            s.prefs.chimp_output_dir = Some(path);
-        }
-        if s.prefs.chimp_output_dir.is_some() && ui.button("Use default").clicked() {
-            s.prefs.chimp_output_dir = None;
-        }
+    settings_card(ui, |ui| {
+        ui.label(
+            RichText::new("Chimp Output Folder")
+                .strong()
+                .color(text_dark()),
+        );
+        ui.add_space(4.0);
+        settings_actions(ui, |ui| {
+            if icon_text_button(
+                ui,
+                ButtonIcon::Refresh,
+                "Restore Default",
+                s.prefs.chimp_output_dir.is_some(),
+            )
+            .on_hover_text("Use the default Paks/~mods/Chimp output folder")
+            .clicked()
+            {
+                s.prefs.chimp_output_dir = None;
+            }
+            if icon_text_button(ui, ButtonIcon::Browse, "Browse...", true).clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .set_title("Choose Chimp mod output folder")
+                    .pick_folder()
+            {
+                s.prefs.chimp_output_dir = Some(path);
+            }
+            let mut output = s
+                .prefs
+                .chimp_output_dir
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            ui.add(
+                editing_kit_text_input(&mut output, (ui.available_width() - 40.0).max(40.0))
+                    .interactive(false)
+                    .hint_text(placeholder_text("Default: Paks/~mods/Chimp")),
+            );
+            ui.label(RichText::new("Path").color(subtle_dark()));
+        });
     });
     if chimp_changed {
         let dirty = cx
@@ -1233,47 +1551,59 @@ fn draw_settings_startup_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
         if !s.prefs.enable_chimp && dirty {
             s.prefs.enable_chimp = true;
             cx.set_status("Build the Chimp mod before disabling a workspace with recovered edits.");
-            return;
-        }
-        s.effects.push(if s.prefs.enable_chimp {
-            SettingsCommand::MountChimpEverywhere
         } else {
-            SettingsCommand::DropChimpEverywhere
-        });
-    }
-
-    ui.add_space(10.0);
-    ui.separator();
-    ui.label(RichText::new("Runtime poking").color(text_dark()).strong());
-    ui.add_space(4.0);
-    ui.checkbox(
-        &mut s.prefs.confirm_runtime_poke,
-        "Confirm before poking the running game",
-    );
-    ui.label(
-        RichText::new(
-            "File \u{2192} Poke Current Tag\u{2026} (Ctrl+P) shows the preflight plan and waits for confirmation. Turn this off to write to the running game as soon as the poke is requested.",
-        )
-        .color(subtle_dark())
-        .small(),
-    );
-
-    ui.add_space(10.0);
-    ui.separator();
-    ui.label(RichText::new("Updates").color(text_dark()).strong());
-    ui.add_space(4.0);
-    if draw_update_channel_picker(ui, &mut s.prefs) {
-        s.effects.push(SettingsCommand::ForgetUpdateCheck);
-    }
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        if ui.button("Check now").clicked() {
-            s.effects.push(SettingsCommand::CheckForUpdates);
+            s.effects.push(if s.prefs.enable_chimp {
+                SettingsCommand::MountChimpEverywhere
+            } else {
+                SettingsCommand::DropChimpEverywhere
+            });
         }
-        draw_update_check_result(ui, s.app.shell);
-    });
+    }
+
+    draw_settings_chimp_mappings(ui, s);
+    settings_section(ui, "Tools");
+    draw_settings_tools_section(cx, ui, s);
 }
 
+fn settings_row_contents_channel(
+    ui: &mut Ui,
+    prefs: &mut GuiPrefs,
+    effects: &mut Vec<SettingsCommand>,
+) {
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - 170.0 - ui.spacing().item_spacing.x).max(0.0);
+        ui.allocate_ui_with_layout(
+            Vec2::new(width, BUTTON_HEIGHT),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_min_width(width);
+                settings_description(
+                    ui,
+                    "Update Channel",
+                    "Choose which builds Baboon checks for.",
+                );
+            },
+        );
+        let previous = prefs.update_channel;
+        egui::ComboBox::from_id_salt("settings_update_channel")
+            .width(170.0)
+            .selected_text(prefs.update_channel.label())
+            .show_ui(ui, |ui| {
+                for option in UpdateChannel::ALL {
+                    settings_dropdown_option(
+                        ui,
+                        &mut prefs.update_channel,
+                        option,
+                        option.label(),
+                        option.help(),
+                    );
+                }
+            });
+        if previous != prefs.update_channel {
+            effects.push(SettingsCommand::ForgetUpdateCheck);
+        }
+    });
+}
 /// Radio rows for which build track update checks follow, plus whether the
 /// check runs at startup. Returns whether the channel changed, which makes
 /// the last check's verdict stale: it says nothing about the new channel.
@@ -1336,49 +1666,111 @@ pub(in crate::app) fn draw_nested_default_picker(ui: &mut Ui, nested_default: &m
     );
 }
 
-fn draw_settings_browser_tab(ui: &mut Ui, s: &mut SettingsDraw) {
-    ui.checkbox(
-        &mut s.prefs.double_click_to_open_tags,
-        "Double-click to open tags",
-    );
-    ui.checkbox(
+fn draw_settings_browser_section(ui: &mut Ui, s: &mut SettingsDraw) {
+    settings_section(ui, "Browser");
+    settings_toggle(
+        ui,
+        "List Subfolders before Tags",
+        "",
         &mut s.prefs.folders_before_tags,
-        "List subfolders before tags in browser",
     );
-    ui.add_space(12.0);
-    ui.label(RichText::new("Tag editor").color(text_dark()).strong());
-    ui.add_space(4.0);
-    draw_nested_default_picker(ui, &mut s.prefs.nested_default);
+    settings_toggle(
+        ui,
+        "Double-Click to Open",
+        "Open tags, folders and shortcuts in the browser with a double click.",
+        &mut s.prefs.double_click_to_open_tags,
+    );
+    settings_toggle(ui, "Reveal Active Tab in Browser", "Automatically navigate the browser to the active tag or folder tab. Turn off to keep your place and use Reveal in Browser when needed.", &mut s.prefs.reveal_active_tab_in_browser);
 }
 
-fn draw_settings_editing_kits_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
-    ui.label(
-        RichText::new(
-            "Add editing kits for quick loading, or auto-detect supported Steam installations.",
-        )
-        .color(subtle_dark()),
+fn draw_settings_expansion_behavior(ui: &mut Ui, s: &mut SettingsDraw) {
+    settings_row(
+        ui,
+        "Block Default Expansion Behavior",
+        "Applies to tags opened from now on. Groups you open or close yourself keep the state you chose.",
+        150.0,
+        |ui| {
+            egui::ComboBox::from_id_salt("settings_nested_default")
+                .width(150.0)
+                .selected_text(s.prefs.nested_default.label())
+                .show_ui(ui, |ui| {
+                    for option in NestedDefault::ALL {
+                        settings_dropdown_option(
+                            ui,
+                            &mut s.prefs.nested_default,
+                            option,
+                            option.label(),
+                            option.help(),
+                        );
+                    }
+                });
+        },
     );
-    ui.horizontal(|ui| {
-        if icon_text_button(ui, ButtonIcon::Add, "Add Editing Kit", true).clicked() {
-            s.opened_dialog(CustomEditingKitDraft::new());
-        }
-        if ui.button("Auto Detect").clicked() {
-            s.effects.push(SettingsCommand::AutoDetectEditingKits);
-        }
-        if ui.button("Refresh Status").clicked() {
-            s.effects.push(SettingsCommand::RefreshEditingKitStatus);
-        }
-    });
-    ui.add_space(6.0);
+}
+fn draw_settings_editing_kits_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
+    Frame::NONE
+        .stroke(Stroke::new(1.0, foundation_group_edge()))
+        .corner_radius(egui::CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            Frame::NONE
+                .fill(settings_card_fill(is_dark_mode()))
+                .corner_radius(egui::CornerRadius {
+                    nw: 4,
+                    ne: 4,
+                    sw: 0,
+                    se: 0,
+                })
+                .inner_margin(egui::Margin::same(4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        if icon_text_button(ui, ButtonIcon::Add, "Add Editing Kit", true)
+                            .on_hover_text("Add an editing kit for quick loading")
+                            .clicked()
+                        {
+                            s.opened_dialog(CustomEditingKitDraft::new());
+                        }
+                        if ui
+                            .button("Auto Detect")
+                            .on_hover_text("Find supported Steam installations")
+                            .clicked()
+                        {
+                            s.effects.push(SettingsCommand::AutoDetectEditingKits);
+                        }
+                        if icon_text_button(ui, ButtonIcon::Refresh, "Refresh Status", true)
+                            .on_hover_text("Recheck the configured editing kits and their paths")
+                            .clicked()
+                        {
+                            s.effects.push(SettingsCommand::RefreshEditingKitStatus);
+                        }
+                    });
+                });
+            Frame::NONE
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    draw_settings_editing_kits_contents(cx, ui, s);
+                });
+        });
+}
 
+fn draw_settings_editing_kits_contents(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
     if s.prefs.custom_editing_kit_profiles.is_empty() {
-        ui.label(RichText::new("No editing kits configured").color(subtle_dark()));
+        settings_description(
+            ui,
+            "No editing kits configured",
+            "Add editing kits for quick loading, or auto-detect supported Steam installations.",
+        );
     }
     for profile in s.prefs.custom_editing_kit_profiles.clone() {
         let validation = s.app.kit_tools.editing_kit_validation.custom(&profile.id);
         let warning = s
             .app
-            .kit_tools.editing_kit_validation
+            .kit_tools
+            .editing_kit_validation
             .custom_icon_error(&profile.id)
             .map(str::to_owned);
         let texture = s.app.shell.artwork.workspace_banner(
@@ -1402,7 +1794,8 @@ fn draw_settings_editing_kits_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
             })
             .inner;
         if load {
-            s.effects.push(SettingsCommand::LoadEditingKit(profile.clone()));
+            s.effects
+                .push(SettingsCommand::LoadEditingKit(profile.clone()));
         }
         if edit {
             s.opened_dialog(CustomEditingKitDraft::from_profile(&profile));
@@ -1522,33 +1915,82 @@ impl Dialog for CustomEditingKitRemoval {
     }
 }
 
-fn draw_settings_appearance_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
-    ui.checkbox(&mut s.prefs.dark_mode, "Dark mode");
-    ui.checkbox(&mut s.prefs.angles_in_degrees, "Angles in degrees")
-        .on_hover_text(
-            "Angle fields hold radians on disk. Guerilla and the other Halo tools show them \
-             in degrees, and so does Baboon — turn this off to read and type the stored \
-             radians instead. Field search, TSV copy/paste and the tag diff follow the same \
-             setting.",
-        );
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("UI scale").color(subtle_dark()));
-        ui.add(
-            egui::Slider::new(&mut s.window.pending_ui_scale, MIN_UI_SCALE..=MAX_UI_SCALE)
-                .show_value(false)
-                .clamping(egui::SliderClamping::Always),
-        );
-        draw_ui_scale_input(ui, &mut s.window.pending_ui_scale);
-        if ui.button("Apply").clicked() {
-            s.prefs.ui_scale = s.window.pending_ui_scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE);
-            cx.set_status("UI scale applied");
-        }
-        if ui.button("Reset").clicked() {
-            s.window.pending_ui_scale = DEFAULT_UI_SCALE;
-        }
+pub(in crate::app) fn draw_theme_picker(ui: &mut Ui, prefs: &mut GuiPrefs) {
+    let mut theme = if prefs.follow_system_theme {
+        egui::ThemePreference::System
+    } else if prefs.dark_mode {
+        egui::ThemePreference::Dark
+    } else {
+        egui::ThemePreference::Light
+    };
+    let label = |theme| match theme {
+        egui::ThemePreference::System => "Use system setting",
+        egui::ThemePreference::Dark => "Dark",
+        egui::ThemePreference::Light => "Light",
+    };
+    egui::ComboBox::from_id_salt("settings_theme")
+        .width(170.0)
+        .selected_text(label(theme))
+        .show_ui(ui, |ui| {
+            for option in [
+                egui::ThemePreference::System,
+                egui::ThemePreference::Light,
+                egui::ThemePreference::Dark,
+            ] {
+                ui.selectable_value(&mut theme, option, label(option));
+            }
+        });
+    prefs.follow_system_theme = theme == egui::ThemePreference::System;
+    if !prefs.follow_system_theme {
+        prefs.dark_mode = theme == egui::ThemePreference::Dark;
+    }
+}
+
+fn draw_settings_interface_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
+    settings_row(ui, "Theme", "", 170.0, |ui| {
+        draw_theme_picker(ui, &mut s.prefs)
     });
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Model viewport").color(subtle_dark()));
+    if draw_settings_ui_scale(ui, &mut s.window.pending_ui_scale, &mut s.prefs.ui_scale) {
+        cx.set_status("UI scale applied");
+    }
+    draw_speed_row(
+        ui,
+        "Scroll Speed",
+        "How far the mouse wheel or trackpad scrolls lists and panels. 100% is the original speed.",
+        &mut s.prefs.scroll_speed,
+        MIN_SCROLL_SPEED..=MAX_SCROLL_SPEED,
+        DEFAULT_SCROLL_SPEED,
+    );
+    draw_settings_browser_section(ui, s);
+    settings_section(ui, "Tag Editor");
+    settings_row(
+        ui,
+        "Display Angles as",
+        "Angle fields hold radians on disk. Guerilla and the other Halo tools show them in degrees, and so does Baboon. Choose Radians to read and type the stored radians instead. Field search, TSV copy/paste and the tag diff follow the same setting.",
+        150.0,
+        |ui| {
+            egui::ComboBox::from_id_salt("settings_angles")
+                .width(150.0)
+                .selected_text(if s.prefs.angles_in_degrees {
+                    "Degrees"
+                } else {
+                    "Radians"
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut s.prefs.angles_in_degrees, true, "Degrees");
+                    ui.selectable_value(&mut s.prefs.angles_in_degrees, false, "Radians");
+                });
+        },
+    );
+    draw_settings_expansion_behavior(ui, s);
+    settings_section(ui, "Viewport");
+    settings_row(ui, "Window Scale", "", 220.0, |ui| {
+        ui.spacing_mut().slider_width = 100.0;
+        ui.spacing_mut().interact_size.x = 48.0;
+        if ui.button("Reset").clicked() {
+            s.prefs.model_preview_size = DEFAULT_MODEL_PREVIEW_SIZE;
+        }
+        draw_model_viewport_size_input(ui, &mut s.prefs.model_preview_size);
         ui.add(
             egui::Slider::new(
                 &mut s.prefs.model_preview_size,
@@ -1557,109 +1999,130 @@ fn draw_settings_appearance_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
             .show_value(false)
             .clamping(egui::SliderClamping::Always),
         );
-        draw_model_viewport_size_input(ui, &mut s.prefs.model_preview_size);
-        if ui.button("Reset").clicked() {
-            s.prefs.model_preview_size = DEFAULT_MODEL_PREVIEW_SIZE;
-        }
     });
     draw_speed_row(
         ui,
-        "Scroll speed",
-        "How far the mouse wheel or trackpad scrolls lists and panels. \
-         100% is the original speed.",
-        &mut s.prefs.scroll_speed,
-        MIN_SCROLL_SPEED..=MAX_SCROLL_SPEED,
-        DEFAULT_SCROLL_SPEED,
-    );
-    draw_speed_row(
-        ui,
-        "Zoom speed",
-        "How fast the mouse wheel zooms the model and bitmap viewports. \
-         100% is the original speed.",
+        "Zoom Speed",
+        "How fast the mouse wheel zooms model and bitmap viewports. 100% is the original speed.",
         &mut s.prefs.zoom_speed,
         MIN_ZOOM_SPEED..=MAX_ZOOM_SPEED,
         DEFAULT_ZOOM_SPEED,
     );
 }
-
-fn draw_settings_tools_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
-    ui.label(RichText::new("Blender").color(text_dark()).strong());
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Path").color(subtle_dark()));
-        let path_response = ui
-            .add(egui::TextEdit::singleline(&mut s.window.blender_path_input).desired_width(360.0));
-        if lost_focus_once(&path_response)
-            && ui.input(|input| input.key_pressed(egui::Key::Enter))
-        {
-            let trimmed = s.window.blender_path_input.trim();
-            s.prefs.blender_path = if trimmed.is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(trimmed))
-            };
-            cx.set_status(if let Some(path) = &s.prefs.blender_path {
-                format!("Blender path set to {}", path.display())
-            } else {
-                "Blender path cleared".to_owned()
-            });
-        }
-        if icon_text_button(ui, ButtonIcon::Browse, "Browse...", true).clicked() {
-            s.effects.push(SettingsCommand::ChooseBlenderPath);
-        }
-        if icon_text_button(ui, ButtonIcon::Clear, "Clear", true).clicked() {
-            s.prefs.blender_path = None;
-            s.window.blender_path_input.clear();
-            cx.set_status("Blender path cleared");
-        }
-    });
-
-    ui.add_space(10.0);
-    ui.separator();
-    ui.label(
-        RichText::new("Chimp — Unreal mappings")
-            .color(text_dark())
-            .strong(),
-    );
-    ui.add_space(4.0);
-    ui.label(
-        RichText::new(
-            "USMAP files describe cooked Unreal classes and properties so Chimp can name and decode package data. Leave this blank to use Baboon's bundled Campaign Evolved mappings.",
-        )
-        .color(subtle_dark())
-        .small(),
-    );
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Path").color(subtle_dark()));
-        let path_response = ui.add(
-            egui::TextEdit::singleline(&mut s.window.usmap_input)
-                .desired_width(360.0)
-                .hint_text(placeholder_text("Bundled Campaign Evolved USMAP")),
-        );
-        if lost_focus_once(&path_response)
-            && ui.input(|input| input.key_pressed(egui::Key::Enter))
-        {
-            s.effects.push(SettingsCommand::CommitChimpUsmapInput(
-                s.window.usmap_input.clone(),
-            ));
-        }
-        if ui.button("Browse...").clicked() {
-            s.effects.push(SettingsCommand::ChooseChimpUsmap);
-        }
-    });
-    ui.add_space(8.0);
-    ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), BUTTON_HEIGHT),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| {
-            if s.prefs.chimp_usmap_path.is_some() && ui.button("Use bundled").clicked() {
-                s.effects.push(SettingsCommand::UseBundledUsmap);
+fn draw_settings_tools_section(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
+    settings_card(ui, |ui| {
+        ui.label(RichText::new("Blender").color(text_dark()).strong());
+        ui.add_space(4.0);
+        settings_actions(ui, |ui| {
+            if icon_text_button(ui, ButtonIcon::Clear, "Clear", true).clicked() {
+                s.prefs.blender_path = None;
+                s.window.blender_path_input.clear();
+                cx.set_status("Blender path cleared");
             }
-        },
-    );
+            if icon_text_button(ui, ButtonIcon::Browse, "Browse...", true).clicked() {
+                s.effects.push(SettingsCommand::ChooseBlenderPath);
+            }
+            let path_response = ui.add(editing_kit_text_input(
+                &mut s.window.blender_path_input,
+                (ui.available_width() - 40.0).max(40.0),
+            ));
+            if lost_focus_once(&path_response)
+                && ui.input(|input| input.key_pressed(egui::Key::Enter))
+            {
+                let trimmed = s.window.blender_path_input.trim();
+                s.prefs.blender_path = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(trimmed))
+                };
+                cx.set_status(if let Some(path) = &s.prefs.blender_path {
+                    format!("Blender path set to {}", path.display())
+                } else {
+                    "Blender path cleared".to_owned()
+                });
+            }
+            ui.label(RichText::new("Path").color(subtle_dark()));
+        });
+    });
 }
 
-fn draw_ui_scale_input(ui: &mut Ui, ui_scale: &mut f32) {
+fn draw_settings_chimp_mappings(ui: &mut Ui, s: &mut SettingsDraw) {
+    settings_card(ui, |ui| {
+        ui.label(
+            RichText::new("Chimp — Unreal mappings")
+                .color(text_dark())
+                .strong(),
+        );
+        ui.add_space(4.0);
+        settings_hint(
+            ui,
+            "USMAP files describe cooked Unreal classes and properties so Chimp can name and decode package data. Leave this blank to use Baboon's bundled Campaign Evolved mappings.",
+        );
+        settings_actions(ui, |ui| {
+            if icon_text_button(
+                ui,
+                ButtonIcon::Refresh,
+                "Restore Default",
+                s.prefs.chimp_usmap_path.is_some() || !s.window.usmap_input.is_empty(),
+            )
+            .on_hover_text("Use Baboon's bundled Campaign Evolved mappings")
+            .clicked()
+            {
+                s.effects.push(SettingsCommand::UseBundledUsmap);
+                s.window.usmap_input.clear();
+            }
+            if icon_text_button(ui, ButtonIcon::Browse, "Browse...", true).clicked() {
+                s.effects.push(SettingsCommand::ChooseChimpUsmap);
+            }
+            let path_response = ui.add(
+                editing_kit_text_input(
+                    &mut s.window.usmap_input,
+                    (ui.available_width() - 40.0).max(40.0),
+                )
+                .hint_text(placeholder_text("Bundled Campaign Evolved USMAP")),
+            );
+            if lost_focus_once(&path_response)
+                && ui.input(|input| input.key_pressed(egui::Key::Enter))
+            {
+                s.effects.push(SettingsCommand::CommitChimpUsmapInput(
+                    s.window.usmap_input.clone(),
+                ));
+            }
+            ui.label(RichText::new("Path").color(subtle_dark()));
+        });
+    });
+}
+
+fn draw_settings_ui_scale(ui: &mut Ui, pending: &mut f32, live: &mut f32) -> bool {
+    settings_row(
+        ui,
+        "UI Scale",
+        "Adjusts the scale of the entire interface. Adjust the scale, then select Apply.",
+        270.0,
+        |ui| {
+            ui.spacing_mut().slider_width = 100.0;
+            ui.spacing_mut().interact_size.x = 48.0;
+            let applied = ui
+                .add_enabled(*pending != *live, egui::Button::new("Apply"))
+                .on_hover_text("Apply the UI scale to Baboon")
+                .clicked();
+            if ui.button("Reset").clicked() {
+                *pending = DEFAULT_UI_SCALE;
+            }
+            draw_ui_scale_input(ui, pending);
+            ui.add(
+                egui::Slider::new(pending, MIN_UI_SCALE..=MAX_UI_SCALE)
+                    .show_value(false)
+                    .clamping(egui::SliderClamping::Always),
+            );
+            if applied {
+                *live = (*pending).clamp(MIN_UI_SCALE, MAX_UI_SCALE);
+            }
+            applied
+        },
+    )
+}
+fn draw_ui_scale_input(ui: &mut Ui, ui_scale: &mut f32) -> egui::Response {
     let mut percent = ui_scale_percent(*ui_scale);
     let response = ui.add(
         egui::DragValue::new(&mut percent)
@@ -1671,6 +2134,7 @@ fn draw_ui_scale_input(ui: &mut Ui, ui_scale: &mut f32) {
     if response.changed() {
         *ui_scale = ui_scale_from_percent(percent);
     }
+    response
 }
 
 /// A speed multiplier: slider, percentage box, and Reset.
@@ -1682,14 +2146,12 @@ fn draw_speed_row(
     range: std::ops::RangeInclusive<f32>,
     default: f32,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(subtle_dark()))
-            .on_hover_text(hover);
-        ui.add(
-            egui::Slider::new(speed, range.clone())
-                .show_value(false)
-                .clamping(egui::SliderClamping::Always),
-        );
+    settings_row(ui, label, "", 220.0, |ui| {
+        ui.spacing_mut().slider_width = 100.0;
+        ui.spacing_mut().interact_size.x = 48.0;
+        if ui.button("Reset").clicked() {
+            *speed = default;
+        }
         let mut percent = *speed * 100.0;
         let response = ui.add(
             egui::DragValue::new(&mut percent)
@@ -1701,9 +2163,12 @@ fn draw_speed_row(
         if response.changed() {
             *speed = (percent / 100.0).clamp(*range.start(), *range.end());
         }
-        if ui.button("Reset").clicked() {
-            *speed = default;
-        }
+        ui.add(
+            egui::Slider::new(speed, range.clone())
+                .show_value(false)
+                .clamping(egui::SliderClamping::Always),
+        )
+        .on_hover_text(hover);
     });
 }
 
@@ -1720,6 +2185,183 @@ mod tests {
     use super::*;
     use crate::app::shell::frame::EditingKitMenuEntry;
     use crate::app::shell::frame::visible_editing_kit_menu_entries;
+
+    #[test]
+    fn settings_ui_scale_waits_for_apply_and_reset_changes_only_the_draft() {
+        let ctx = egui::Context::default();
+        ctx.set_global_style(foundation_style());
+        let mut pending = 1.25;
+        let mut live = 1.0;
+        let mut frame = |events| {
+            let mut applied = false;
+            let output = crate::app::run_ui_test(
+                &ctx,
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(600.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        applied = draw_settings_ui_scale(ui, &mut pending, &mut live);
+                    });
+                },
+            );
+            let button = |label: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            (text.galley.text() == label)
+                                .then(|| text.pos + text.galley.size() * 0.5)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap()
+            };
+            (live, pending, applied, button("Apply"), button("Reset"))
+        };
+        let (live, pending, applied, apply, reset) = frame(vec![]);
+        assert_eq!((live, pending, applied), (1.0, 1.25, false));
+        let pointer = |pos, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        frame(pointer(apply, true));
+        let (live, _, applied, _, _) = frame(pointer(apply, false));
+        assert_eq!(live, 1.25);
+        assert!(applied);
+        frame(pointer(reset, true));
+        let (live, pending, applied, _, _) = frame(pointer(reset, false));
+        assert_eq!((live, pending, applied), (1.25, DEFAULT_UI_SCALE, false));
+        // Apply precedes Reset in the inline row, so allow its newly enabled
+        // hit target to be registered before the next press.
+        frame(vec![]);
+        frame(pointer(apply, true));
+        let (live, _, applied, _, _) = frame(pointer(apply, false));
+        assert_eq!(live, DEFAULT_UI_SCALE);
+        assert!(applied);
+    }
+
+    #[test]
+    fn settings_cards_fill_width_without_overflowing() {
+        for width in [360.0, 560.0, 900.0] {
+            let ctx = egui::Context::default();
+            ctx.set_global_style(foundation_style());
+            let mut action_rights = Vec::new();
+            let output = crate::app::run_ui_test(
+                &ctx,
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(width, 600.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        let right = ui.max_rect().right();
+                        settings_row(ui, "Block Default Expansion Behavior", "Applies to tags opened from now on. A group you open or close yourself keeps the state you chose.", 150.0, |ui| {
+                            egui::ComboBox::from_id_salt("test_expansion").width(150.0).selected_text("Expanded").show_ui(ui, |_| {});
+                        });
+                        let mut speed = 1.0;
+                        draw_speed_row(ui, "Scroll Speed", "Scroll help", &mut speed, 0.5..=2.0, 1.0);
+                        settings_row(ui, "Actions", "", 270.0, |ui| {
+                            action_rights.push(ui.button("Apply").rect.right());
+                        });
+                        settings_card(ui, |ui| {
+                            settings_actions(ui, |ui| {
+                                action_rights.push(ui.button("Check Now").rect.right());
+                            });
+                        });
+                        let mut enabled = true;
+                        settings_toggle(ui, "Confirm before overwriting Campaign Evolved game files", "Save writes a tag directly into the game's own pak files when expert mode is enabled.", &mut enabled);
+                        assert!((ui.min_rect().right() - right).abs() <= 1.0, "cards do not fit width {width}: {:?}", ui.min_rect());
+                    });
+                },
+            );
+            assert!(
+                (action_rights[0] - action_rights[1]).abs() <= 1.0,
+                "action edges differ at width {width}"
+            );
+            let text_rect = |label: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            (text.galley.text() == label)
+                                .then(|| egui::Rect::from_min_size(text.pos, text.galley.size()))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap()
+            };
+            assert!(
+                (text_rect("Scroll Speed").center().y - text_rect("Reset").center().y).abs() <= 1.0,
+                "no-hint label is not vertically centered at width {width}"
+            );
+            assert!(text_rect("Applies to tags opened from now on. A group you open or close yourself keeps the state you chose.").width() <= 301.0, "hint exceeds 300 points at width {width}");
+        }
+    }
+
+    #[test]
+    fn settings_switch_click_changes_value_once() {
+        let ctx = egui::Context::default();
+        let mut value = false;
+        let mut rect = egui::Rect::NOTHING;
+        let mut changed = false;
+        let mut frame = |events| {
+            let _ = crate::app::run_ui_test(
+                &ctx,
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        let response = settings_switch(ui, &mut value, "Test switch");
+                        rect = response.rect;
+                        changed = response.changed();
+                    });
+                },
+            );
+            (rect, value, changed)
+        };
+        let (rect, _, _) = frame(vec![]);
+        let pos = rect.center();
+        frame(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let (_, value, changed) = frame(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert!(value && changed);
+        let (_, value, changed) = frame(vec![]);
+        assert!(value && !changed);
+    }
 
     #[test]
     fn editing_kit_inputs_match_button_height() {
@@ -1995,11 +2637,9 @@ mod tests {
     #[test]
     fn settings_horizontal_edge_resize_does_not_grow_height() {
         for tab in [
-            SettingsTab::Startup,
-            SettingsTab::Browser,
+            SettingsTab::General,
             SettingsTab::EditingKits,
-            SettingsTab::Appearance,
-            SettingsTab::Tools,
+            SettingsTab::Interface,
         ] {
             for right_edge in [false, true] {
                 let ctx = egui::Context::default();
@@ -2066,11 +2706,9 @@ mod tests {
     #[test]
     fn settings_window_can_shrink_vertically() {
         for tab in [
-            SettingsTab::Startup,
-            SettingsTab::Browser,
+            SettingsTab::General,
             SettingsTab::EditingKits,
-            SettingsTab::Appearance,
-            SettingsTab::Tools,
+            SettingsTab::Interface,
         ] {
             let ctx = egui::Context::default();
             let mut rect = settings_frame(&ctx, tab, vec![]);
