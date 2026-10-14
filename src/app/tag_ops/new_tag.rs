@@ -960,7 +960,10 @@ fn new_tag_typed_output_path(root: &Path, input: &str, extension: &str) -> Resul
         return Err("Enter a name for the new tag".to_owned());
     }
     let relative = PathBuf::from(path.replace('\\', "/"));
-    if relative.components().any(|part| matches!(part,
+    // Unix treats Windows drive paths as relative filenames. Tag paths must
+    // stay relative on every host, including drive-relative forms like C:foo.
+    let has_drive_prefix = path.as_bytes().get(1) == Some(&b':');
+    if has_drive_prefix || relative.components().any(|part| matches!(part,
         std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) {
         return Err("Enter a path inside the loaded tags folder".to_owned());
     }
@@ -1522,11 +1525,12 @@ mod tests {
 
     #[test]
     fn typed_tag_paths_cannot_escape_the_tags_folder_or_name_a_folder() {
-        let root = Path::new("C:/kit/tags");
-        for path in ["", "objects/", "objects/..", "../outside", "objects/../../outside", "C:/outside", "/outside"] {
-            assert!(new_tag_typed_output_path(root, path, "scenery").is_err(), "{path}");
+        let root = std::env::temp_dir().join("baboon-new-tag-path-test").join("tags");
+        for path in ["", "objects/", "objects/..", "../outside", "objects/../../outside",
+            "C:/outside", "C:\\outside", "C:outside", "z:/outside", "/outside", "\\\\server\\share\\outside"] {
+            assert!(new_tag_typed_output_path(&root, path, "scenery").is_err(), "{path}");
         }
-        let (output, display) = new_tag_typed_output_path(root, "objects/new_tag.biped", "scenery").unwrap();
+        let (output, display) = new_tag_typed_output_path(&root, "objects/new_tag.biped", "scenery").unwrap();
         assert_eq!(output, root.join("objects/new_tag.scenery"));
         assert_eq!(display, "objects\\new_tag.scenery");
     }
