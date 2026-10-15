@@ -36,6 +36,9 @@ pub(in crate::app) struct MaterialColorPopup {
     /// When Some, OK returns a color to the still-open function-editor draft
     /// instead of writing directly to the tag document.
     function_draft_color: Option<FunctionDraftColorWrite>,
+    /// When Some, OK rewrites the hex digits of a colour in a string list's
+    /// text.
+    string_list_colour: Option<StringListColourWrite>,
     /// Tag key that owns the write_path. Used by draw_color_popup to route the edit.
     tag_key: String,
 }
@@ -57,6 +60,18 @@ struct FunctionDraftColorWrite {
 struct InlineFunctionColorWrite {
     storage: FunctionDataStorage,
     function: TagFunction,
+}
+
+/// A colour written in a string list's text (`<color argb=…>`, `|k…`): OK
+/// sets the text with its digits replaced.
+#[derive(Clone)]
+pub(in crate::app) struct StringListColourWrite {
+    pub(in crate::app) game: Option<GameId>,
+    pub(in crate::app) index: usize,
+    pub(in crate::app) language: usize,
+    /// The text, as it stands when the picker opens.
+    pub(in crate::app) text: String,
+    pub(in crate::app) colour: blam_tags::string_list::ColorValue,
 }
 
 /// Target for writing a picked color back into a plain color-valued field.
@@ -103,6 +118,7 @@ impl MaterialColorPopup {
             create_shader_param_op: None,
             create_h2_shader_param_op: None,
             function_draft_color: None,
+            string_list_colour: None,
             tag_key: String::new(),
         }
     }
@@ -222,6 +238,34 @@ impl MaterialColorPopup {
         } else {
             Some(ColorPopupResult::FunctionDraftColor { target: target.target, argb })
         }
+    }
+
+    /// A picker for a colour in a string list's text; it opens on that
+    /// colour.
+    pub(in crate::app) fn for_string_list_colour(tag_key: impl Into<String>, write: StringListColourWrite) -> Self {
+        let [alpha, red, green, blue] = write.colour.argb.to_be_bytes().map(|channel| f32::from(channel) / 255.0);
+        let mut popup = Self::new("Text color", red, green, blue, alpha);
+        popup.tag_key = tag_key.into();
+        popup.string_list_colour = Some(write);
+        popup
+    }
+
+    /// What OK does for a string list colour: the text with the picked
+    /// colour's digits in place of the old. `None` for any other picker.
+    pub(in crate::app) fn string_list_colour_ok(&self) -> Option<ColorPopupResult> {
+        let write = self.string_list_colour.clone()?;
+        let argb = u32::from_be_bytes([self.alpha, self.red, self.green, self.blue].map(float_channel_to_u8));
+        Some(ColorPopupResult::StringListOp {
+            tag_key: self.tag_key.clone(),
+            op: StringListOp {
+                game: write.game,
+                edit: blam_tags::string_list::StringListEdit::SetText {
+                    index: write.index,
+                    language: write.language,
+                    text: write.colour.replaced_in(&write.text, argb),
+                },
+            },
+        })
     }
 
     pub(in crate::app) fn with_alpha_available(mut self, available: bool) -> Self {
@@ -385,6 +429,11 @@ pub(in crate::app) enum ColorPopupResult {
         target: FunctionDraftColorTarget,
         argb: u32,
     },
+    /// A colour in a string list's text.
+    StringListOp {
+        tag_key: String,
+        op: StringListOp,
+    },
 }
 
 /// Draw the color inspector / editor popup.
@@ -403,7 +452,8 @@ pub(in crate::app) fn draw_color_popup(
         || color.create_shader_op.is_some()
         || color.create_shader_param_op.is_some()
         || color.create_h2_shader_param_op.is_some()
-        || color.function_draft_color.is_some();
+        || color.function_draft_color.is_some()
+        || color.string_list_colour.is_some();
     let mut result: Option<ColorPopupResult> = None;
     let window_title = format!("Color Picker - {}", color.title);
     egui::Window::new("Color Picker")
@@ -443,7 +493,9 @@ pub(in crate::app) fn draw_color_popup(
                         close = true;
                     }
                     if editable && icon_text_button(ui, ButtonIcon::Confirm, "OK", true).clicked() {
-                        if let Some(target) = color.function_draft_color.clone() {
+                        if color.string_list_colour.is_some() {
+                            result = color.string_list_colour_ok();
+                        } else if let Some(target) = color.function_draft_color.clone() {
                             let argb = ((target.original_alpha as u32) << 24)
                                 | ((float_channel_to_u8(color.red) as u32) << 16)
                                 | ((float_channel_to_u8(color.green) as u32) << 8)
