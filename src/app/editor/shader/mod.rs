@@ -769,6 +769,7 @@ mod tests {
                     edit.shader_param_ops = &mut ops.shader_param_ops;
                     edit.h2_shader_param_ops = &mut ops.h2_shader_param_ops;
                     edit.model_variant_ops = &mut ops.model_variant_ops;
+                    edit.string_list_ops = &mut ops.string_list_ops;
                     draw_material_tag(
                         ui,
                         &doc.tag,

@@ -14,9 +14,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Foundation's fill for a value the editor doesn't offer (`#FFC0CB`).
-pub(in crate::app) const INVALID_VALUE_FILL: Color32 = Color32::from_rgb(0xFF, 0xC0, 0xCB);
-
 /// The tag a pane draws, as string editors need it.
 #[derive(Clone, Copy)]
 pub(in crate::app) struct EditedTag<'a> {
@@ -205,7 +202,7 @@ pub(in crate::app) fn draw_string_editor_row(
     let mut opened = false;
     draw_foundation_labelled_cell_row(ui, meta, "", depth, |ui, available_width| {
         let width = foundation_value_width(&draft.text, available_width).clamp(150.0, 300.0);
-        let response = foundation_value_cell_filled(ui, &mut draft.text, width, id, enabled, (!valid).then_some(INVALID_VALUE_FILL));
+        let response = foundation_value_cell_filled(ui, &mut draft.text, width, id, enabled, (!valid).then(invalid_value_fill));
         draft.note_response(&response);
         if enabled && draft.should_commit(ui, &response) {
             edit.pending.extend(field_edit_ops(path, &draft.text).pending);
@@ -326,7 +323,7 @@ mod tests {
         for clipped in &output.shapes {
             match &clipped.shape {
                 egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
-                egui::Shape::Rect(rect) if rect.fill == INVALID_VALUE_FILL => pink = true,
+                egui::Shape::Rect(rect) if rect.fill == invalid_value_fill() => pink = true,
                 _ => {}
             }
         }

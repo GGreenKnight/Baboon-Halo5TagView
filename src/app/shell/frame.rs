@@ -5863,6 +5863,50 @@ mod tests {
     }
 
     const CTRL: egui::Modifiers = egui::Modifiers { ctrl: true, command: true, ..egui::Modifiers::NONE };
+
+    /// A Halo 3 string list opens on its Strings tab; typing `&a_b` and
+    /// taking the completion writes the glyph into the tag through the pane,
+    /// and one undo takes it back out.
+    #[test]
+    fn a_string_list_edit_reaches_the_tag_and_undoes() {
+        use blam_tags::string_list::{StringEntry, StringListEdit, apply_string_list_edits, read_string_list};
+        let kit = LooseKit::new("string_list_edit", "halo3_mcc");
+        kit.write_mcc("ui\\strings", "multilingual_unicode_string_list", |tag| {
+            let mut texts = vec![None; 12];
+            texts[0] = Some("Press".to_owned());
+            let entry = StringEntry { id: Some("press".to_owned()), texts };
+            apply_string_list_edits(tag, None, &[StringListEdit::Insert { at: 0, entries: vec![entry] }]).unwrap();
+        });
+        let mut h = Harness::new();
+        kit.install(&mut h.app);
+        let key = kit.open(&mut h.app, "ui\\strings.multilingual_unicode_string_list");
+        settle(&mut h, 8);
+        let english = |h: &Harness| {
+            let doc = h.app.model.kits[0].parsed_tags.get(&key).expect("open");
+            read_string_list(&doc.tag).unwrap().entries[0].texts[0].clone()
+        };
+        let cell = h
+            .painted_rects
+            .iter()
+            .find(|(text, _)| text == "Press")
+            .map(|(_, rect)| rect.right_center() + egui::vec2(20.0, 0.0))
+            .unwrap_or_else(|| panic!("the Strings tab shows the text: {:?}", h.painted));
+        click_point(&mut h, cell);
+        settle(&mut h, 1);
+        press_key(&mut h, egui::Key::End, egui::Modifiers::NONE);
+        h.frame(vec![egui::Event::Text(" &a_b".to_owned())]);
+        settle(&mut h, 2);
+        assert!(h.painted.iter().any(|text| text == "&a_button"), "the completion list: {:?}", h.painted);
+        press_key(&mut h, egui::Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(english(&h).as_deref(), Some("Press"), "taking a name commits nothing");
+        press_key(&mut h, egui::Key::Enter, egui::Modifiers::NONE);
+        settle(&mut h, 2);
+        assert_eq!(english(&h).as_deref(), Some("Press \u{E100}"));
+        assert!(h.app.model.kits[0].parsed_tags.get(&key).unwrap().dirty.is_set());
+        press_key(&mut h, egui::Key::Z, CTRL);
+        settle(&mut h, 2);
+        assert_eq!(english(&h).as_deref(), Some("Press"));
+    }
     const RADIUS: &str = "item/object/bounding radius#2";
 
     impl TypedEdit {

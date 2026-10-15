@@ -36,6 +36,8 @@ mod bitmap;
 pub(super) use bitmap::*;
 mod model;
 pub(super) use model::*;
+mod string_list;
+use string_list::draw_string_list_tag;
 mod layout_diff;
 pub(in crate::app) use layout_diff::*;
 
@@ -89,6 +91,11 @@ pub(super) fn draw_tag(
         draw_material_effects_summary(ui, tag, edit);
     }
 
+    if blam_tags::string_list::is_string_list_group(entry.group_tag)
+        && draw_string_list_tag(ui, tag, document_revision, source_game, expert_mode, edit)
+    {
+        return;
+    }
     if is_model {
         draw_model_tag_panel_tabs(ui, model_preview, entry.group_tag);
     }

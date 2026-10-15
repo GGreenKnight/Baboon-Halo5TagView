@@ -98,9 +98,14 @@ impl EditDraft {
         }
     }
 
-    fn synchronize(&mut self, value: &str) {
+    /// Follow the tag's value: a draft holding no change shows it, and a
+    /// change the tag now holds settles. `exact` compares the change as it
+    /// is; otherwise surrounding whitespace doesn't count, as a number box
+    /// reads none.
+    fn synchronize(&mut self, value: &str, exact: bool) {
         if self.changed {
-            if self.text.trim() == value.trim() {
+            let holds = if exact { self.text == value } else { self.text.trim() == value.trim() };
+            if holds {
                 self.text = value.to_owned();
                 self.baseline = value.to_owned();
                 self.changed = false;
@@ -189,6 +194,18 @@ impl EditDrafts {
     }
 
     pub(in crate::app) fn draft_mut(&mut self, key: &str, value: &str) -> &mut EditDraft {
+        self.draft_mut_matching(key, value, false)
+    }
+
+    /// [`Self::draft_mut`] for a value whose whitespace is part of it (string
+    /// list text): a change settles only once the tag holds it exactly. With
+    /// whitespace ignored, a trailing space typed at the end of the text read
+    /// as the value the tag already held, and was taken away as it was typed.
+    pub(in crate::app) fn draft_mut_exact(&mut self, key: &str, value: &str) -> &mut EditDraft {
+        self.draft_mut_matching(key, value, true)
+    }
+
+    fn draft_mut_matching(&mut self, key: &str, value: &str, exact: bool) -> &mut EditDraft {
         let pass = self.pass;
         // Looked up before inserting, so a row drawn every frame doesn't
         // allocate its key every frame.
@@ -196,7 +213,7 @@ impl EditDrafts {
             self.entries.insert(key.to_owned(), EditDraft::new(value));
         }
         let draft = self.entries.get_mut(key).expect("inserted above");
-        draft.synchronize(value);
+        draft.synchronize(value, exact);
         draft.drawn_pass = pass;
         draft
     }
@@ -206,7 +223,7 @@ impl EditDrafts {
             .entries
             .remove(key)
             .unwrap_or_else(|| EditDraft::new(value));
-        draft.synchronize(value);
+        draft.synchronize(value, false);
         draft.drawn_pass = self.pass;
         draft
     }
@@ -563,6 +580,8 @@ pub(in crate::app) struct FieldEditContext<'a> {
     pub(in crate::app) h2_shader_param_ops: &'a mut Vec<H2ShaderParamOp>,
     /// Model-preview variant edits queued from the render model tab.
     pub(in crate::app) model_variant_ops: &'a mut Vec<ModelVariantOp>,
+    /// Edits queued from a string list tag's Strings tab.
+    pub(in crate::app) string_list_ops: &'a mut Vec<StringListOp>,
     /// Set when the user clicks a color swatch on a value row; the caller hoists
     /// it into `self.color_popup` after rendering so the shared popup handler
     /// can show the picker and apply the edit.
@@ -709,6 +728,7 @@ pub(in crate::app) struct EditSinks {
     shader_param_ops: Vec<ShaderParamOp>,
     h2_shader_param_ops: Vec<H2ShaderParamOp>,
     model_variant_ops: Vec<ModelVariantOp>,
+    string_list_ops: Vec<StringListOp>,
     color_request: Option<MaterialColorPopup>,
     function_request: Option<FunctionPopup>,
     tsv_paste_request: Option<TsvPasteRequest>,
@@ -770,6 +790,7 @@ impl<'a> FieldEditContext<'a> {
             shader_param_ops: &mut sinks.shader_param_ops,
             h2_shader_param_ops: &mut sinks.h2_shader_param_ops,
             model_variant_ops: &mut sinks.model_variant_ops,
+            string_list_ops: &mut sinks.string_list_ops,
             color_request: &mut sinks.color_request,
             function_request: &mut sinks.function_request,
             docs: None,
@@ -805,6 +826,7 @@ impl FieldEditContext<'_> {
             h2_shader_param_ops,
             model_variant_ops,
             function_data_ops,
+            string_list_ops,
         } = ops;
         // Function-data writes come only from the function popup, never from
         // a text row.
@@ -815,6 +837,7 @@ impl FieldEditContext<'_> {
         self.shader_param_ops.extend(shader_param_ops);
         self.h2_shader_param_ops.extend(h2_shader_param_ops);
         self.model_variant_ops.extend(model_variant_ops);
+        self.string_list_ops.extend(string_list_ops);
     }
 
     pub(in crate::app) fn widget_id(
@@ -983,7 +1006,7 @@ mod tests {
         let mut draft = EditDraft::new("10");
         draft.text = "25".to_owned();
         draft.changed = true;
-        draft.synchronize("10");
+        draft.synchronize("10", false);
         assert_eq!(draft.text, "25");
         assert!(draft.changed);
     }
@@ -993,11 +1016,30 @@ mod tests {
         let mut draft = EditDraft::new("10");
         draft.text = "25".to_owned();
         draft.changed = true;
-        draft.synchronize("25");
+        draft.synchronize("25", false);
         assert_eq!(draft.text, "25");
         assert!(!draft.changed);
-        draft.synchronize("30");
+        draft.synchronize("30", false);
         assert_eq!(draft.text, "30");
+    }
+
+    /// A trailing space typed into text whose spaces count stays: compared
+    /// exactly, it isn't the value the tag holds. Compared trimmed, as a
+    /// number box is, it is.
+    #[test]
+    fn exact_drafts_keep_a_typed_trailing_space() {
+        let mut draft = EditDraft::new("WEAPONS");
+        draft.text = "WEAPONS ".to_owned();
+        draft.changed = true;
+        draft.synchronize("WEAPONS", true);
+        assert_eq!((draft.text.as_str(), draft.changed), ("WEAPONS ", true));
+        draft.synchronize("WEAPONS ", true);
+        assert!(!draft.changed, "settles once the tag holds it");
+        let mut trimmed = EditDraft::new("10");
+        trimmed.text = "10 ".to_owned();
+        trimmed.changed = true;
+        trimmed.synchronize("10", false);
+        assert_eq!((trimmed.text.as_str(), trimmed.changed), ("10", false));
     }
 
     // Foundation unit tests.

@@ -5,11 +5,14 @@
 
 use std::collections::HashMap;
 
+use blam_tags::string_list::apply_string_list_edits;
+#[cfg(test)]
+use blam_tags::string_list::StringListEdit;
 use blam_tags::{H2Function, TagField, TagFieldData, TagFieldType, TagFile};
 
 use crate::core::document::ops::{
     BlockOp, BlockOpKind, FunctionDataOp, H2ShaderParamOp, ModelVariantOp,
-    ModelVariantRegionChoice, PendingFieldEdit, ShaderOp, ShaderParamOp,
+    ModelVariantRegionChoice, PendingFieldEdit, ShaderOp, ShaderParamOp, StringListOp,
 };
 use crate::core::document::value::{
     append_field_path_for, escape_field_path_segment, parse_gui_field_value,
@@ -39,6 +42,9 @@ pub(crate) struct DeferredOps {
     pub(crate) model_variant_ops: Vec<ModelVariantOp>,
     /// Halo 2 function byte-block writes from the function editor.
     pub(crate) function_data_ops: Vec<FunctionDataOp>,
+    /// Edits to a string list tag's strings, applied in order and written
+    /// back in one rebuild.
+    pub(crate) string_list_ops: Vec<StringListOp>,
 }
 
 impl DeferredOps {
@@ -50,6 +56,7 @@ impl DeferredOps {
             && self.h2_shader_param_ops.is_empty()
             && self.model_variant_ops.is_empty()
             && self.function_data_ops.is_empty()
+            && self.string_list_ops.is_empty()
     }
 }
 
@@ -117,7 +124,8 @@ pub(crate) fn apply_deferred_ops(
         && ops.shader_ops.is_empty()
         && ops.shader_param_ops.is_empty()
         && ops.h2_shader_param_ops.is_empty()
-        && ops.model_variant_ops.is_empty())
+        && ops.model_variant_ops.is_empty()
+        && ops.string_list_ops.is_empty())
     {
         doc.note_layout_change();
     }
@@ -129,6 +137,7 @@ pub(crate) fn apply_deferred_ops(
         h2_shader_param_ops,
         model_variant_ops,
         function_data_ops,
+        string_list_ops,
     } = ops;
     let tag = &mut doc.tag;
     let dirty = &mut doc.dirty;
@@ -147,6 +156,7 @@ pub(crate) fn apply_deferred_ops(
     let model_variants_changed = variant_status.is_some();
     keep(variant_status);
     keep(apply_function_data_ops(tag, function_data_ops, dirty));
+    keep(apply_string_list_ops(tag, &string_list_ops, dirty));
     let mut outcomes = applied.outcomes;
     outcomes.extend(unchanged);
     AppliedDeferredOps {
@@ -168,6 +178,19 @@ fn edit_changes_nothing(tag: &TagFile, edit: &PendingFieldEdit) -> bool {
         return false;
     };
     format!("{current:?}") == format!("{parsed:?}")
+}
+
+/// Apply a frame's string list edits as one rebuild of the tag's strings.
+fn apply_string_list_ops(tag: &mut TagFile, ops: &[StringListOp], dirty: &mut Dirty) -> Option<String> {
+    let game = ops.first()?.game;
+    let edits: Vec<_> = ops.iter().map(|op| op.edit.clone()).collect();
+    match catch_edit_unwind(|| apply_string_list_edits(tag, game, &edits)) {
+        Ok(summary) => {
+            dirty.touch();
+            Some(summary)
+        }
+        Err(error) => Some(format!("String list edit failed: {error}")),
+    }
 }
 
 pub(crate) fn apply_pending_edits(
@@ -244,7 +267,7 @@ pub(crate) fn apply_function_data_ops(
     status
 }
 
-fn catch_edit_unwind(f: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+fn catch_edit_unwind<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
         .map_err(|panic| panic_message(panic))?
 }
@@ -1716,9 +1739,57 @@ mod tests {
             "the function data op never ran"
         );
 
+        let mut string_list = document();
+        let applied = apply_deferred_ops(
+            &mut string_list,
+            DeferredOps {
+                string_list_ops: vec![StringListOp { game: None, edit: StringListEdit::Remove { indices: vec![0] } }],
+                ..DeferredOps::default()
+            },
+            "Edit",
+        );
+        assert!(string_list.journal.can_undo(), "string list edit");
+        assert!(
+            applied.status.is_some_and(|status| status.starts_with("String list edit failed")),
+            "a render model is no string list"
+        );
+
         let mut untouched = document();
         apply_deferred_ops(&mut untouched, DeferredOps::default(), "Edit");
         assert!(!untouched.journal.can_undo(), "a frame with no ops");
+    }
+
+    /// A string list edit changes the tag, marks it modified, and undoes as
+    /// one step back to the bytes it started from.
+    #[test]
+    fn string_list_ops_apply_and_undo() {
+        let schema = locate_definitions_root().join("halo3_mcc/multilingual_unicode_string_list.json");
+        let mut doc = TagDocument::clean(TagFile::new(schema).unwrap());
+        let before = doc.tag.write_to_bytes().unwrap();
+        let mut texts = vec![None; 12];
+        texts[0] = Some("Press \u{E100}".to_owned());
+        let entry = blam_tags::string_list::StringEntry { id: Some("press".to_owned()), texts };
+        let applied = apply_deferred_ops(
+            &mut doc,
+            DeferredOps {
+                string_list_ops: [
+                    StringListEdit::Insert { at: 0, entries: vec![entry] },
+                    StringListEdit::SetText { index: 0, language: 1, text: "押す".to_owned() },
+                ]
+                .into_iter()
+                .map(|edit| StringListOp { game: Some(blam_tags::game::GameId::Halo3), edit })
+                .collect(),
+                ..DeferredOps::default()
+            },
+            "Edit",
+        );
+        assert_eq!(applied.status.as_deref(), Some("Edited string 0"));
+        assert!(doc.dirty.revision() > 0, "marked modified");
+        let list = blam_tags::string_list::read_string_list(&doc.tag).unwrap();
+        assert_eq!(list.entries[0].texts[1].as_deref(), Some("押す"));
+        doc.journal.end_edit_window();
+        let (snapshot, _) = doc.journal.undo(&doc.tag).expect("one undo step");
+        assert_eq!(*snapshot, before);
     }
 
     // Foundation unit tests.

@@ -133,3 +133,11 @@ pub(crate) struct ModelVariantRegionChoice {
     pub(crate) region_name: String,
     pub(crate) permutation_name: String,
 }
+
+/// One edit to a string list tag's strings, with the game whose tool rules
+/// the write follows (Reach's rebuilds its substitution pairs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StringListOp {
+    pub(crate) game: Option<blam_tags::game::GameId>,
+    pub(crate) edit: blam_tags::string_list::StringListEdit,
+}
