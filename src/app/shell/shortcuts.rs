@@ -255,6 +255,17 @@ fn save_shortcut(
         }
         if editable_builtin(key) {
             if global {
+                for layout in prefs.kit_shortcut_layouts.values_mut() {
+                    if layout
+                        .overrides
+                        .get(key)
+                        .is_some_and(|local| same_recent_path(&local.path, &app.path))
+                    {
+                        layout.overrides.remove(key);
+                    }
+                    layout.hidden.remove(key);
+                }
+                prefs.hidden_shortcuts.remove(key);
                 prefs.shortcut_overrides.insert(key.to_owned(), app);
                 local_layout(prefs, kit).overrides.remove(key);
             } else {
@@ -276,6 +287,12 @@ fn save_shortcut(
             }
             return;
         }
+        if global {
+            if prefs.app_shortcuts.iter().any(|existing| existing.key() == key) {
+                share_matching_shortcuts(prefs, Some(key), app);
+            }
+            return;
+        }
         let Some(index) = prefs
             .app_shortcuts
             .iter()
@@ -283,7 +300,7 @@ fn save_shortcut(
         else {
             return;
         };
-        if prefs.app_shortcuts[index].kit.is_none() && !global {
+        if prefs.app_shortcuts[index].kit.is_none() {
             // Retire the global definition, retaining independent copies in existing kits.
             let shared = prefs.app_shortcuts[index].clone();
             let mut copies = Vec::new();
@@ -321,9 +338,53 @@ fn save_shortcut(
         } else {
             prefs.app_shortcuts[index] = app;
         }
+    } else if global {
+        share_matching_shortcuts(prefs, None, app);
     } else {
         prefs.app_shortcuts.push(app);
     }
+}
+
+// Rejoin copies by executable path, so different app versions stay independent.
+fn share_matching_shortcuts(prefs: &mut GuiPrefs, editing: Option<&str>, mut app: AppShortcut) {
+    let canonical = editing
+        .and_then(|key| prefs.app_shortcuts.iter().find(|existing| existing.key() == key))
+        .or_else(|| {
+            prefs.app_shortcuts.iter().find(|existing| {
+                existing.kit.is_none() && same_recent_path(&existing.path, &app.path)
+            })
+        })
+        .or_else(|| prefs.app_shortcuts.iter().find(|existing| same_recent_path(&existing.path, &app.path)));
+    if let Some(existing) = canonical {
+        app.id = existing.id.clone();
+    }
+    app.kit = None;
+    let key = app.key();
+    let merged: HashSet<String> = prefs.app_shortcuts.iter()
+        .filter(|existing| existing.key() == key || same_recent_path(&existing.path, &app.path))
+        .map(AppShortcut::key)
+        .collect();
+    let remap_order = |order: &mut Vec<String>| {
+        let mut seen = HashSet::new();
+        for entry in order.iter_mut() {
+            if merged.contains(entry) {
+                *entry = key.clone();
+            }
+        }
+        order.retain(|entry| seen.insert(entry.clone()));
+    };
+    remap_order(&mut prefs.shortcut_order);
+    prefs.hidden_shortcuts.retain(|entry| entry != &key && !merged.contains(entry));
+    for layout in prefs.kit_shortcut_layouts.values_mut() {
+        remap_order(&mut layout.order);
+        layout.hidden.retain(|entry| entry != &key && !merged.contains(entry));
+    }
+    if let Some(existing) = prefs.app_shortcuts.iter_mut().find(|existing| existing.key() == key) {
+        *existing = app;
+    } else {
+        prefs.app_shortcuts.push(app);
+    }
+    prefs.app_shortcuts.retain(|existing| existing.key() == key || !merged.contains(&existing.key()));
 }
 
 #[derive(Clone)]
@@ -416,6 +477,7 @@ pub(in crate::app) fn shortcut_interactions(
                     name: app.name.clone(),
                     path: app.path.display().to_string(),
                     kit: kit.clone(),
+                    browse_root: cx.model.editing_kit_root_for(kit_index),
                     global: app.kit.is_none(),
                     builtin_default_path: (editable_builtin(key)
                         && builtin_override(&cx.model.prefs, &kit, key)
@@ -444,6 +506,7 @@ pub(in crate::app) fn shortcut_interactions(
 pub(in crate::app) struct AddShortcutDialog {
     editing: Option<String>,
     kit: String,
+    browse_root: Option<PathBuf>,
     global: bool,
     builtin_default_path: Option<PathBuf>,
     name: String,
@@ -463,6 +526,7 @@ impl AddShortcutDialog {
     pub(in crate::app) fn for_kit(model: &Model, kit: usize) -> Self {
         Self {
             kit: shortcut_kit_key(model, kit),
+            browse_root: model.editing_kit_root_for(kit),
             ..Default::default()
         }
     }
@@ -484,11 +548,7 @@ impl AddShortcutDialog {
     fn show_scope_prompt(&mut self, cx: &Ctx) -> bool {
         let prompt = self.confirmation.unwrap();
         let removing = matches!(prompt, ShortcutScopePrompt::Remove { .. });
-        let title = if removing {
-            "Remove Global Shortcut?"
-        } else {
-            "Turn Off Global Shortcut?"
-        };
+        let title = "Remove Global Shortcut";
         let message = if removing {
             format!(
                 "Remove “{}” from this Editing Kit? You can also remove it from the other Editing Kits now, or keep those copies to remove manually.",
@@ -502,11 +562,14 @@ impl AddShortcutDialog {
         };
         let mut choice = None;
         let mut cancel = false;
+        let margin = egui::Margin {
+            left: 20, right: 20, top: 0, bottom: 0,
+        };
         egui::Modal::new(egui::Id::new("global_shortcut_confirmation"))
-            .frame(egui::Frame::window(&cx.egui.global_style()).inner_margin(egui::Margin {
-                left: 20, right: 20, top: 0, bottom: 12,
-            }))
+            .frame(egui::Frame::window(&cx.egui.global_style()).inner_margin(margin))
             .show(cx.egui, |ui| {
+                // The custom header extends through the frame's actual padding.
+                ui.spacing_mut().window_margin = margin;
                 ui.set_width(window_width(cx.egui, 540.0));
                 crate::app::search::draw_icon_window_header_without_close(ui, title, ButtonIcon::Pin);
                 ui.add_space(12.0);
@@ -514,12 +577,22 @@ impl AddShortcutDialog {
                 ui.add_space(8.0);
                 ui.label("Copies you keep will become local. New Editing Kit profiles won’t inherit this global setup.");
                 ui.add_space(12.0);
-                ui.separator();
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    cancel = ui.button("Cancel").clicked();
-                    if ui.button("Keep Other Copies").clicked() { choice = Some(false); }
-                    if ui.button("Remove From Other Kits").clicked() { choice = Some(true); }
-                });
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), 40.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        let background = ui.max_rect().expand2(Vec2::new(20.0, 0.0));
+                        let mut painter = ui.painter().clone();
+                        painter.set_clip_rect(background.intersect(cx.egui.content_rect()));
+                        let mut rounding = ui.visuals().window_corner_radius;
+                        rounding.nw = 0;
+                        rounding.ne = 0;
+                        painter.rect_filled(background, rounding, foundation_block_bar());
+                        cancel = ui.button("Cancel").clicked();
+                        if ui.button("Keep Others as Copies").clicked() { choice = Some(false); }
+                        if ui.button("Remove From Other Kits").clicked() { choice = Some(true); }
+                    },
+                );
             });
         if cancel {
             self.confirmation = None;
@@ -681,8 +754,19 @@ impl Dialog for AddShortcutDialog {
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             if icon_text_button(ui, ButtonIcon::Browse, "Browse", true).clicked() {
-                                let dialog =
+                                let mut dialog =
                                     rfd::FileDialog::new().set_title("Select Application");
+                                let current_path = Path::new(self.path.trim().trim_matches('"'));
+                                let directory = if editing || !current_path.as_os_str().is_empty() {
+                                    current_path.parent()
+                                } else {
+                                    self.browse_root.as_deref()
+                                };
+                                // Without an available starting folder, let the native picker
+                                // use its remembered location.
+                                if let Some(directory) = directory.filter(|path| path.is_dir()) {
+                                    dialog = dialog.set_directory(directory);
+                                }
                                 #[cfg(windows)]
                                 let dialog = dialog.add_filter("Application", &["exe"]);
                                 if let Some(path) = dialog.pick_file() {
@@ -1208,6 +1292,98 @@ mod tests {
     }
 
     #[test]
+    fn making_an_app_global_rejoins_local_copies_and_allows_removing_them_together() {
+        for adding in [false, true] {
+            let mut prefs = GuiPrefs::default();
+            let shared = AppShortcut {
+                id: new_shortcut_id(), kit: None,
+                name: "Blender 4.3".to_owned(), path: PathBuf::from("blender43.exe"),
+            };
+            let key = shared.key();
+            save_shortcut(&mut prefs, None, "kit-one", true, shared.clone(), &[]);
+            make_shortcut_local(&mut prefs, &key, "kit-one", shared.clone(),
+                &["kit-two".to_owned(), "kit-three".to_owned()], false);
+            let copies = prefs.app_shortcuts.clone();
+            assert_eq!(copies.len(), 3);
+            for copy in &copies {
+                let layout = local_layout(&mut prefs, copy.kit.as_deref().unwrap());
+                layout.order = vec!["builtin:sapien".to_owned(), copy.key(), "builtin:tag_test".to_owned()];
+            }
+            // Display-name changes still describe the same app; a different executable does not.
+            prefs.app_shortcuts[1].name = "My Blender".to_owned();
+            let other_version = AppShortcut {
+                id: new_shortcut_id(), kit: Some("kit-two".to_owned()),
+                name: "Blender 4.3".to_owned(), path: PathBuf::from("blender51.exe"),
+            };
+            prefs.app_shortcuts.push(other_version.clone());
+            let mut promoted = shared;
+            if adding { promoted.id = new_shortcut_id(); }
+            save_shortcut(&mut prefs, (!adding).then_some(key.as_str()), "kit-one", true, promoted, &[]);
+            assert_eq!(prefs.app_shortcuts.len(), 2);
+            let global = prefs.app_shortcuts.iter().find(|app| app.kit.is_none()).unwrap().clone();
+            assert_eq!(global.key(), key);
+            assert!(prefs.app_shortcuts.contains(&other_version));
+            for kit in ["kit-one", "kit-two", "kit-three", "new-kit"] {
+                assert!(global_shortcut(&prefs, kit, &key).is_some());
+                let keys = shortcut_keys(&prefs, kit);
+                assert_eq!(keys.iter().filter(|entry| *entry == &key).count(), 1);
+                if kit != "new-kit" {
+                    assert_eq!(keys[1], key, "keep the former copy's position");
+                }
+                for old in &copies {
+                    if old.key() != key { assert!(!keys.contains(&old.key())); }
+                }
+            }
+            make_shortcut_local(&mut prefs, &key, "kit-one", global, &[], true);
+            remove_shortcut(&mut prefs, "kit-one", &key);
+            assert_eq!(prefs.app_shortcuts, vec![other_version]);
+        }
+    }
+
+    #[test]
+    fn global_app_addition_reuses_existing_global_and_restores_hidden_copies() {
+        let mut prefs = GuiPrefs::default();
+        let shared = AppShortcut {
+            id: new_shortcut_id(), kit: None,
+            name: "Tool".to_owned(), path: PathBuf::from("tool.exe"),
+        };
+        let key = shared.key();
+        save_shortcut(&mut prefs, None, "kit-one", true, shared.clone(), &[]);
+        remove_shortcut(&mut prefs, "kit-two", &key);
+        prefs.hidden_shortcuts.insert(key.clone());
+        let mut duplicate = shared;
+        duplicate.id = new_shortcut_id();
+        duplicate.name = "Renamed Tool".to_owned();
+        save_shortcut(&mut prefs, None, "kit-one", true, duplicate, &[]);
+        assert_eq!(prefs.app_shortcuts.len(), 1);
+        assert_eq!(prefs.app_shortcuts[0].key(), key);
+        assert_eq!(prefs.app_shortcuts[0].name, "Renamed Tool");
+        assert!(shortcut_keys(&prefs, "kit-two").contains(&key));
+        assert!(shortcut_keys(&prefs, "new-kit").contains(&key));
+    }
+
+    #[test]
+    fn making_a_default_tool_global_rejoins_matching_local_overrides() {
+        let mut prefs = GuiPrefs::default();
+        let key = "builtin:sapien";
+        let shared = AppShortcut {
+            id: key.to_owned(), kit: None,
+            name: "Sapien".to_owned(), path: PathBuf::from("sapien.exe"),
+        };
+        save_shortcut(&mut prefs, Some(key), "kit-one", true, shared.clone(), &[]);
+        make_shortcut_local(&mut prefs, key, "kit-one", shared.clone(),
+            &["kit-two".to_owned(), "custom-kit".to_owned()], false);
+        local_layout(&mut prefs, "custom-kit").overrides.get_mut(key).unwrap().path = PathBuf::from("custom-sapien.exe");
+        save_shortcut(&mut prefs, Some(key), "kit-one", true, shared, &[]);
+        for kit in ["kit-one", "kit-two", "new-kit"] {
+            assert!(global_shortcut(&prefs, kit, key).is_some());
+            assert!(!prefs.kit_shortcut_layouts.get(kit).is_some_and(|layout| layout.overrides.contains_key(key)));
+        }
+        assert!(global_shortcut(&prefs, "custom-kit", key).is_none());
+        assert_eq!(builtin_shortcut(&prefs, "custom-kit", key, None, "tag_test.exe").path, Path::new("custom-sapien.exe"));
+    }
+
+    #[test]
     fn turning_off_global_keeps_existing_kits_local_without_restoring_removed_shortcuts() {
         let mut prefs = GuiPrefs::default();
         prefs
@@ -1522,7 +1698,7 @@ mod tests {
                         .confirmation
                         .is_some()
                 );
-                driver.click(&mut app, "Keep Other Copies");
+                driver.click(&mut app, "Keep Others as Copies");
             }
             assert!(app.dialogs.get::<AddShortcutDialog>().is_none());
             assert!(!shortcut_keys(&app.model.prefs, &kit).contains(&key));
@@ -1545,7 +1721,7 @@ mod tests {
     fn global_shortcut_prompts_cover_removal_unmarking_and_cancellation() {
         for builtin in [false, true] {
             for action in ["context_remove", "editor_remove", "make_local"] {
-                for choice in ["Cancel", "Keep Other Copies", "Remove From Other Kits"] {
+                for choice in ["Cancel", "Keep Others as Copies", "Remove From Other Kits"] {
                     let mut app = Baboon::for_test();
                     let shared = AppShortcut {
                         id: new_shortcut_id(),
@@ -1597,12 +1773,7 @@ mod tests {
                     driver.frame(&mut app, Vec::new()); // Let a newly opened modal finish sizing.
                     let labels = driver.frame(&mut app, Vec::new());
                     assert!(
-                        labels.iter().any(|(label, _)| label
-                            == if action == "make_local" {
-                                "Turn Off Global Shortcut?"
-                            } else {
-                                "Remove Global Shortcut?"
-                            }),
+                        labels.iter().any(|(label, _)| label == "Remove Global Shortcut"),
                         "missing prompt: builtin={builtin}, action={action}, choice={choice}, labels={labels:?}"
                     );
                     driver.click(&mut app, choice);
@@ -1633,7 +1804,7 @@ mod tests {
                     if builtin {
                         assert_eq!(
                             shortcut_keys(&app.model.prefs, "other-kit").contains(&key),
-                            choice == "Keep Other Copies"
+                            choice == "Keep Others as Copies"
                         );
                         assert_eq!(
                             builtin_shortcut(
@@ -1652,7 +1823,7 @@ mod tests {
                             copies
                                 .iter()
                                 .any(|app| app.kit.as_deref() == Some("other-kit")),
-                            choice == "Keep Other Copies"
+                            choice == "Keep Others as Copies"
                         );
                         assert!(copies.iter().all(|app| app.kit.is_some()));
                         assert!(
