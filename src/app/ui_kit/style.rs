@@ -495,7 +495,11 @@ pub(in crate::app) fn foundation_input_edge() -> Color32 {
 }
 
 pub(in crate::app) fn text_dark() -> Color32 {
-    if is_dark_mode() {
+    text_dark_for(is_dark_mode())
+}
+
+fn text_dark_for(dark_mode: bool) -> Color32 {
+    if dark_mode {
         Color32::from_rgb(242, 242, 242)
     } else {
         Color32::from_rgb(25, 25, 24)
@@ -518,6 +522,53 @@ pub(in crate::app) fn good_news() -> Color32 {
         Color32::from_rgb(126, 205, 133)
     } else {
         Color32::from_rgb(22, 116, 51)
+    }
+}
+
+/// The fill of a value box holding a value that isn't valid: Foundation's
+/// pink (`#FFC0CB`) in the light theme, and a dark red in the dark theme,
+/// where pink under light text can't be read.
+pub(in crate::app) fn invalid_value_fill() -> Color32 {
+    invalid_value_fill_for(is_dark_mode())
+}
+
+fn invalid_value_fill_for(dark_mode: bool) -> Color32 {
+    if dark_mode {
+        Color32::from_rgb(92, 34, 42)
+    } else {
+        Color32::from_rgb(0xFF, 0xC0, 0xCB)
+    }
+}
+
+/// Text marking the part of a value that is wrong, legible on
+/// [`invalid_value_fill`] and on an ordinary value box.
+pub(in crate::app) fn invalid_value_text() -> Color32 {
+    invalid_value_text_for(is_dark_mode())
+}
+
+fn invalid_value_text_for(dark_mode: bool) -> Color32 {
+    if dark_mode {
+        Color32::from_rgb(255, 150, 160)
+    } else {
+        Color32::from_rgb(176, 16, 32)
+    }
+}
+
+/// Formatting tags in string list text: `<color …>`, `<br/>`.
+pub(in crate::app) fn markup_tag_text() -> Color32 {
+    if is_dark_mode() {
+        Color32::from_rgb(197, 146, 230)
+    } else {
+        Color32::from_rgb(121, 46, 156)
+    }
+}
+
+/// The underline under markup the game won't read the way it looks.
+pub(in crate::app) fn markup_warning_text() -> Color32 {
+    if is_dark_mode() {
+        Color32::from_rgb(240, 180, 70)
+    } else {
+        Color32::from_rgb(176, 104, 0)
     }
 }
 
@@ -784,6 +835,33 @@ mod tests {
         assert_eq!(neutral_button_fill(true, 51).to_array(), [51, 51, 51, 51]);
         assert_eq!(neutral_button_fill(false, 26).to_array(), [0, 0, 0, 26]);
         assert_eq!(neutral_button_fill(false, 51).to_array(), [0, 0, 0, 51]);
+    }
+
+    /// WCAG contrast ratio between two opaque colors.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let luminance = |c: Color32| {
+            let channel = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        };
+        let (x, y) = (luminance(a) + 0.05, luminance(b) + 0.05);
+        x.max(y) / x.min(y)
+    }
+
+    /// An invalid value's box keeps its text readable in either theme, and
+    /// the part marked wrong stands out on it. Foundation's pink under the
+    /// dark theme's light text read at about 1.2:1.
+    #[test]
+    fn invalid_values_stay_readable_in_both_themes() {
+        for dark in [false, true] {
+            let fill = invalid_value_fill_for(dark);
+            assert!(contrast(text_dark_for(dark), fill) >= 7.0, "text on the fill, dark {dark}");
+            assert!(contrast(invalid_value_text_for(dark), fill) >= 4.5, "marked text on the fill, dark {dark}");
+        }
+        assert!(contrast(text_dark_for(true), Color32::from_rgb(0xFF, 0xC0, 0xCB)) < 1.5);
+        assert_eq!(invalid_value_fill_for(false), Color32::from_rgb(0xFF, 0xC0, 0xCB), "Foundation's pink");
     }
 
     #[test]

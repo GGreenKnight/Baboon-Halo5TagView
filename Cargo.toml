@@ -22,30 +22,11 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 atomic-write-file = "0.3"
-# Pinned to camden-smallwood/blam-tags. It carries everything the Zoephie fork
-# did (the stale-outer-chunk-size tolerance and the JMS/ASS model importers,
-# merged in e69b229; the fork's previous pin 5d0509f is an ancestor of this
-# rev) plus the unified Halo 2 / H3+ function editor backend, the
-# 2026-09-25 performance and duplication review, the bitmap conversion
-# fixes that followed it, Halo 2's negated last Opus packet, and Halo CE /
-# Halo 2 preview meshes skinned to their real bones, Reach and Halo 4
-# meshes bound to theirs in the preview and in JMS export, JMA 16394 for
-# Halo 2 onwards, JMS conversion between Halo CE and Halo 2/3 with Halo CE's
-# node convention fixed, the stray empty `tgst` H3/ODST/Reach scenarios
-# leave ahead of a chunk read past, and the restructure: games named by a
-# `GameId`, sampler modes by each game's own lists, Halo 2 block headers kept
-# for any block gaining elements, structure BSP limits from the schema, and
-# a warning-free build.
-blam-tags = { git = "https://github.com/camden-smallwood/blam-tags", rev = "d563e5b", features = ["audio", "iostore"] }
+blam-tags = { git = "https://github.com/camden-smallwood/blam-tags", rev = "7aff2f1", features = ["audio", "iostore"] }
 directories = "6"
 display-info = "0.5"
-# Named because eframe 0.36's `glow` no longer brings them, as 0.29's did:
-# `links` lets a clicked link open the browser (without it egui's request to
-# open a URL is dropped), and Linux needs a windowing backend, `wayland`/`x11`.
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "links", "wayland", "x11"] }
 egui_extras = { version = "0.36", features = ["image", "svg"] }
-# Tiling layout for the editor area (rerun-io). Targets egui 0.36 exactly, so it
-# drops in against the pinned eframe without a version bump.
 egui_tiles = "0.17"
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["ico", "png"] }

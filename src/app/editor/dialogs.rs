@@ -121,6 +121,13 @@ impl Dialog for ColorPopupWindow {
                     };
                     (tag_key, "Shader parameter", ops)
                 }
+                ColorPopupResult::StringListOp { tag_key, op } => {
+                    let ops = DeferredOps {
+                        string_list_ops: vec![op],
+                        ..DeferredOps::default()
+                    };
+                    (tag_key, "Edit color", ops)
+                }
                 ColorPopupResult::FunctionDraftColor { target, argb } => {
                     cx.send(EditorCommand::FunctionDraftColor { target, argb });
                     return self.popup.is_some();

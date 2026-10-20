@@ -232,6 +232,25 @@
           ]
         },
         {
+          "title": "String lists",
+          "blocks": [
+            {
+              "kind": "bullets",
+              "items": [
+                "Open a multilingual_unicode_string_list (or a Halo CE unicode_string_list) and the Strings tab lists every string: its number, its string id and its text in the chosen language. The Tag Fields tab beside it shows the raw field tree.",
+                "Text is shown as the game's tool writes it: line breaks, tabs and backslashes as \\n, \\r, \\t and \\\\, a literal & as &&, and button and icon glyphs by name, such as &a_button or &dpad_up. A glyph with no name in the game's table is shown as &U+XXXX.",
+                "Every string id and text can be edited. Typing & lists every glyph the game has, with the best match for what you type highlighted; typing # in multiplayer event text lists the game's keywords, such as #cause_player or #score_to_win, which the game fills in when it shows the message. Use the arrow keys and Enter or Tab to insert one, Escape to close the list, or the filter box at its top when the list is long.",
+                "What the game reads when it draws the text is coloured too: | escapes such as |n (line break), |r (align right) and |kAARRGGBB colour; tags such as <color argb=#AARRGGBB>, <br/> and <build_number/>; entities such as &lt;; Reach's {cui:component.property} bindings; and multiplayer #keywords. Typing | or < lists what the game reads there. Anything the game won't read the way it looks is underlined in amber, with the reason when you hover: a <color> with no argb, a font the game doesn't have, a |k without 8 hex digits, a Halo 4 binding with no substitution pair. Unlike text the tool refuses, it still saves.",
+                "Reach's substitution pairs, which its {cui:…} bindings are looked up by, are rebuilt from the text on every edit, the way its tool rebuilds them on import.",
+                "Text the tool would refuse, such as a lone & or an unknown &name, is shown pink with the problem underlined, and isn't saved until it's fixed. An empty or duplicate string id is pink too.",
+                "Add, insert, duplicate and remove strings from the toolbar. Click a string's number to select it, with Ctrl or Shift to select several. Removing asks first unless expert mode is on.",
+                "Copy writes the selected strings as lines of a tool [Strings] file (id = \"text\"), or as a Halo CE unicode-strings file. Pasting such lines sets the text of strings whose ids already exist and adds the rest.",
+                "Glyph names come from each game's tool: Halo 2, Halo 3, ODST and Reach. Reach numbers its glyphs differently from Halo 3. Halo 4, Halo 2 Anniversary and Campaign Evolved accept only && and &U+XXXX, because their tables aren't known. Halo CE text has no glyphs, so & is an ordinary character there."
+              ]
+            }
+          ]
+        },
+        {
           "title": "Halo: Campaign Evolved",
           "blocks": [
             {

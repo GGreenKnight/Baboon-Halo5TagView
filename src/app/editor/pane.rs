@@ -378,6 +378,7 @@ pub(in crate::app) fn draw_tag_pane(
         shader_param_ops: &mut ops.shader_param_ops,
         h2_shader_param_ops: &mut ops.h2_shader_param_ops,
         model_variant_ops: &mut ops.model_variant_ops,
+        string_list_ops: &mut ops.string_list_ops,
         color_request: &mut color_request,
         function_request: &mut function_request,
         docs: def_docs.as_deref(),
