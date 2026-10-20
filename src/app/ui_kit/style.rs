@@ -18,6 +18,11 @@ pub(in crate::app) const ALPHA_CHECKER_TILE_SIZE: usize = 4;
 pub(in crate::app) const ALPHA_CHECKER_LIGHT_RGBA: [u8; 4] = [255, 255, 255, 13];
 pub(in crate::app) const ALPHA_CHECKER_DARK_RGBA: [u8; 4] = [0, 0, 0, 13];
 
+/// Baboon's default for a single-row text field: keep text vertically centered.
+pub(in crate::app) fn singleline_text_edit(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text).vertical_align(egui::Align::Center)
+}
+
 pub(in crate::app) fn paint_alpha_checkerboard(painter: &egui::Painter, rect: egui::Rect) {
     let tile = ALPHA_CHECKER_TILE_SIZE as f32;
     painter.rect_filled(rect, 0.0, editor_bg());
@@ -753,6 +758,25 @@ pub(in crate::app) const FOUNDATION_LABEL_WIDTH: f32 = 280.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn singleline_text_is_centered_in_taller_fields() {
+        for scale in [1.0, 1.5, 2.0] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(scale);
+            let mut text = "App name and path".to_owned();
+            let _ = crate::app::run_ui_test(&ctx, egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let output = singleline_text_edit(&mut text)
+                        .min_size(Vec2::new(200.0, 40.0))
+                        .show(ui);
+                    let center = output.galley_pos.y + output.galley.size().y * 0.5;
+                    assert!((center - output.response.rect.center().y).abs() <= 1.0,
+                        "text should be vertically centered at scale {scale}");
+                });
+            });
+        }
+    }
 
     #[test]
     fn neutral_button_fills_use_literal_ten_and_twenty_percent_channels() {

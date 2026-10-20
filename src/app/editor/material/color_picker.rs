@@ -1496,7 +1496,7 @@ pub(in crate::app) fn draw_color_hex_rows(ui: &mut Ui, color: &mut MaterialColor
         draw_color_row_label(ui, "Hex:");
         let response = ui.add_sized(
             Vec2::new(COLOR_COMBINED_FIELD_WIDTH, COLOR_ROW_HEIGHT),
-            egui::TextEdit::singleline(&mut color.hex_input)
+            crate::app::ui_kit::singleline_text_edit(&mut color.hex_input)
                 .hint_text(placeholder_text("#RRGGBB"))
                 .vertical_align(egui::Align::Center)
                 .desired_width(COLOR_COMBINED_FIELD_WIDTH),

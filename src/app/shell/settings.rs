@@ -312,7 +312,7 @@ fn editing_kit_field_label(ui: &mut Ui, label: &str) {
 }
 
 fn editing_kit_text_input(value: &mut String, width: f32) -> egui::TextEdit<'_> {
-    egui::TextEdit::singleline(value)
+    crate::app::ui_kit::singleline_text_edit(value)
         .desired_width(width)
         .min_size(Vec2::new(0.0, BUTTON_HEIGHT))
         .vertical_align(egui::Align::Center)
@@ -1183,7 +1183,6 @@ pub(in crate::app) enum SettingsCommand {
     /// goes back to the dialog with its reason.
     CommitEditingKitDraft(CustomEditingKitDraft),
     RemoveEditingKit(CustomEditingKitRemoval),
-    ChooseBlenderPath,
     /// Use the USMAP at this typed path, or the bundled one when it is empty.
     CommitChimpUsmapInput(String),
     ChooseChimpUsmap,
@@ -1239,7 +1238,6 @@ impl Baboon {
             SettingsCommand::RemoveEditingKit(removal) => {
                 self.remove_custom_editing_kit_profile(&removal)
             }
-            SettingsCommand::ChooseBlenderPath => self.choose_blender_path(),
             SettingsCommand::CommitChimpUsmapInput(input) => {
                 self.commit_chimp_usmap_path_input(&input, ctx.clone())
             }
@@ -1303,8 +1301,6 @@ pub(in crate::app) struct SettingsWindow {
     pub(in crate::app) tab: SettingsTab,
     /// The UI scale draft, committed only by the Apply button.
     pub(in crate::app) pending_ui_scale: f32,
-    /// The Blender path as typed, applied when it names a file.
-    pub(in crate::app) blender_path_input: String,
     /// The Chimp USMAP path as typed, applied on Enter.
     pub(in crate::app) usmap_input: String,
 }
@@ -1315,7 +1311,6 @@ impl SettingsWindow {
         Self {
             tab,
             pending_ui_scale: prefs.ui_scale,
-            blender_path_input: blender_path_input(prefs),
             usmap_input: prefs
                 .chimp_usmap_path
                 .as_ref()
@@ -1561,8 +1556,6 @@ fn draw_settings_general_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
     }
 
     draw_settings_chimp_mappings(ui, s);
-    settings_section(ui, "Tools");
-    draw_settings_tools_section(cx, ui, s);
 }
 
 fn settings_row_contents_channel(
@@ -2009,43 +2002,6 @@ fn draw_settings_interface_tab(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
         DEFAULT_ZOOM_SPEED,
     );
 }
-fn draw_settings_tools_section(cx: &Ctx, ui: &mut Ui, s: &mut SettingsDraw) {
-    settings_card(ui, |ui| {
-        ui.label(RichText::new("Blender").color(text_dark()).strong());
-        ui.add_space(4.0);
-        settings_actions(ui, |ui| {
-            if icon_text_button(ui, ButtonIcon::Clear, "Clear", true).clicked() {
-                s.prefs.blender_path = None;
-                s.window.blender_path_input.clear();
-                cx.set_status("Blender path cleared");
-            }
-            if icon_text_button(ui, ButtonIcon::Browse, "Browse...", true).clicked() {
-                s.effects.push(SettingsCommand::ChooseBlenderPath);
-            }
-            let path_response = ui.add(editing_kit_text_input(
-                &mut s.window.blender_path_input,
-                (ui.available_width() - 40.0).max(40.0),
-            ));
-            if lost_focus_once(&path_response)
-                && ui.input(|input| input.key_pressed(egui::Key::Enter))
-            {
-                let trimmed = s.window.blender_path_input.trim();
-                s.prefs.blender_path = if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(PathBuf::from(trimmed))
-                };
-                cx.set_status(if let Some(path) = &s.prefs.blender_path {
-                    format!("Blender path set to {}", path.display())
-                } else {
-                    "Blender path cleared".to_owned()
-                });
-            }
-            ui.label(RichText::new("Path").color(subtle_dark()));
-        });
-    });
-}
-
 fn draw_settings_chimp_mappings(ui: &mut Ui, s: &mut SettingsDraw) {
     settings_card(ui, |ui| {
         ui.label(

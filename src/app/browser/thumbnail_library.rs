@@ -315,7 +315,7 @@ fn draw_thumbnail_library_toolbar<S: ThumbnailSource>(
     ui.horizontal(|ui| {
         ui.label(RichText::new("Search").color(subtle_dark()));
         ui.add(
-            egui::TextEdit::singleline(&mut library.filter)
+            crate::app::ui_kit::singleline_text_edit(&mut library.filter)
                 .hint_text(placeholder_text(S::SEARCH_HINT))
                 .desired_width(240.0),
         )

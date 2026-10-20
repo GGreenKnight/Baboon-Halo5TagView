@@ -114,14 +114,14 @@ impl Dialog for ContainerFolderDialog {
                         parent_folder_picker(ui, state, cx.model);
                         let mut parent = parent;
                         ui.add_sized(Vec2::new(ui.available_width(), BUTTON_HEIGHT),
-                            egui::TextEdit::singleline(&mut parent).interactive(false)
+                            crate::app::ui_kit::singleline_text_edit(&mut parent).interactive(false)
                                 .vertical_align(egui::Align::Center));
                     });
                     ui.add_space(6.0);
 
                     ui.label(RichText::new("Folder Name").strong());
                     let response = ui.add(
-                        egui::TextEdit::singleline(&mut state.name_input)
+                        crate::app::ui_kit::singleline_text_edit(&mut state.name_input)
                             .id(egui::Id::new("container_folder_name"))
                             .desired_width(ui.available_width())
                             .min_size(Vec2::new(0.0, BUTTON_HEIGHT))

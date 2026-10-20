@@ -48,7 +48,7 @@ fn sidebar_shortcut_button(ui: &mut Ui, label: &str,
     paint_icon: impl FnOnce(&Ui, egui::Rect)) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), BUTTON_HEIGHT),
-        Sense::click(),
+        Sense::click_and_drag(),
     );
     if response.hovered() || response.is_pointer_button_down_on() {
         let fill = if response.is_pointer_button_down_on() {
@@ -74,17 +74,23 @@ fn sidebar_shortcut_button(ui: &mut Ui, label: &str,
     response
 }
 
-fn sidebar_bundled_app_button(ui: &mut Ui, label: &str, uri: &'static str,
+fn sidebar_kit_app_button(ui: &mut Ui, label: &str, executable: Option<&Path>, uri: &'static str,
     bytes: &'static [u8], enabled: bool) -> egui::Response {
+    let texture = executable.and_then(|path| crate::app::shell::shortcuts::app_icon(ui.ctx(), path));
     ui.add_enabled_ui(enabled, |ui| {
         sidebar_shortcut_button(ui, label, |ui, rect| {
-            egui::Image::from_bytes(uri, bytes).fit_to_exact_size(rect.size()).paint_at(ui, rect);
+            if let Some(texture) = texture {
+                ui.painter().image(texture.id(), rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
+            } else {
+                egui::Image::from_bytes(uri, bytes).fit_to_exact_size(rect.size()).paint_at(ui, rect);
+            }
         })
     }).inner
 }
 
 #[derive(Clone, Copy)]
-enum KitShortcut { GitReview, Blender, TagTest, Sapien }
+enum KitShortcut { GitReview, TagTest, Sapien }
 
 fn folder_browser_search_stacks(available_width: f32) -> bool {
     available_width < FOLDER_BROWSER_SEARCH_STACK_BREAKPOINT
@@ -654,7 +660,7 @@ fn draw_kit_browser_inner(
     view: &mut KitView,
     browser: &mut BrowserFeature,
     banner: Option<egui::TextureHandle>,
-    blender_icon: Option<&egui::TextureHandle>,
+    _blender_icon: Option<&egui::TextureHandle>,
     sound_language: Option<&str>,
 ) {
     let game = cx.model.kits[kit_index]
@@ -750,6 +756,7 @@ fn draw_kit_browser_inner(
     set_browser_deletable_keys(ui, std::sync::Arc::clone(&view.browser.deletable_keys));
     let bitmap_hover_requests = begin_bitmap_hovers(ui, Arc::clone(&view.bitmap_browser.thumbnails));
     let mut shortcut = None;
+    let mut custom_shortcut = None;
     let git_review_enabled = cx.model.git_review_enabled_for_kit(kit_index);
     let tool_root = cx.model.editing_kit_root_for(kit_index);
     let tag_test_ready = tool_root.as_ref().is_some_and(|root| {
@@ -757,12 +764,6 @@ fn draw_kit_browser_inner(
     });
     let sapien_ready =
         tool_root.as_ref().is_some_and(|root| is_file_cached(ui.ctx(), &root.join("sapien.exe")));
-    let blender_ready = cx
-        .model
-        .prefs
-        .blender_path
-        .as_ref()
-        .is_some_and(|path| is_file_cached(ui.ctx(), path));
     let kit = &cx.model.kits[kit_index];
     let search_keywords = kit.keywords.snapshot();
     if let Some(source) = kit.source.as_ref() {
@@ -894,55 +895,69 @@ fn draw_kit_browser_inner(
                 if favorites_visible {
                     ui.add_space(8.0);
                 }
-                show_browser_navigation_section(
+                let (_, add_shortcut) = show_browser_navigation_section_with_add(
                     ui,
                     "browser_shortcuts",
                     "Shortcuts",
                     ButtonIcon::Pin,
                     text_dark(),
+                    true,
                     |ui| {
-                        if git_review_enabled
-                            && sidebar_list_button(ui, ButtonIcon::Git, GIT_REVIEW_TITLE).clicked()
-                        {
-                            shortcut = Some(KitShortcut::GitReview);
-                        }
-                        if sidebar_app_button(ui, blender_icon, "Blender", "B", blender_ready)
-                            .on_hover_text("Launch Blender")
-                            .on_disabled_hover_text(
-                                "Set a valid Blender executable in File > Settings",
-                            )
-                            .clicked()
-                        {
-                            shortcut = Some(KitShortcut::Blender);
-                        }
-                        if sidebar_bundled_app_button(
-                            ui,
-                            "Tag Test",
-                            "bytes://baboon_app_icons/tag-test.png",
-                            include_root_bytes!("assets/App Icons/Tag Test.png"),
-                            tag_test_ready,
-                        )
-                        .on_hover_text("Launch Tag Test without an auto-start scenario")
-                        .on_disabled_hover_text("Tag Test executable not found in this editing kit")
-                        .clicked()
-                        {
-                            shortcut = Some(KitShortcut::TagTest);
-                        }
-                        if sidebar_bundled_app_button(
-                            ui,
-                            "Sapien",
-                            "bytes://baboon_app_icons/sapien.png",
-                            include_root_bytes!("assets/App Icons/Sapien.png"),
-                            sapien_ready,
-                        )
-                        .on_hover_text("Launch Sapien without an auto-start scenario")
-                        .on_disabled_hover_text("Sapien executable not found in this editing kit")
-                        .clicked()
-                        {
-                            shortcut = Some(KitShortcut::Sapien);
+                        let shortcut_area = ui.id();
+                        let shortcut_kit = crate::app::shell::shortcuts::shortcut_kit_key(cx.model, kit_index);
+                        use crate::app::shell::shortcuts::{shortcut_keys, shortcut_interactions};
+                        for key in shortcut_keys(&cx.model.prefs, &shortcut_kit) {
+                            ui.push_id(&key, |ui| {
+                                let response = match key.as_str() {
+                                    "builtin:git_review" if git_review_enabled => {
+                                        let app = crate::app::shell::shortcuts::builtin_shortcut(&cx.model.prefs, &shortcut_kit, &key, tool_root.as_deref(), cx.model.tag_test_executable_for(kit_index));
+                                        let response = sidebar_list_button(ui, ButtonIcon::Git, &app.name);
+                                        if browser_open_requested(&response, double_click_to_open) { shortcut = Some(KitShortcut::GitReview); }
+                                        response
+                                    }
+                                    "builtin:tag_test" | "builtin:sapien" => {
+                                        let tag_test = key == "builtin:tag_test";
+                                        let (exe, uri, bytes, ready) = if tag_test {
+                                            (cx.model.tag_test_executable_for(kit_index),
+                                             "bytes://baboon_app_icons/tag-test.png", include_root_bytes!("assets/App Icons/Tag Test.png").as_slice(), tag_test_ready)
+                                        } else {
+                                            ("sapien.exe", "bytes://baboon_app_icons/sapien.png",
+                                             include_root_bytes!("assets/App Icons/Sapien.png").as_slice(), sapien_ready)
+                                        };
+                                        let default_path = tool_root.as_ref().map(|root| root.join(exe)).unwrap_or_default();
+                                        let app = crate::app::shell::shortcuts::builtin_shortcut(&cx.model.prefs, &shortcut_kit, &key, tool_root.as_deref(), cx.model.tag_test_executable_for(kit_index));
+                                        let overridden = app.path != default_path;
+                                        let ready = if overridden {
+                                            crate::core::app_shortcut::validate_app_path(&app.path).is_ok()
+                                        } else { ready };
+                                        let response = sidebar_kit_app_button(ui, &app.name, Some(&app.path), uri, bytes, true)
+                                            .on_hover_text(app.path.display().to_string());
+                                        if browser_open_requested(&response, double_click_to_open) && ready {
+                                            if overridden {
+                                                cx.send(AppAction::FocusKit(kit_id));
+                                                cx.send(AppAction::LaunchShortcutApp(app));
+                                            }
+                                            else { shortcut = Some(if tag_test { KitShortcut::TagTest } else { KitShortcut::Sapien }); }
+                                        }
+                                        response
+                                    }
+                                    _ => {
+                                        let Some((index, app)) = cx.model.prefs.app_shortcuts.iter().enumerate().find(|(_, app)| app.key() == key) else { return; };
+                                        let texture = crate::app::shell::shortcuts::app_icon(ui.ctx(), &app.path);
+                                        let response = sidebar_app_button(ui, texture.as_ref(), &app.name, "↗", true)
+                                            .on_hover_text(app.path.display().to_string());
+                                        if browser_open_requested(&response, double_click_to_open) { custom_shortcut = Some(index); }
+                                        response
+                                    }
+                                };
+                                shortcut_interactions(cx, ui, &response, &key, shortcut_area, tool_root.as_deref(), kit_index);
+                            });
                         }
                     },
                 );
+                if add_shortcut {
+                    cx.open_dialog(crate::app::shell::shortcuts::AddShortcutDialog::for_kit(cx.model, kit_index));
+                }
                 browser_favorites_divider(ui, true);
 
                 let tree_action = if !filter.is_empty() {
@@ -1105,10 +1120,13 @@ fn draw_kit_browser_inner(
     } else {
         ui.label("Use File to load a tag, folder, or monolithic cache.");
     }
+    if let Some(index) = custom_shortcut {
+        cx.send(AppAction::FocusKit(kit_id));
+        cx.send(AppAction::LaunchAppShortcut(index));
+    }
     match shortcut {
         Some(KitShortcut::GitReview) => cx.send(CompareCommand::OpenGitReview { kit: kit_id }),
         // The tools launch for the focused kit: this browser's, first.
-        Some(KitShortcut::Blender) => cx.send(AppAction::LaunchBlender),
         Some(KitShortcut::TagTest) => {
             cx.send(AppAction::FocusKit(kit_id));
             cx.send(AppAction::LaunchTagTest);
@@ -1530,7 +1548,85 @@ fn follow_reveal(kit_id: KitId, kit: &Kit, item: &str) -> Option<RevealRequest> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::compare::GIT_REVIEW_TITLE;
     use crate::app::shell::frame::sidebar_wrappable_path_label;
+
+    #[test]
+    fn favorite_folders_and_shortcuts_follow_double_click_preference() {
+        for double_click in [false, true] {
+            for favorite_folder in [false, true] {
+                let ctx = egui::Context::default();
+                ctx.global_style_mut(|style| style.animation_time = 0.0);
+                let mut time = 0.0;
+                let mut frame = |events| {
+                    time += 0.04;
+                    let mut opened = false;
+                    let output = crate::app::run_ui_test(
+                        &ctx,
+                        egui::RawInput { time: Some(time), events, ..Default::default() },
+                        |ui| {
+                            egui::CentralPanel::default().show(ui, |ui| {
+                                if favorite_folder {
+                                    set_browser_favorite_folders(ui,
+                                        Some(Arc::new(vec![PathBuf::from("favorite")])));
+                                    opened = draw_favorites(ui, &[], &[], None, None, "", false,
+                                        double_click, &HashSet::new(), BrowserSearchScope::default(),
+                                        &std::collections::BTreeMap::new(), None).0.is_some();
+                                } else {
+                                    let response = sidebar_list_button(ui, ButtonIcon::Git, "favorite");
+                                    opened = browser_open_requested(&response, double_click);
+                                }
+                            });
+                        },
+                    );
+                    let pos = output.shapes.iter().find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == "favorite" =>
+                            Some(text.galley.rect.translate(text.pos.to_vec2()).center()),
+                        _ => None,
+                    }).expect("the row is drawn");
+                    (pos, opened)
+                };
+                let pos = frame(Vec::new()).0;
+                let pointer = |pressed| egui::Event::PointerButton {
+                    pos, pressed, button: egui::PointerButton::Primary, modifiers: Default::default(),
+                };
+                frame(vec![egui::Event::PointerMoved(pos), pointer(true)]);
+                assert_eq!(frame(vec![pointer(false)]).1, !double_click,
+                    "first click: folder={favorite_folder}, double_click={double_click}");
+                frame(vec![pointer(true)]);
+                assert!(frame(vec![pointer(false)]).1,
+                    "second click: folder={favorite_folder}, double_click={double_click}");
+            }
+        }
+    }
+
+    #[test]
+    fn shortcut_add_button_click_keeps_section_open() {
+        let ctx = egui::Context::default();
+        ctx.global_style_mut(|style| style.animation_time = 0.0);
+        let frame = |events| {
+            let mut result = None;
+            let mut body_visible = false;
+            let _ = crate::app::run_ui_test(&ctx, egui::RawInput { events, ..Default::default() }, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    result = Some(show_browser_navigation_section_with_add(ui, "shortcuts", "Shortcuts",
+                        ButtonIcon::Pin, text_dark(), true, |_| { body_visible = true; }));
+                });
+            });
+            (result.unwrap(), body_visible)
+        };
+        let ((header, _), _) = frame(Vec::new());
+        let pos = egui::pos2(header.rect.right() - SHORTCUT_ADD_RIGHT_PADDING - ICON_BUTTON_SIZE.x * 0.5, header.rect.center().y);
+        frame(vec![egui::Event::PointerMoved(pos)]);
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos, pressed, button: egui::PointerButton::Primary, modifiers: Default::default(),
+        };
+        frame(vec![pointer(true)]);
+        let ((_, added), visible) = frame(vec![pointer(false)]);
+        assert!(added);
+        assert!(visible);
+        assert!(frame(Vec::new()).1);
+    }
 
     #[test]
     fn shortcut_sections_collapse_independently_for_each_kit() {

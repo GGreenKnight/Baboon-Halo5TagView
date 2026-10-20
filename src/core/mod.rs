@@ -3,6 +3,7 @@
 //! Nothing here may depend on egui or on `crate::app`; the tests below
 //! enforce that.
 
+pub(crate) mod app_shortcut;
 pub(crate) mod bundled;
 pub(crate) mod created_tags;
 pub(crate) mod document;

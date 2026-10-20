@@ -51,7 +51,7 @@ impl Dialog for ContentExplorer {
                         }
                         ui.separator();
                         ui.add(
-                            egui::TextEdit::singleline(&mut filter)
+                            crate::app::ui_kit::singleline_text_edit(&mut filter)
                                 .hint_text(placeholder_text("filter"))
                                 .desired_width(140.0),
                         );

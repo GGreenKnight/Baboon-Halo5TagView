@@ -20,7 +20,7 @@ fn path_name_field(ui: &mut Ui, path: &mut String, extension: &str, width: f32) 
     let hint_width = hint.size().x.min((width - 80.0).max(0.0));
     let mut edit_rect = rect;
     edit_rect.max.x -= hint_width + 12.0;
-    let response = ui.place(edit_rect, egui::TextEdit::singleline(path)
+    let response = ui.place(edit_rect, crate::app::ui_kit::singleline_text_edit(path)
         .hint_text(placeholder_text("e.g. objects\\props\\new_tag"))
         .prefix(button_icon_image(ui, ButtonIcon::FolderOpen, text_dark(), 16.0))
         .desired_width(edit_rect.width())

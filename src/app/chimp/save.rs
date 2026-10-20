@@ -868,7 +868,7 @@ impl Dialog for ChimpSaveDialog {
                     ChimpSaveMode::ExportMod => {
                         ui.horizontal(|ui| {
                             ui.label("Mod name");
-                            ui.text_edit_singleline(&mut dialog.name);
+                            ui.add(crate::app::ui_kit::singleline_text_edit(&mut dialog.name));
                         });
                         ui.horizontal(|ui| {
                             ui.label("Destination");

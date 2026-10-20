@@ -49,7 +49,7 @@ impl Dialog for FindWindow {
                         ui.label(RichText::new("find:").strong().color(text_dark()));
                         let response = ui.add_sized(
                             [290.0, 25.0],
-                            egui::TextEdit::singleline(&mut query.text)
+                            crate::app::ui_kit::singleline_text_edit(&mut query.text)
                                 .id(egui::Id::new("find_query"))
                                 .vertical_align(egui::Align::Center),
                         );
@@ -350,7 +350,7 @@ mod tests {
             }
             egui::CentralPanel::default().show(ui, |ui| {
                 let mut text = String::from("12");
-                ui.add(egui::TextEdit::singleline(&mut text).id(egui::Id::new("a_field")));
+                ui.add(crate::app::ui_kit::singleline_text_edit(&mut text).id(egui::Id::new("a_field")));
             });
             app.dialogs.draw(&cx!(app, ctx), &app_reads!(app));
         });

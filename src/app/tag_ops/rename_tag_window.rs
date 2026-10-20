@@ -50,7 +50,7 @@ impl Dialog for RenameTagState {
                             };
                             ui.label(RichText::new(parent).color(subtle_dark()).monospace());
                             let response = ui.add(
-                                egui::TextEdit::singleline(&mut state.new_path_input)
+                                crate::app::ui_kit::singleline_text_edit(&mut state.new_path_input)
                                     .id(egui::Id::new("duplicate_tag_name"))
                                     .desired_width(330.0)
                                     .font(egui::TextStyle::Monospace),
@@ -89,7 +89,7 @@ impl Dialog for RenameTagState {
                         );
                         ui.horizontal(|ui| {
                             ui.add(
-                                egui::TextEdit::singleline(&mut state.new_path_input)
+                                crate::app::ui_kit::singleline_text_edit(&mut state.new_path_input)
                                     .desired_width(430.0)
                                     .font(egui::TextStyle::Monospace),
                             );

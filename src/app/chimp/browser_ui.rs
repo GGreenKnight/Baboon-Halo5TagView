@@ -219,7 +219,7 @@ fn draw_chimp_browser(ui: &mut Ui, cx: &Ctx, view: &mut ChimpView, kit_index: us
     });
     ui.add_space(4.0);
     let response = ui.add(
-        egui::TextEdit::singleline(&mut view.filter)
+        crate::app::ui_kit::singleline_text_edit(&mut view.filter)
             .hint_text(placeholder_text("Search package or container…"))
             .desired_width(f32::INFINITY),
     );

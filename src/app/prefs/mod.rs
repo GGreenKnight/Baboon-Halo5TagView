@@ -105,7 +105,7 @@ fn prefs_from_value(value: &Value) -> GuiPrefs {
         .unwrap_or_default();
     let browser_sort = browser_sort_from_str(value.get("browser_sort").and_then(Value::as_str))
         .unwrap_or_default();
-    GuiPrefs {
+    let mut prefs = GuiPrefs {
         browser_mode,
         browser_sort,
         browser_search_scope,
@@ -239,6 +239,14 @@ fn prefs_from_value(value: &Value) -> GuiPrefs {
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
         },
+        kit_shortcut_layouts: value.get("kit_shortcut_layouts").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+        shortcut_order: value.get("shortcut_order").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+        shortcut_overrides: value.get("shortcut_overrides").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+        hidden_shortcuts: load_string_set(value, "hidden_shortcuts"),
+        blender_shortcut_migrated: value.get("blender_shortcut_migrated").and_then(Value::as_bool).unwrap_or(false),
+        app_shortcuts: value.get("app_shortcuts").and_then(Value::as_array)
+            .map(|entries| entries.iter().filter_map(|entry| serde_json::from_value(entry.clone()).ok()).collect())
+            .unwrap_or_default(),
         blender_path: value
             .get("blender_path")
             .and_then(Value::as_str)
@@ -275,7 +283,9 @@ fn prefs_from_value(value: &Value) -> GuiPrefs {
             ),
             aliases: entries_for_unsupported_games(value.get("ek_folder_aliases")),
         },
-    }
+    };
+    crate::app::shell::shortcuts::migrate_blender_shortcut(&mut prefs);
+    prefs
 }
 
 /// The entries of a profile or alias array whose `game` this build does not
@@ -808,6 +818,12 @@ fn prefs_to_value(
         "first_run_complete": first_run_complete,
         "terminal_open_games": games,
     });
+    value["app_shortcuts"] = json!(prefs.app_shortcuts);
+    value["kit_shortcut_layouts"] = json!(prefs.kit_shortcut_layouts);
+    value["shortcut_order"] = json!(prefs.shortcut_order);
+    value["shortcut_overrides"] = json!(prefs.shortcut_overrides);
+    value["hidden_shortcuts"] = json!(prefs.hidden_shortcuts);
+    value["blender_shortcut_migrated"] = json!(prefs.blender_shortcut_migrated);
     value["follow_system_theme"] = Value::Bool(prefs.follow_system_theme);
     value["reveal_active_tab_in_browser"] = Value::Bool(prefs.reveal_active_tab_in_browser);
     value["browser_search_scope"] = json!({
@@ -1368,6 +1384,101 @@ mod tests {
     }
 
     #[test]
+    fn app_shortcuts_survive_preferences_round_trip() {
+        use crate::app::shell::shortcuts::AppShortcut;
+        let mut prefs = GuiPrefs::default();
+        prefs.app_shortcuts = vec![
+            AppShortcut { kit: None, id: uuid::Uuid::new_v4().to_string(), name: "Blender 4.3 (custom)".to_owned(), path: PathBuf::from("C:/Program Files/Blender/blender.exe") },
+            AppShortcut { kit: None, id: uuid::Uuid::new_v4().to_string(), name: "Font Packager".to_owned(), path: PathBuf::from("C:/Tools/font.exe") },
+        ];
+        assert_eq!(stored(&prefs).app_shortcuts, prefs.app_shortcuts);
+        assert!(prefs_from_value(&json!({})).app_shortcuts.is_empty());
+        let loaded = prefs_from_value(&json!({"app_shortcuts": [null, {"name":"Valid", "path":"app.exe"}]}));
+        assert_eq!(loaded.app_shortcuts.len(), 1);
+    }
+
+    #[test]
+    fn shortcut_layout_and_legacy_blender_migration_survive_restart() {
+        let mut prefs = prefs_from_value(&json!({"blender_path": "C:/Tools/blender.exe"}));
+        assert_eq!(prefs.app_shortcuts.len(), 1);
+        let key = prefs.app_shortcuts[0].key();
+        prefs.shortcut_order = vec![key.clone(), "builtin:tag_test".to_owned()];
+        prefs.hidden_shortcuts.insert("builtin:sapien".to_owned());
+        assert_eq!(stored(&prefs).shortcut_order, prefs.shortcut_order);
+        assert_eq!(stored(&prefs).hidden_shortcuts, prefs.hidden_shortcuts);
+        assert_eq!(stored(&prefs).app_shortcuts, prefs.app_shortcuts);
+        prefs.app_shortcuts.clear();
+        assert!(stored(&prefs).app_shortcuts.is_empty(), "removed Blender must not reappear");
+        let without_blender = prefs_from_value(&json!({}));
+        assert!(without_blender.app_shortcuts.is_empty());
+    }
+
+    #[test]
+    fn shortcut_kit_scopes_and_layouts_survive_restart() {
+        use crate::app::shell::shortcuts::{AppShortcut, ShortcutLayout, shortcut_keys};
+        let mut prefs = GuiPrefs::default();
+        let local = AppShortcut { id: "local".to_owned(), kit: Some("profile:one".to_owned()), name: "Blender 4.3".to_owned(), path: PathBuf::from("blender43.exe") };
+        let global = AppShortcut { id: "global".to_owned(), kit: None, name: "Shared".to_owned(), path: PathBuf::from("shared.exe") };
+        prefs.app_shortcuts = vec![local.clone(), global];
+        prefs.kit_shortcut_layouts.insert("profile:one".to_owned(), ShortcutLayout {
+            order: vec![local.key(), "builtin:tag_test".to_owned()],
+            overrides: HashMap::from([("builtin:tag_test".to_owned(), local.clone())]),
+            hidden: HashSet::from(["builtin:sapien".to_owned()]),
+        });
+        let loaded = stored(&prefs);
+        assert_eq!(loaded.kit_shortcut_layouts, prefs.kit_shortcut_layouts);
+        assert_eq!(loaded.app_shortcuts, prefs.app_shortcuts);
+        assert!(shortcut_keys(&loaded, "profile:one").contains(&local.key()));
+        assert!(!shortcut_keys(&loaded, "profile:two").contains(&local.key()));
+        let legacy = prefs_from_value(&json!({"app_shortcuts": [{"id":"old", "name":"Existing", "path":"existing.exe"}]}));
+        assert!(legacy.app_shortcuts[0].kit.is_none());
+    }
+
+    #[test]
+    fn shortcut_local_copy_preserves_other_kits_after_restart() {
+        use crate::app::shell::shortcuts::{AppShortcut, ShortcutLayout, shortcut_keys};
+        let global = AppShortcut { id: "shared".to_owned(), kit: None, name: "Blender 4.3".to_owned(), path: PathBuf::from("blender43.exe") };
+        let local = AppShortcut { id: "copy".to_owned(), kit: Some("kit-one".to_owned()), name: "Blender 5.1".to_owned(), path: PathBuf::from("blender51.exe") };
+        let mut prefs = GuiPrefs::default();
+        prefs.app_shortcuts = vec![global.clone(), local.clone()];
+        prefs.kit_shortcut_layouts.insert("kit-one".to_owned(), ShortcutLayout {
+            order: vec![local.key()], hidden: HashSet::from([global.key()]), ..Default::default()
+        });
+        let loaded = stored(&prefs);
+        assert!(shortcut_keys(&loaded, "kit-one").contains(&local.key()));
+        assert!(!shortcut_keys(&loaded, "kit-one").contains(&global.key()));
+        assert!(shortcut_keys(&loaded, "kit-two").contains(&global.key()));
+        assert!(!shortcut_keys(&loaded, "kit-two").contains(&local.key()));
+        assert_eq!(loaded.app_shortcuts, prefs.app_shortcuts);
+    }
+
+    #[test]
+    fn shortcut_automatic_tools_keep_saved_edits_and_removals_after_reload() {
+        use crate::app::shell::shortcuts::{AppShortcut, ShortcutLayout, builtin_shortcut, shortcut_keys};
+        let mut prefs = GuiPrefs::default();
+        let defaults = shortcut_keys(&prefs, "new-kit");
+        assert!(defaults.contains(&"builtin:tag_test".to_owned()));
+        assert!(defaults.contains(&"builtin:sapien".to_owned()));
+        prefs.kit_shortcut_layouts.insert("custom-kit".to_owned(), ShortcutLayout {
+            hidden: HashSet::from(["builtin:tag_test".to_owned()]),
+            overrides: HashMap::from([("builtin:sapien".to_owned(), AppShortcut {
+                id: "edited-sapien".to_owned(), kit: Some("custom-kit".to_owned()),
+                name: "My Sapien".to_owned(), path: PathBuf::from("custom-sapien.exe"),
+            })]), ..Default::default()
+        });
+        for _ in 0..2 {
+            prefs = stored(&prefs);
+            let keys = shortcut_keys(&prefs, "custom-kit");
+            assert!(!keys.contains(&"builtin:tag_test".to_owned()), "a removed default must not return");
+            assert_eq!(keys.iter().filter(|key| key.as_str() == "builtin:sapien").count(), 1);
+            let sapien = builtin_shortcut(&prefs, "custom-kit", "builtin:sapien", Some(Path::new("kit")), "tag_test.exe");
+            assert_eq!(sapien.name, "My Sapien");
+            assert_eq!(sapien.path, Path::new("custom-sapien.exe"));
+            assert_eq!(shortcut_keys(&prefs, "new-kit"), defaults);
+        }
+    }
+
+    #[test]
     fn automatic_browser_reveal_is_opt_in_and_survives_save() {
         let mut prefs = prefs_from_value(&json!({}));
         assert!(!prefs.reveal_active_tab_in_browser);
@@ -1781,6 +1892,8 @@ mod tests {
     fn the_per_frame_prefs_check_runs_once_a_second() {
         // Unchanged prefs, so nothing is written: this only watches the clock.
         let mut app = Baboon::for_test();
+        // Assembly supplies a default tool-window size; start after that correction.
+        app.saved_prefs = app.current_prefs();
         app.persist_prefs_throttled(10.0);
         assert_eq!(app.shell.prefs_next_check_at, 11.0);
         app.persist_prefs_throttled(10.5);

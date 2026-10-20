@@ -85,7 +85,7 @@ impl Dialog for TagImportDialog {
                     ui.horizontal(|ui| {
                         let response = ui.add_enabled(
                             !busy,
-                            egui::TextEdit::singleline(&mut dialog.source_input)
+                            crate::app::ui_kit::singleline_text_edit(&mut dialog.source_input)
                                 .hint_text(placeholder_text("Paste a path to a tag or a folder"))
                                 .desired_width(400.0),
                         );
@@ -205,7 +205,7 @@ impl Dialog for TagImportDialog {
                     ui.horizontal(|ui| {
                         let response = ui.add_enabled(
                             !busy,
-                            egui::TextEdit::singleline(&mut dialog.destination_rel)
+                            crate::app::ui_kit::singleline_text_edit(&mut dialog.destination_rel)
                                 .hint_text(placeholder_text("objects/characters/masterchief"))
                                 .desired_width(440.0),
                         );

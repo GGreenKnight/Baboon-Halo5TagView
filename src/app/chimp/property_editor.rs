@@ -289,7 +289,7 @@ fn draw_chimp_value(
         PropValue::Str(value) => {
             let mut text = value.to_string();
             let changed = ui
-                .add(egui::TextEdit::singleline(&mut text).id(id))
+                .add(crate::app::ui_kit::singleline_text_edit(&mut text).id(id))
                 .changed();
             if changed {
                 value.set_text(text);
@@ -311,7 +311,7 @@ fn draw_chimp_value(
                     let mut sub_path = value.sub_path.to_string();
                     ui.horizontal(|ui| {
                         ui.label("Sub-path");
-                        if ui.text_edit_singleline(&mut sub_path).changed() {
+                        if ui.add(crate::app::ui_kit::singleline_text_edit(&mut sub_path)).changed() {
                             value.sub_path.set_text(sub_path);
                             changed = true;
                         }
@@ -511,7 +511,7 @@ fn edit_chimp_fname(
     let mut text = ui
         .data(|data| data.get_temp::<String>(draft_id))
         .unwrap_or_else(|| current.clone());
-    let response = ui.add(egui::TextEdit::singleline(&mut text).id(id));
+    let response = ui.add(crate::app::ui_kit::singleline_text_edit(&mut text).id(id));
     if response.has_focus() {
         ui.data_mut(|data| data.insert_temp(draft_id, text));
         return false;
@@ -534,7 +534,7 @@ fn draw_chimp_fstr(
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label(label);
-        if ui.text_edit_singleline(&mut text).changed() {
+        if ui.add(crate::app::ui_kit::singleline_text_edit(&mut text)).changed() {
             value.set_text(text);
             changed = true;
         }

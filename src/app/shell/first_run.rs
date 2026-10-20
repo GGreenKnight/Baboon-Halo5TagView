@@ -40,7 +40,6 @@ pub(in crate::app) enum FirstRunCommand {
     LeaveInterface,
     /// Save the setup and close the wizard.
     Finish,
-    ChooseBlenderPath,
     SetEditingKitPath(EditingKitShortcut, String),
     ChooseEditingKitPath(EditingKitShortcut),
     /// The update channel changed: forget the last check's verdict.
@@ -87,7 +86,6 @@ impl Baboon {
                 }
                 Err(error) => self.first_run_failed(error),
             },
-            FirstRunCommand::ChooseBlenderPath => self.choose_blender_path(),
             FirstRunCommand::SetEditingKitPath(shortcut, input) => {
                 self.set_editing_kit_path_input(shortcut, input)
             }
@@ -201,30 +199,12 @@ fn draw_first_run_storage(ui: &mut Ui, s: &mut FirstRunDraw) {
 
 fn draw_first_run_interface(ui: &mut Ui, s: &mut FirstRunDraw) {
     ui.heading("Updates and interface");
-    ui.label("Blender is optional. You can change any of these settings later.");
+    ui.label("You can change these settings later.");
     ui.add_space(10.0);
     ui.label(RichText::new("Updates").strong());
     if draw_update_channel_picker(ui, &mut s.prefs) {
         s.effects.push(FirstRunCommand::ForgetUpdateCheck);
     }
-    ui.add_space(12.0);
-    ui.label(RichText::new("Blender executable").strong());
-    ui.horizontal(|ui| {
-        if ui
-            .add(egui::TextEdit::singleline(&mut s.wizard.blender_path_input).desired_width(470.0))
-            .changed()
-        {
-            let value = s.wizard.blender_path_input.trim();
-            s.prefs.blender_path = (!value.is_empty()).then(|| PathBuf::from(value));
-        }
-        if ui.button("Browse...").clicked() {
-            s.effects.push(FirstRunCommand::ChooseBlenderPath);
-        }
-        if ui.button("Clear").clicked() {
-            s.prefs.blender_path = None;
-            s.wizard.blender_path_input.clear();
-        }
-    });
     ui.add_space(12.0);
     ui.label(RichText::new("Tag editor").strong());
     draw_nested_default_picker(ui, &mut s.prefs.nested_default);
@@ -290,7 +270,7 @@ fn draw_first_run_editing_kits(ui: &mut Ui, s: &mut FirstRunDraw) {
                 ui.horizontal(|ui| {
                     ui.add_sized([130.0, 20.0], egui::Label::new(shortcut.label));
                     if ui
-                        .add(egui::TextEdit::singleline(&mut input).desired_width(382.0))
+                        .add(crate::app::ui_kit::singleline_text_edit(&mut input).desired_width(382.0))
                         .changed()
                     {
                         s.effects.push(FirstRunCommand::SetEditingKitPath(shortcut, input.clone()));

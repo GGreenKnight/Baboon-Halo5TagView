@@ -1571,7 +1571,7 @@ fn draw_shader_function_name(
         ui.visuals_mut().extreme_bg_color = material_input();
         let response = ui.add_enabled(
             edit.editable && path.is_some(),
-            egui::TextEdit::singleline(&mut draft.text)
+            crate::app::ui_kit::singleline_text_edit(&mut draft.text)
                 .id(id)
                 .desired_width(rect.width())
                 .min_size(Vec2::new(0.0, BUTTON_HEIGHT))
@@ -1648,7 +1648,7 @@ fn draw_shader_range_values(
             ui.visuals_mut().extreme_bg_color = material_input();
             let response = ui.add_enabled(
                 edit.editable,
-                egui::TextEdit::singleline(&mut draft.text)
+                crate::app::ui_kit::singleline_text_edit(&mut draft.text)
                     .id(id)
                     .desired_width(input.width())
                     .min_size(Vec2::new(0.0, BUTTON_HEIGHT))
@@ -1688,7 +1688,7 @@ fn draw_h2_value_prefixed_text_edit(
         ui.spacing_mut().item_spacing.x = 2.0;
         ui.label(RichText::new("value:").color(material_text()).monospace());
         ui.add(
-            egui::TextEdit::singleline(buffer)
+            crate::app::ui_kit::singleline_text_edit(buffer)
                 .id(id)
                 .desired_width((width - 42.0).max(40.0))
                 .text_color(material_text())
@@ -1886,7 +1886,7 @@ fn draw_shader_editable_value_with_color_preview(
             shader_cell_scope(ui, text_rect, |ui| {
                 ui.visuals_mut().extreme_bg_color = material_input();
                 let resp = ui.add(
-                    egui::TextEdit::singleline(&mut draft.text)
+                    crate::app::ui_kit::singleline_text_edit(&mut draft.text)
                         .id(id)
                         .desired_width(text_rect.width())
                         .text_color(material_text())
@@ -2162,7 +2162,7 @@ fn draw_shader_editable_value_with_color_preview(
             shader_cell_scope(ui, rect, |ui| {
                 ui.visuals_mut().extreme_bg_color = material_input();
                 let resp = ui.add(
-                    egui::TextEdit::singleline(&mut draft.text)
+                    crate::app::ui_kit::singleline_text_edit(&mut draft.text)
                         .id(id)
                         .desired_width(rect.width())
                         .text_color(material_text())
@@ -2344,7 +2344,7 @@ fn draw_shader_editable_value_with_color_preview(
             shader_cell_scope(ui, rect, |ui| {
                 ui.visuals_mut().extreme_bg_color = material_input();
                 let resp = ui.add(
-                    egui::TextEdit::singleline(&mut draft.text)
+                    crate::app::ui_kit::singleline_text_edit(&mut draft.text)
                         .id(id)
                         .desired_width(rect.width())
                         .text_color(material_text())
@@ -2478,7 +2478,7 @@ fn draw_shader_editable_value_with_color_preview(
             shader_cell_scope(ui, rect, |ui| {
                 ui.visuals_mut().extreme_bg_color = material_input();
                 let resp = ui.add(
-                    egui::TextEdit::singleline(&mut draft.text)
+                    crate::app::ui_kit::singleline_text_edit(&mut draft.text)
                         .id(id)
                         .desired_width(rect.width())
                         .text_color(material_text())
@@ -2637,7 +2637,7 @@ fn draw_shader_reference_cell(
             )
         };
         let resp = ui.add(
-            egui::TextEdit::singleline(&mut draft.text)
+            crate::app::ui_kit::singleline_text_edit(&mut draft.text)
                 .id(id)
                 .margin(egui::Margin {
                     left: icon_inset,

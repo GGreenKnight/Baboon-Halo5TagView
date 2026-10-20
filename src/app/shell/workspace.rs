@@ -821,7 +821,7 @@ pub(in crate::app) fn draw_terminal_panel(
                             let text_w = (ui.available_width() - button_w - 8.0).max(40.0);
                             let resp = ui.add_enabled(
                                 !kit_tools.terminal.running,
-                                egui::TextEdit::singleline(&mut kit_tools.terminal.input)
+                                crate::app::ui_kit::singleline_text_edit(&mut kit_tools.terminal.input)
                                     .desired_width(text_w)
                                     .font(egui::TextStyle::Monospace)
                                     .hint_text(placeholder_text("tool <command> …")),
