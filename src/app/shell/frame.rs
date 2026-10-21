@@ -3946,7 +3946,7 @@ mod tests {
                     ).unwrap();
                     h.app.dialogs.open(dialog);
                 },
-                &["Remove Global Shortcut?", "Keep Other Copies", "Remove From Other Kits", "Cancel"],
+                &["Remove Global Shortcut", "Keep Others as Copies", "Remove From Other Kits", "Cancel"],
             ),
             case(
                 "add_shortcut",
