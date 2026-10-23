@@ -32,7 +32,7 @@ impl Dialog for LooseFolderRenameState {
 
                     ui.label(RichText::new("Folder name").color(subtle_dark()).small());
                     let response = ui.add(
-                        egui::TextEdit::singleline(&mut state.name_input)
+                        crate::app::ui_kit::singleline_text_edit(&mut state.name_input)
                             .id(egui::Id::new("loose_folder_rename_name"))
                             .desired_width(480.0)
                             .font(egui::TextStyle::Monospace),

@@ -557,7 +557,7 @@ pub(super) fn draw_variant_header_actions(
         ui.label("New Variant Name");
         ui.add_enabled(
             edit.editable,
-            egui::TextEdit::singleline(&mut state.new_variant_name).desired_width(220.0),
+            crate::app::ui_kit::singleline_text_edit(&mut state.new_variant_name).desired_width(220.0),
         );
         let chosen_regions = selected_variant_regions(data, state);
         let create_name = normalized_new_variant_name(data, state);

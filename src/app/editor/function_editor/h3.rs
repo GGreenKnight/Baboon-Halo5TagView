@@ -47,7 +47,7 @@ fn function_name_input(
         .add_enabled_ui(editable, |ui| {
             ui.add_sized(
                 Vec2::new(width, 24.0),
-                egui::TextEdit::singleline(value)
+                crate::app::ui_kit::singleline_text_edit(value)
                     .id_salt(id)
                     .desired_width(width)
                     .vertical_align(egui::Align::Center)

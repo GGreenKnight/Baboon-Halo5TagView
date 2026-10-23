@@ -3,6 +3,17 @@
 
 use super::*;
 
+pub(in crate::app) fn browser_open_requested(
+    response: &egui::Response,
+    double_click_to_open: bool,
+) -> bool {
+    if double_click_to_open {
+        response.double_clicked()
+    } else {
+        response.clicked()
+    }
+}
+
 pub(in crate::app) const CONTEXT_MENU_WIDTH: f32 = 340.0;
 
 /// A pending "reveal in tree" request threaded through the tree draw: it force-
@@ -318,6 +329,8 @@ fn context_menu_icon(label: &str) -> Option<ButtonIcon> {
         "Rename" => Some(ButtonIcon::Rename),
         "Duplicate" => Some(ButtonIcon::Duplicate),
         "Delete" => Some(ButtonIcon::Garbage),
+        "Edit Shortcut..." => Some(ButtonIcon::Edit),
+        "Remove Shortcut" => Some(ButtonIcon::Garbage),
         "Move" => Some(ButtonIcon::Move),
         "Copy To" => Some(ButtonIcon::Copy),
         "Open with File Explorer" => Some(ButtonIcon::FileExplorer),
@@ -2793,11 +2806,7 @@ pub(in crate::app) fn draw_entry(
                 ui.label(RichText::new(leaf_label).color(text_dark()));
             });
     }
-    let open_requested = if double_click_to_open {
-        response.double_clicked()
-    } else {
-        response.clicked()
-    };
+    let open_requested = browser_open_requested(&response, double_click_to_open);
     let mut action = open_requested.then(|| BrowserAction::Select(entry.key.clone()));
     context_menu(&response, |ui| {
         if let Some(menu_action) = draw_tag_context_menu_contents(ui, entry, favorite_keys, false) {
@@ -3063,7 +3072,7 @@ pub(in crate::app) fn draw_favorites(
                 .paint_at(ui, icon_rect);
             let tooltip = tag_path::relative_tag_path(folder);
             hover_tooltip_beside_pointer(ui, &response, &tooltip);
-            if response.clicked() && action.is_none() {
+            if browser_open_requested(&response, double_click_to_open) && action.is_none() {
                 action = Some(BrowserAction::OpenFolderBrowser {
                     rel_path: folder.clone(),
                     label: label.clone(),
@@ -3155,11 +3164,35 @@ pub(in crate::app) fn show_browser_navigation_section<R>(
     color: Color32,
     add_body: impl FnOnce(&mut Ui) -> R,
 ) -> egui::Response {
+    show_browser_navigation_section_with_add(ui, id_source, title, icon, color, false, add_body).0
+}
+
+pub(in crate::app) const SHORTCUT_ADD_RIGHT_PADDING: f32 = 16.0;
+
+pub(in crate::app) fn show_browser_navigation_section_with_add<R>(
+    ui: &mut Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    title: &str,
+    icon: ButtonIcon,
+    color: Color32,
+    allow_add: bool,
+    add_body: impl FnOnce(&mut Ui) -> R,
+) -> (egui::Response, bool) {
+    let mut add_clicked = false;
+    let header_height = if allow_add {
+        ui.spacing().interact_size.y.max(ICON_BUTTON_SIZE.y)
+    } else {
+        ui.spacing().interact_size.y
+    };
+    let header_rect = egui::Rect::from_min_size(ui.next_widget_position(),
+        Vec2::new(ui.available_width(), header_height));
+    let hovered = ui.rect_contains_pointer(header_rect);
     let id = ui.make_persistent_id(id_source);
     let mut state =
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
     let (response, (toggle_clicked, guide_x)) =
-        show_full_width_browser_row(ui, id.with("header"), Sense::click(), false, |ui| {
+        show_full_width_browser_row(ui, id.with("header"), if allow_add { Sense::hover() } else { Sense::click() }, false, |ui| {
+            ui.set_min_height(header_height);
             let toggle = state.show_toggle_button(ui, folder_chevron_icon);
             let toggle_clicked = toggle.clicked();
             let (icon_rect, icon_response) =
@@ -3171,16 +3204,34 @@ pub(in crate::app) fn show_browser_navigation_section<R>(
                 color,
             );
             let label = ui.label(RichText::new(title).color(color));
+            let mut content = toggle.union(icon_response).union(label);
+            if allow_add {
+                let label_rect = egui::Rect::from_min_max(header_rect.min,
+                    egui::pos2(header_rect.right() - SHORTCUT_ADD_RIGHT_PADDING - ICON_BUTTON_SIZE.x, header_rect.bottom()));
+                content = content.union(ui.interact(label_rect, id.with("label_click"), Sense::click()));
+                let add_rect = egui::Rect::from_min_max(
+                    egui::pos2(header_rect.right() - SHORTCUT_ADD_RIGHT_PADDING - ICON_BUTTON_SIZE.x, header_rect.top()),
+                    egui::pos2(header_rect.right() - SHORTCUT_ADD_RIGHT_PADDING, header_rect.bottom()),
+                );
+                let add_response = ui.interact(add_rect, id.with("add"), Sense::click());
+                add_clicked = add_response.clicked();
+                if hovered || add_response.is_pointer_button_down_on() {
+                    paint_button_icon_at(ui, ButtonIcon::Add,
+                        egui::Rect::from_center_size(add_rect.center(), Vec2::splat(BUTTON_ICON_SIZE)),
+                        Color32::from_rgb(126, 211, 75));
+                }
+                content = content.union(add_response.on_hover_text("Add Shortcut"));
+            }
             (
-                toggle.union(icon_response).union(label),
+                content,
                 (toggle_clicked, icon_rect.center().x),
             )
         });
-    if response.clicked() && !toggle_clicked {
+    if response.clicked() && !toggle_clicked && !add_clicked {
         state.toggle(ui);
     }
     show_relocated_browser_tree_body(ui, &mut state, &response, guide_x, add_body);
-    response
+    (response, add_clicked)
 }
 
 /// True when the tag lives *inside* a container source (a monolithic cache or a
@@ -4471,7 +4522,7 @@ mod tests {
                         let mut text = String::new();
                         ui.put(
                             rect,
-                            egui::TextEdit::singleline(&mut text)
+                            crate::app::ui_kit::singleline_text_edit(&mut text)
                                 .hint_text(placeholder_text("(no reference)")),
                         );
                         let drop =
@@ -4679,6 +4730,8 @@ mod tests {
     #[test]
     fn delete_context_button_uses_the_garbage_icon() {
         assert_eq!(context_menu_icon("Delete"), Some(ButtonIcon::Garbage));
+        assert_eq!(context_menu_icon("Edit Shortcut..."), Some(ButtonIcon::Edit));
+        assert_eq!(context_menu_icon("Remove Shortcut"), Some(ButtonIcon::Garbage));
     }
 
     #[test]

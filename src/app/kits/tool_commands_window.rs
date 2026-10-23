@@ -323,7 +323,7 @@ fn draw_selected_tool_command(
     ui.label(RichText::new("Preview").color(text_dark()).strong());
     let mut preview_text = preview.clone();
     ui.add(
-        egui::TextEdit::singleline(&mut preview_text)
+        crate::app::ui_kit::singleline_text_edit(&mut preview_text)
             .desired_width(ui.available_width())
             .font(egui::TextStyle::Monospace)
             .interactive(false),
@@ -416,7 +416,7 @@ fn draw_tool_command_arg(
                 }
             }
             _ => {
-                let mut edit = egui::TextEdit::singleline(&mut value)
+                let mut edit = crate::app::ui_kit::singleline_text_edit(&mut value)
                     .desired_width(300.0)
                     .font(egui::TextStyle::Monospace);
                 if is_invalid {

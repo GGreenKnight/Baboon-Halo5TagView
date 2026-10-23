@@ -212,7 +212,7 @@ fn draw_chimp_header_sections(
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Filter").color(subtle_dark()).small());
                         ui.add(
-                            egui::TextEdit::singleline(&mut pane.header_name_filter)
+                            crate::app::ui_kit::singleline_text_edit(&mut pane.header_name_filter)
                                 .desired_width(240.0)
                                 .hint_text(placeholder_text("substring")),
                         );
@@ -232,7 +232,7 @@ fn draw_chimp_header_sections(
                                     .strong(),
                             );
                             let response = ui.add(
-                                egui::TextEdit::singleline(&mut edit.text)
+                                crate::app::ui_kit::singleline_text_edit(&mut edit.text)
                                     .id(egui::Id::new(("chimp_name_edit", edit.index)))
                                     .desired_width(320.0)
                                     .font(egui::TextStyle::Monospace),
@@ -658,7 +658,7 @@ fn draw_chimp_identity_panel(
         ui.label(RichText::new("Package flags").color(subtle_dark()).small());
         ui.horizontal(|ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut edit.package_flags)
+                crate::app::ui_kit::singleline_text_edit(&mut edit.package_flags)
                     .desired_width(120.0)
                     .font(egui::TextStyle::Monospace),
             );
@@ -798,7 +798,7 @@ fn draw_chimp_export_edit_panel(
 
         ui.label(RichText::new("Object name").color(subtle_dark()).small());
         ui.add(
-            egui::TextEdit::singleline(&mut edit.object_name)
+            crate::app::ui_kit::singleline_text_edit(&mut edit.object_name)
                 .desired_width(320.0)
                 .font(egui::TextStyle::Monospace),
         );
@@ -946,7 +946,7 @@ fn draw_chimp_import_editor(
                         .small(),
                 );
                 ui.add(
-                    egui::TextEdit::singleline(&mut edit.script_path)
+                    crate::app::ui_kit::singleline_text_edit(&mut edit.script_path)
                         .desired_width(420.0)
                         .font(egui::TextStyle::Monospace),
                 );
@@ -966,14 +966,14 @@ fn draw_chimp_import_editor(
                         .small(),
                 );
                 ui.add(
-                    egui::TextEdit::singleline(&mut edit.package_path)
+                    crate::app::ui_kit::singleline_text_edit(&mut edit.package_path)
                         .desired_width(420.0)
                         .font(egui::TextStyle::Monospace),
                 );
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Object name").color(subtle_dark()).small());
                     ui.add(
-                        egui::TextEdit::singleline(&mut edit.object_name)
+                        crate::app::ui_kit::singleline_text_edit(&mut edit.object_name)
                             .desired_width(260.0)
                             .font(egui::TextStyle::Monospace),
                     );

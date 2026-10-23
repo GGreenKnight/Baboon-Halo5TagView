@@ -317,7 +317,7 @@ fn foundation_value_text_filled(
     };
     // A frame of our own, so egui doesn't draw a different one for a buffer
     // it can't change; egui ignores `.margin()` once a frame is given.
-    let mut edit = egui::TextEdit::singleline(text)
+    let mut edit = crate::app::ui_kit::singleline_text_edit(text)
         .frame(egui::Frame::NONE.inner_margin(egui::Margin {
             left: left_padding as i8,
             right: 4,
@@ -840,7 +840,7 @@ pub(in crate::app) fn picker_search_field(
     just_opened: bool,
 ) -> bool {
     let search = ui.add(
-        egui::TextEdit::singleline(filter)
+        crate::app::ui_kit::singleline_text_edit(filter)
             .hint_text(placeholder_text(hint))
             .desired_width(ui.available_width())
             .margin(egui::Margin {
@@ -1512,7 +1512,7 @@ mod tests {
                     for name in order {
                         let text = texts.get_mut(name).unwrap();
                         let response = ui.add(
-                            egui::TextEdit::singleline(text)
+                            crate::app::ui_kit::singleline_text_edit(text)
                                 .id(egui::Id::new(name))
                                 .desired_width(200.0),
                         );

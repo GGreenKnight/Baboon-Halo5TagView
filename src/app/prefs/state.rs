@@ -16,19 +16,8 @@ pub(in crate::app) struct FirstRunWizardState {
     pub(in crate::app) committed_storage: Option<crate::core::storage::StorageMode>,
     pub(in crate::app) editing_kit_detection_ran: bool,
     pub(in crate::app) validation_error: Option<String>,
-    /// The Blender path as typed, applied when it names a file.
-    pub(in crate::app) blender_path_input: String,
     /// The UI scale while its slider is dragged, applied on release.
     pub(in crate::app) pending_ui_scale: f32,
-}
-
-/// The Blender path box's starting text: the path the preferences hold.
-pub(in crate::app) fn blender_path_input(prefs: &GuiPrefs) -> String {
-    prefs
-        .blender_path
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default()
 }
 
 impl FirstRunWizardState {
@@ -48,7 +37,6 @@ impl FirstRunWizardState {
             committed_storage: existing_mode,
             editing_kit_detection_ran: false,
             validation_error: None,
-            blender_path_input: blender_path_input(prefs),
             pending_ui_scale: prefs.ui_scale,
         }
     }
@@ -451,6 +439,12 @@ impl UpdateChannel {
 
 #[derive(Clone, PartialEq)]
 pub(in crate::app) struct GuiPrefs {
+    pub(in crate::app) kit_shortcut_layouts: HashMap<String, crate::app::shell::shortcuts::ShortcutLayout>,
+    pub(in crate::app) shortcut_order: Vec<String>,
+    pub(in crate::app) shortcut_overrides: HashMap<String, crate::app::shell::shortcuts::AppShortcut>,
+    pub(in crate::app) hidden_shortcuts: HashSet<String>,
+    pub(in crate::app) blender_shortcut_migrated: bool,
+    pub(in crate::app) app_shortcuts: Vec<crate::app::shell::shortcuts::AppShortcut>,
     pub(in crate::app) browser_mode: BrowserMode,
     pub(in crate::app) browser_sort: BrowserSort,
     /// Last explicitly chosen search targets; seeds new browsers across sessions.
@@ -534,6 +528,12 @@ impl GuiPrefs {
 impl Default for GuiPrefs {
     fn default() -> Self {
         Self {
+            kit_shortcut_layouts: HashMap::new(),
+            shortcut_order: Vec::new(),
+            shortcut_overrides: HashMap::new(),
+            hidden_shortcuts: HashSet::new(),
+            blender_shortcut_migrated: true,
+            app_shortcuts: Vec::new(),
             browser_mode: BrowserMode::default(),
             browser_sort: BrowserSort::default(),
             browser_search_scope: BrowserSearchScope::default(),

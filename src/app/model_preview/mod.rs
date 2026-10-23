@@ -1341,7 +1341,7 @@ fn draw_marker_filter_field(ui: &mut Ui, filter: &mut String) -> egui::Response 
     );
     let edit_response = ui.put(
         edit_rect,
-        egui::TextEdit::singleline(filter)
+        crate::app::ui_kit::singleline_text_edit(filter)
             .hint_text(placeholder_text("Filter Markers…"))
             .text_color(text_dark())
             .frame(egui::Frame::NONE)

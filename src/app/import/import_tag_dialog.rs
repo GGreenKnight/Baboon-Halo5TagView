@@ -93,14 +93,14 @@ impl Dialog for ImportTagDialog {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Folder").color(subtle_dark()));
                     ui.add(
-                        egui::TextEdit::singleline(&mut dialog.folder_rel)
+                        crate::app::ui_kit::singleline_text_edit(&mut dialog.folder_rel)
                             .hint_text(placeholder_text("objects/characters/foo (blank = root)"))
                             .desired_width(440.0),
                     );
                 });
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Name").color(subtle_dark()));
-                    ui.add(egui::TextEdit::singleline(&mut dialog.name).desired_width(440.0));
+                    ui.add(crate::app::ui_kit::singleline_text_edit(&mut dialog.name).desired_width(440.0));
                 });
 
                 match &overwrite_logical {

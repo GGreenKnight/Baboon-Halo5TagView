@@ -38,7 +38,7 @@ pub(in crate::app) fn draw_tag_reference_catalog_picker_contents(
     filter: &mut String,
 ) -> Option<String> {
     let search = ui.add(
-        egui::TextEdit::singleline(filter)
+        crate::app::ui_kit::singleline_text_edit(filter)
             .hint_text(placeholder_text("Search tag names or groups"))
             .desired_width(f32::INFINITY),
     );

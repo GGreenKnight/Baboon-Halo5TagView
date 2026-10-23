@@ -135,7 +135,7 @@ fn draw_block_table(ctx: &egui::Context, table: &mut BlockTableState) -> BlockTa
                                     let font = egui::TextStyle::Monospace.resolve(editor.style());
                                     let row_height = editor.fonts_mut(|fonts| fonts.row_height(&font));
                                     editor.add_sized(Vec2::new(editor.available_width(), 24.0),
-                                        egui::TextEdit::singleline(&mut row.name)
+                                        crate::app::ui_kit::singleline_text_edit(&mut row.name)
                                         .id(egui::Id::new(("block_table_name", row.id)))
                                         .margin(egui::Margin::symmetric(4, ((24.0 - row_height) * 0.5).max(0.0) as i8))
                                         .desired_width(editor.available_width()).font(egui::TextStyle::Monospace));

@@ -157,7 +157,7 @@ fn draw_script_doc_tab(ui: &mut Ui, docs: &mut ScriptDocsUiState) {
     });
     let search_changed = ui
         .add(
-            egui::TextEdit::singleline(&mut docs.search)
+            crate::app::ui_kit::singleline_text_edit(&mut docs.search)
                 .hint_text(placeholder_text(
                     "Search names, signatures, descriptions, types, or examples...",
                 ))
@@ -328,7 +328,7 @@ fn draw_tag_compat_body(ui: &mut Ui, state: &mut TagCompatUiState) -> Option<Tag
             );
         ui.separator();
         ui.add(
-            egui::TextEdit::singleline(&mut state.search)
+            crate::app::ui_kit::singleline_text_edit(&mut state.search)
                 .hint_text(placeholder_text("Filter groups"))
                 .desired_width(180.0),
         );

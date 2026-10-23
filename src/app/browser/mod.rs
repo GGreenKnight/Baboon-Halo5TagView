@@ -6,7 +6,7 @@
 use super::*;
 use crate::app::shell::WorkerMessage;
 use crate::app::kits::{KitId, KitStamp, KitToolDropTarget, KitView, ScenarioPalette};
-use crate::app::compare::{CompareCommand, GIT_REVIEW_TITLE};
+use crate::app::compare::CompareCommand;
 use crate::app::editor::{
     build_bitmap_preview, format_tag_reference_input, geometry_import_verb_for_group_name,
     truncate_for_cell,

@@ -102,7 +102,7 @@ pub(in crate::app) fn browser_search_field(ui: &mut Ui, value: &mut String, hint
     );
     let edit_response = ui.put(
         edit_rect,
-        egui::TextEdit::singleline(value)
+        crate::app::ui_kit::singleline_text_edit(value)
             .hint_text(placeholder_text(hint))
             .text_color(text_dark())
             .frame(egui::Frame::NONE)
@@ -849,7 +849,7 @@ pub(in crate::app) fn draw_keyword_bar(cx: &Ctx, ui: &mut Ui, kit_index: usize, 
                 ui.set_height(20.0);
                 ui.horizontal(|ui| {
                     let resp = ui.add(
-                        egui::TextEdit::singleline(&mut draft)
+                        crate::app::ui_kit::singleline_text_edit(&mut draft)
                             .hint_text(placeholder_text("add keyword"))
                             .desired_width(120.0)
                             .frame(egui::Frame::NONE),
@@ -3929,6 +3929,39 @@ mod tests {
                 &["Renaming smoke to fog", "Baboon is locked until references are updated."],
             ),
             // --- ui/dialogs/ ---
+            case(
+                "global_shortcut_confirmation",
+                &["dialog:AddShortcutDialog"],
+                &["shell/shortcuts.rs"],
+                loose_kit,
+                |h| {
+                    let app = crate::app::shell::shortcuts::AppShortcut {
+                        id: "confirmation-smoke".to_owned(), kit: None,
+                        name: "Shared App".to_owned(), path: PathBuf::from("shared.exe"),
+                    };
+                    let key = app.key();
+                    h.app.model.prefs.app_shortcuts.push(app);
+                    let dialog = crate::app::shell::shortcuts::AddShortcutDialog::for_global_removal(
+                        &h.app.model, h.app.model.active, &key,
+                    ).unwrap();
+                    h.app.dialogs.open(dialog);
+                },
+                &["Remove Global Shortcut", "Keep Others as Copies", "Remove From Other Kits", "Cancel"],
+            ),
+            case(
+                "add_shortcut",
+                &["dialog:AddShortcutDialog"],
+                &["shell/shortcuts.rs"],
+                loose_kit,
+                |h| {
+                    let dialog = crate::app::shell::shortcuts::AddShortcutDialog::for_kit(
+                        &h.app.model,
+                        h.app.model.active,
+                    );
+                    h.app.dialogs.open(dialog);
+                },
+                &["Add Shortcut", "App Name", "App Path"],
+            ),
             case(
                 "new_tag",
                 &["dialog:NewTagDialog"],

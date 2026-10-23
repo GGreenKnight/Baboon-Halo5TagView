@@ -880,7 +880,7 @@ impl Dialog for ModExportDialog {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Mod name").color(text_dark()));
-                    ui.add(egui::TextEdit::singleline(&mut name_edit).desired_width(220.0));
+                    ui.add(crate::app::ui_kit::singleline_text_edit(&mut name_edit).desired_width(220.0));
                     ui.label(
                         RichText::new("names the files, not a folder")
                             .color(subtle_dark())

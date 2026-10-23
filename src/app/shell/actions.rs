@@ -115,7 +115,8 @@ pub(in crate::app) enum AppAction {
     CheckForUpdates,
     LoadEditingKit(CustomEditingKitProfile),
     LoadBuiltInEditingKit(EditingKitShortcut),
-    LaunchBlender,
+    LaunchAppShortcut(usize),
+    LaunchShortcutApp(crate::app::shell::shortcuts::AppShortcut),
     LaunchTagTest,
     LaunchSapien,
     OpenBitmapLibrary,
@@ -234,7 +235,14 @@ impl Baboon {
                 self.load_custom_editing_kit_profile(profile, ctx.clone());
             }
             AppAction::LoadBuiltInEditingKit(shortcut) => self.load_editing_kit_shortcut(shortcut, ctx.clone()),
-            AppAction::LaunchBlender => self.launch_blender(),
+            AppAction::LaunchAppShortcut(index) => {
+                if let Some(shortcut) = self.model.prefs.app_shortcuts.get(index).cloned() {
+                    self.launch_shortcut_app(&shortcut.name, &shortcut.path);
+                }
+            }
+            AppAction::LaunchShortcutApp(app) => {
+                self.launch_shortcut_app(&app.name, &app.path);
+            }
             AppAction::LaunchTagTest => self.launch_tag_test(),
             AppAction::LaunchSapien => self.launch_sapien(),
             AppAction::OpenBitmapLibrary => self.open_bitmap_library(),

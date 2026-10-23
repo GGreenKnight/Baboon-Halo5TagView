@@ -3,6 +3,86 @@
 
 use super::*;
 
+fn shortcut_startup_file(executable: &Path) -> Option<&'static str> {
+    let name = executable.file_name()?.to_str()?;
+    if name.eq_ignore_ascii_case("sapien.exe") {
+        Some("editor_init.txt")
+    } else if name.eq_ignore_ascii_case("tag_test.exe") || GameId::ALL.into_iter()
+        .filter_map(GameFacts::tag_test_executable)
+        .any(|executable| name.eq_ignore_ascii_case(executable)) {
+        Some("init.txt")
+    } else { None }
+}
+
+fn prepare_shortcut_startup(executable: &Path) -> Result<(), String> {
+    if let Some(file) = shortcut_startup_file(executable) {
+        let root = executable.parent().unwrap_or_else(|| Path::new("."));
+        clear_scenario_startup_commands(&root.join(file))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+    use crate::app::shell::{AppAction, shortcuts::AppShortcut};
+
+    #[test]
+    fn shortcut_recognizes_all_supported_tool_executables() {
+        for game in GameId::ALL {
+            if let Some(name) = game.tag_test_executable() {
+                assert_eq!(shortcut_startup_file(Path::new(name)), Some("init.txt"));
+            }
+        }
+        assert_eq!(shortcut_startup_file(Path::new("TAG_TEST.EXE")), Some("init.txt"));
+        assert_eq!(shortcut_startup_file(Path::new("SAPIEN.EXE")), Some("editor_init.txt"));
+        assert_eq!(shortcut_startup_file(Path::new("blender.exe")), None);
+        assert_eq!(shortcut_startup_file(Path::new("not_tag_test.exe")), None);
+    }
+
+    #[test]
+    fn readded_shortcut_clears_its_own_init_and_preserves_other_settings() {
+        for (exe, init, other) in [("halo3_tag_test.exe", "init.txt", "editor_init.txt"),
+            ("sapien.exe", "editor_init.txt", "init.txt")] {
+            let root = std::env::temp_dir().join(format!("baboon-shortcut-init-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            let executable = root.join(exe);
+            fs::write(&executable, []).unwrap();
+            let original = b"; game_start commented\r\ndebug_objects 1\r\ngame_start levels\\old ; note\r\nmap_name old\r\n";
+            fs::write(root.join(init), original).unwrap();
+            fs::write(root.join(other), original).unwrap();
+            let mut app = Baboon::for_test();
+            let shortcut = AppShortcut { id: "readded".to_owned(), kit: None,
+                name: "My renamed tool".to_owned(), path: executable };
+            app.model.prefs.app_shortcuts.push(shortcut.clone());
+            app.apply_app_action(AppAction::LaunchAppShortcut(0), &egui::Context::default());
+            assert_eq!(fs::read(root.join(init)).unwrap(), b"; game_start commented\r\ndebug_objects 1\r\n; note\r\n");
+            assert_eq!(fs::read(root.join(other)).unwrap(), original);
+            // An edited default uses the same cleanup path as a re-added app.
+            fs::write(root.join(init), original).unwrap();
+            app.apply_app_action(AppAction::LaunchShortcutApp(shortcut), &egui::Context::default());
+            assert_eq!(fs::read(root.join(init)).unwrap(), b"; game_start commented\r\ndebug_objects 1\r\n; note\r\n");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn shortcut_cleanup_leaves_unrelated_apps_and_missing_init_files_alone() {
+        let root = std::env::temp_dir().join(format!("baboon-shortcut-init-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        prepare_shortcut_startup(&root.join("sapien.exe")).unwrap();
+        assert!(!root.join("editor_init.txt").exists());
+        let original = b"game_start levels\\keep\n";
+        fs::write(root.join("init.txt"), original).unwrap();
+        prepare_shortcut_startup(&root.join("blender.exe")).unwrap();
+        assert_eq!(fs::read(root.join("init.txt")).unwrap(), original);
+        fs::write(root.join("init.txt"), [0xff]).unwrap();
+        assert!(prepare_shortcut_startup(&root.join("tag_test.exe")).is_err());
+        assert_eq!(fs::read(root.join("init.txt")).unwrap(), [0xff]);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 impl Baboon {
 
 
@@ -32,47 +112,42 @@ impl Baboon {
 
 
     pub(in crate::app) fn launch_tag_test(&mut self) {
-        self.launch_kit_tool_clearing_startup("tag_test", self.model.tag_test_executable(), "init.txt");
+        self.launch_kit_tool("tag_test", self.model.tag_test_executable());
     }
 
-    pub(in crate::app) fn launch_blender(&mut self) {
-        let Some(path) = self.model.prefs.blender_path.clone() else {
-            self.open_settings(None);
-            self.model.status = "Set the Blender path in File > Settings first".to_owned();
+    /// Re-added tools get the same startup cleanup as the built-in entries.
+    pub(in crate::app) fn launch_shortcut_app(&mut self, label: &str, path: &Path) {
+        if let Err(error) = crate::core::app_shortcut::validate_app_path(path) {
+            self.model.status = error;
             return;
+        }
+        if let Err(error) = prepare_shortcut_startup(path) {
+            self.model.status = error;
+            return;
+        }
+        let root = std::path::absolute(path)
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf));
+        let options = if shortcut_startup_file(path).is_some()
+            && root.as_ref().zip(self.model.editing_kit_root().as_ref())
+                .is_some_and(|(selected, active)| same_recent_path(selected, active)) {
+            self.model.active_kit_tool_folder_options()
+        } else { Vec::new() };
+        let mut command = match crate::core::app_shortcut::launch_command(path) {
+            Ok(command) => command,
+            Err(error) => { self.model.status = error; return; }
         };
-        if !path.is_file() {
-            self.model.status = format!("Blender executable not found: {}", path.display());
-            self.open_settings(None);
-            return;
-        }
-        self.spawn_tool("Blender", &path, path.parent().map(Path::to_path_buf), &[]);
-    }
-
-    pub(in crate::app) fn choose_blender_path(&mut self) {
-        let mut dialog = rfd::FileDialog::new().set_title("Select Blender Executable");
-        if let Some(path) = self
-            .model.prefs
-            .blender_path
-            .as_ref()
-            .and_then(|path| path.parent())
-        {
-            dialog = dialog.set_directory(path);
-        }
-        #[cfg(target_os = "windows")]
-        {
-            dialog = dialog.add_filter("Executable", &["exe"]);
-        }
-        if let Some(path) = dialog.pick_file() {
-            self.model.prefs.blender_path = Some(path.clone());
-            // Into whichever open window shows the path as typed.
-            if let Some(settings) = self.dialogs.get_mut::<SettingsWindow>() {
-                settings.blender_path_input = path.display().to_string();
+        for (option, folder) in &options { command.arg(option).arg(folder); }
+        if let Some(root) = root { command.current_dir(root); }
+        match command.spawn() {
+            Ok(_) => self.model.status = format!("Launched {label}"),
+            Err(error) => {
+                self.model.status = format!("Could not launch {label}: {error}");
+                #[cfg(unix)]
+                if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe")) {
+                    self.model.status.push_str(". Windows applications require Wine.");
+                }
             }
-            if let Some(wizard) = self.dialogs.get_mut::<FirstRunWizardState>() {
-                wizard.blender_path_input = path.display().to_string();
-            }
-            self.model.status = format!("Blender path set to {}", path.display());
         }
     }
 
@@ -85,55 +160,7 @@ impl Baboon {
             self.model.status = format!("{label} executable not found: {}", path.display());
             return;
         }
-        let options = self.model.active_kit_tool_folder_options();
-        self.spawn_tool(label, &path, self.model.editing_kit_root(), &options);
-    }
-
-    pub(in crate::app) fn launch_kit_tool_clearing_startup(
-        &mut self,
-        label: &str,
-        executable_name: &str,
-        startup_file_name: &str,
-    ) {
-        let Some(path) = self.model.kit_tool_path(executable_name) else {
-            self.model.status = format!("{label} requires a loaded editing-kit folder");
-            return;
-        };
-        if !path.is_file() {
-            self.model.status = format!("{label} executable not found: {}", path.display());
-            return;
-        }
-        let Some(root) = self.model.editing_kit_root() else {
-            self.model.status = format!("{label} requires a loaded editing-kit folder");
-            return;
-        };
-        let startup_file = root.join(startup_file_name);
-        if let Err(error) = clear_scenario_startup_commands(&startup_file) {
-            self.model.status = error;
-            return;
-        }
-        let options = self.model.active_kit_tool_folder_options();
-        self.spawn_tool(label, &path, Some(root), &options);
-    }
-
-    pub(in crate::app) fn spawn_tool(
-        &mut self,
-        label: &str,
-        path: &Path,
-        work_dir: Option<PathBuf>,
-        options: &[(&'static str, PathBuf)],
-    ) {
-        let mut command = Command::new(path);
-        for (option, folder) in options {
-            command.arg(option).arg(folder);
-        }
-        if let Some(work_dir) = work_dir {
-            command.current_dir(work_dir);
-        }
-        match command.spawn() {
-            Ok(_) => self.model.status = format!("Launched {label}"),
-            Err(error) => self.model.status = format!("Could not launch {label}: {error}"),
-        }
+        self.launch_shortcut_app(label, &path);
     }
 
     /// Run a geometry Import request (`tool render/collision/physics/...`)

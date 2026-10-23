@@ -302,7 +302,7 @@ impl Dialog for FieldValueSearchWindow {
                 ui.horizontal(|ui| {
                     let response = ui.add_enabled(
                         !app.search.field_value_searching,
-                        egui::TextEdit::singleline(&mut self.query)
+                        crate::app::ui_kit::singleline_text_edit(&mut self.query)
                             .hint_text(placeholder_text("value to find"))
                             .desired_width(240.0),
                     );
@@ -320,7 +320,7 @@ impl Dialog for FieldValueSearchWindow {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("group").color(subtle_dark()).small());
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.group)
+                        crate::app::ui_kit::singleline_text_edit(&mut self.group)
                             .hint_text(placeholder_text("any (e.g. weap / weapon)"))
                             .desired_width(180.0),
                     )

@@ -140,7 +140,7 @@ pub(in crate::app) fn draw_blam_pane(cx: &Ctx, ui: &mut Ui, kit_index: usize, bl
                     );
                     ui.horizontal(|ui| {
                         ui.add(
-                            egui::TextEdit::singleline(
+                            crate::app::ui_kit::singleline_text_edit(
                                 &mut blam.asset_path,
                             )
                             .desired_width(320.0)
