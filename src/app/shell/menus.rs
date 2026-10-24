@@ -5,7 +5,6 @@
 
 use super::*;
 use super::recents::draw_recent_folders_menu;
-use super::actions::shortcut_text;
 use crate::app::shell::frame::{
     EDITING_KIT_MENU_MIN_WIDTH, EditingKitMenuEntry, editing_kit_menu_row_with_read_only,
     monitor_commands_for_game, visible_editing_kit_menu_entries,
@@ -153,27 +152,6 @@ pub(in crate::app) fn draw_menu_bar(cx: &Ctx, ui: &mut egui::Ui, menu: &MenuStat
                 draw_tool_launcher_buttons(cx, ui);
             });
         });
-}
-
-/// Keep shortcut hints separate from labels so every menu row shares a right edge.
-fn shortcut_menu_button(
-    ui: &mut Ui,
-    label: &str,
-    icon: Option<ButtonIcon>,
-    modifiers: egui::Modifiers,
-    key: egui::Key,
-    enabled: bool,
-) -> egui::Response {
-    let hint = egui::RichText::new(shortcut_text(ui.ctx(), modifiers, key))
-        .color(ui.visuals().text_color().gamma_multiply(0.5));
-    let button = match icon {
-        Some(icon) => egui::Button::image_and_text(
-            button_icon_image(ui, icon, text_dark(), BUTTON_ICON_SIZE),
-            label,
-        ),
-        None => egui::Button::new(label),
-    };
-    ui.add_enabled(enabled, button.right_text(hint))
 }
 
 #[cfg(test)]

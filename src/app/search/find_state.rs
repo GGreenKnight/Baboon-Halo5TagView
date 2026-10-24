@@ -80,6 +80,60 @@ pub(in crate::app) enum FindTargetKind {
     Value,
     Block,
     Documentation,
+    StringId(usize),
+    StringText { index: usize, language: usize },
+}
+
+impl FindTargetKind {
+    pub(in crate::app) fn string_row(self) -> Option<usize> {
+        match self {
+            Self::StringId(index) | Self::StringText { index, .. } => Some(index),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::app) enum StringFindLanguage {
+    #[default]
+    Current,
+    All,
+    Language(usize),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::app) struct StringFindOptions {
+    pub(in crate::app) selected_rows: bool,
+    pub(in crate::app) ids: bool,
+    pub(in crate::app) text: bool,
+    pub(in crate::app) language: StringFindLanguage,
+}
+
+impl Default for StringFindOptions {
+    fn default() -> Self {
+        Self {
+            selected_rows: false,
+            ids: true,
+            text: true,
+            language: StringFindLanguage::Current,
+        }
+    }
+}
+
+/// The pane that opened string Find. The kit and pane scope prevent identical
+/// tag paths in another workspace or split pane from receiving its navigation.
+#[derive(Clone, Debug)]
+pub(in crate::app) struct StringFindContext {
+    pub(in crate::app) selected: std::collections::BTreeSet<usize>,
+    pub(in crate::app) kit: crate::app::kits::KitId,
+    pub(in crate::app) tag_key: String,
+    pub(in crate::app) scope: String,
+    pub(in crate::app) game: Option<crate::core::game::GameId>,
+    pub(in crate::app) definitions_root: Option<std::path::PathBuf>,
+    pub(in crate::app) language: usize,
+    pub(in crate::app) languages: Vec<String>,
+    pub(in crate::app) has_ids: bool,
+    pub(in crate::app) editor_active: bool,
 }
 
 /// One exact substring occurrence in one indexed tag field.
@@ -95,10 +149,13 @@ pub(in crate::app) struct FindOccurrence {
 /// Persistent state for the modeless Ctrl+F window.
 #[derive(Default)]
 pub(in crate::app) struct FindDialogState {
+    pub(in crate::app) selection_run: Option<StringSelectionRun>,
     pub(in crate::app) open: bool,
     pub(in crate::app) query: String,
     pub(in crate::app) within: FindWithin,
     pub(in crate::app) look_in: FindLookIn,
+    pub(in crate::app) strings: Option<StringFindOptions>,
+    pub(in crate::app) string_context: Option<StringFindContext>,
     pub(in crate::app) match_case: bool,
     pub(in crate::app) whole_word: bool,
     pub(in crate::app) filter_results: bool,
@@ -130,9 +187,28 @@ pub(in crate::app) struct FindQuery {
     pub(in crate::app) look_in: FindLookIn,
     pub(in crate::app) match_case: bool,
     pub(in crate::app) whole_word: bool,
+    pub(in crate::app) strings: Option<StringFindOptions>,
+}
+
+pub(in crate::app) struct StringSelectionRun {
+    pub(in crate::app) query: FindQuery,
+    pub(in crate::app) context: StringFindContext,
+    pub(in crate::app) document_stamp: String,
+    pub(in crate::app) document_id: u64,
+    pub(in crate::app) rows: Vec<blam_tags::string_list::StringEntry>,
+    pub(in crate::app) changed: bool,
 }
 
 impl FindDialogState {
+    pub(in crate::app) fn selection_needs_refresh(&self) -> bool {
+        self.selection_run.as_ref().is_none_or(|run| {
+            run.changed || run.query != self.query() || self.string_context.as_ref().is_none_or(|context|
+                context.kit != run.context.kit || context.tag_key != run.context.tag_key
+                || context.scope != run.context.scope || context.selected != run.context.selected
+                || (run.query.strings.as_ref().is_some_and(|options| options.language == StringFindLanguage::Current)
+                    && context.language != run.context.language))
+        })
+    }
     /// The query as it stands.
     pub(in crate::app) fn query(&self) -> FindQuery {
         FindQuery {
@@ -141,6 +217,7 @@ impl FindDialogState {
             look_in: self.look_in,
             match_case: self.match_case,
             whole_word: self.whole_word,
+            strings: self.strings.clone(),
         }
     }
 
@@ -150,6 +227,7 @@ impl FindDialogState {
         self.look_in = query.look_in;
         self.match_case = query.match_case;
         self.whole_word = query.whole_word;
+        self.strings = query.strings;
     }
 
     /// Currently selected occurrence, if its stored index remains valid.
@@ -159,6 +237,7 @@ impl FindDialogState {
 
     /// Close Find and discard transient results while preserving its options.
     pub(in crate::app) fn close(&mut self) {
+        self.selection_run = None;
         self.open = false;
         self.active = None;
         self.occurrences.clear();
@@ -178,6 +257,8 @@ pub(in crate::app) struct FindRenderSnapshot {
     pub(in crate::app) whole_word: bool,
     pub(in crate::app) active: Option<FindOccurrence>,
     pub(in crate::app) matching_cells: std::sync::Arc<FindMatchingCells>,
+    pub(in crate::app) string_context: Option<StringFindContext>,
+    pub(in crate::app) filter_results: bool,
 }
 
 /// Identity of the Foundation field currently being painted.

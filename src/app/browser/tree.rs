@@ -341,6 +341,7 @@ fn context_menu_icon(label: &str) -> Option<ButtonIcon> {
         "Dump Tag to JSON..." => Some(ButtonIcon::Json),
         "Dump Tag References..." => Some(ButtonIcon::Doc),
         "Reimport" => Some(ButtonIcon::Import),
+        "Export Strings..." => Some(ButtonIcon::Export),
         _ => None,
     };
     exact.or_else(|| {
@@ -2953,6 +2954,16 @@ pub(in crate::app) fn draw_tag_context_menu_contents(
 
     if favorite_keys.is_some() || launch.supported && is_scenario_group(entry.group_tag) {
         context_menu_separator(ui);
+    }
+    if blam_tags::string_list::is_string_list_group(entry.group_tag) {
+        if context_menu_button(ui, "Export Strings...").clicked() {
+            action = Some(BrowserAction::StringTransfer { key: entry.key.clone(), import: false });
+            close_menu(ui);
+        }
+        if context_menu_button(ui, "Import Strings...").clicked() {
+            action = Some(BrowserAction::StringTransfer { key: entry.key.clone(), import: true });
+            close_menu(ui);
+        }
     }
     if supports_tag_reimport(entry) {
         let enabled = matches!(entry.location, TagEntryLocation::LooseFile(_));

@@ -30,6 +30,7 @@ impl Baboon {
         self.kit_tools.terminal.process = None;
         self.kit_tools.terminal.scroll_to_bottom = true;
         self.kit_tools.terminal.refocus_input = true;
+        self.finish_tool_string_reload(run_id);
         false
     }
 }

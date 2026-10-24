@@ -458,6 +458,8 @@ pub(in crate::app) struct GuiPrefs {
     pub(in crate::app) update_channel: UpdateChannel,
     pub(in crate::app) check_updates_on_startup: bool,
     pub(in crate::app) show_block_sizes: bool,
+    pub(in crate::app) string_list_checkboxes: bool,
+    pub(in crate::app) string_list_wrap_text: bool,
     /// Show angle fields in degrees, as Guerilla does, rather than the
     /// radians they hold on disk. Default on: it is what every other Halo
     /// tool shows, and what the field names themselves claim.
@@ -543,6 +545,8 @@ impl Default for GuiPrefs {
             double_click_to_open_tags: false,
             reveal_active_tab_in_browser: false,
             show_block_sizes: false,
+            string_list_checkboxes: false,
+            string_list_wrap_text: false,
             angles_in_degrees: true,
             scroll_to_cycle_dropdowns: true,
             confirm_container_overwrite: true,

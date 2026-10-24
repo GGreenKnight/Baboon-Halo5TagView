@@ -432,6 +432,7 @@ impl Baboon {
             },
             export: ExportFeature {
                 container_dump_job: None,
+                pending_string_tool_reload: None,
                 pending_sound_extract: None,
             },
             chimp: ChimpFeature {
@@ -462,6 +463,7 @@ impl Baboon {
                 pending_tool_import: None,
             },
             editor: EditorFeature {
+                string_row_links: Vec::new(),
                 deferred_file_action: None,
                 pending_ce_sound_ref: None,
                 block_clipboard: None,

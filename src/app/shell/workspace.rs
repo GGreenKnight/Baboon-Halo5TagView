@@ -300,7 +300,7 @@ impl Baboon {
             // Opened now, before Find refreshes and draws below; applied with
             // the frame's commands, it opened a frame late.
             if matches!(action, AppAction::OpenFind) {
-                self.open_find();
+                self.open_find_in_context(ctx);
             } else {
                 self.commands.send(action);
             }

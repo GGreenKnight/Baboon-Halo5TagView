@@ -149,6 +149,57 @@ pub(in crate::app) const FOUNDATION_BOLD: &str = "foundation_bold";
 /// Name of the last-resort face appended to every family for glyph coverage.
 const GLYPH_FALLBACK: &str = "glyph_fallback";
 
+/// System CJK faces are fallbacks, shared between contexts rather than reading
+/// the large font collections again whenever a preview creates its own fonts.
+fn cjk_font_fallbacks() -> &'static [(String, std::sync::Arc<FontData>)] {
+    static FONTS: std::sync::OnceLock<Vec<(String, std::sync::Arc<FontData>)>> = std::sync::OnceLock::new();
+    FONTS.get_or_init(|| {
+        [
+            ("cjk_japanese", &[
+                r"C:\Windows\Fonts\YuGothR.ttc",
+                r"C:\Windows\Fonts\msgothic.ttc",
+                "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            ][..]),
+            ("cjk_chinese_simplified", &[
+                r"C:\Windows\Fonts\msyh.ttc",
+                r"C:\Windows\Fonts\simsun.ttc",
+                "/System/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/Supplemental/Songti.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            ][..]),
+            ("cjk_chinese_traditional", &[
+                r"C:\Windows\Fonts\msjh.ttc",
+                r"C:\Windows\Fonts\mingliu.ttc",
+                "/System/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/Supplemental/Songti.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            ][..]),
+            ("cjk_korean", &[
+                r"C:\Windows\Fonts\malgun.ttf",
+                "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            ][..]),
+        ].into_iter().filter_map(|(name, paths)| {
+            paths.iter().find_map(|path| std::fs::read(path).ok().map(|bytes| (*path, bytes))).map(|(path, bytes)| {
+                let mut data = FontData::from_owned(bytes);
+                if path.ends_with("YuGothR.ttc") {
+                    // Yu Gothic's native metrics place fallback glyphs above
+                    // the UI baseline, including the Chinese ideographs it
+                    // supplies. Correct this face without moving Malgun or
+                    // the Chinese fonts whose baseline already lines up.
+                    data.tweak.y_offset_factor = 0.375;
+                }
+                (name.to_owned(), std::sync::Arc::new(data))
+            })
+        }).collect()
+    })
+}
+
 pub(in crate::app) fn foundation_fonts() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     for path in [
@@ -202,6 +253,16 @@ pub(in crate::app) fn foundation_fonts() -> FontDefinitions {
                 .push(GLYPH_FALLBACK.to_owned());
         }
         break;
+    }
+
+    // The default Latin and symbol faces do not cover Japanese kana, Chinese
+    // ideographs or Korean Hangul. Include fallbacks for editable text as well
+    // as labels; the bold family below inherits the same coverage.
+    for (name, data) in cjk_font_fallbacks() {
+        fonts.font_data.insert(name.clone(), data.clone());
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push(name.clone());
+        }
     }
 
     // Bold face for headers (Foundation uses FontWeight=Bold). Try common
@@ -827,6 +888,55 @@ mod tests {
                 });
             });
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn installed_cjk_text_is_vertically_centered_with_latin_text() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(foundation_fonts());
+        let _ = crate::app::run_ui_test(&ctx, Default::default(), |ui| {
+            ui.fonts_mut(|fonts| {
+                for size in [12.0, 16.0] {
+                    let font = FontId::proportional(size);
+                    let samples = ["English", "日本語", "简体中文", "繁體中文", "한국어", "汉字體中文", "English 日本語 中文 한국어"];
+                    let centers: Vec<_> = samples.iter().map(|sample| {
+                        let galley = fonts.layout_no_wrap(sample.to_string(), font.clone(), Color32::WHITE);
+                        (sample, galley.mesh_bounds.center().y - galley.size().y * 0.5)
+                    }).collect();
+                    for (_, center) in &centers[1..] {
+                        assert!((center - centers[0].1).abs() <= 1.5, "font size {size}: rendered centers {centers:?}");
+                    }
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn installed_cjk_fallbacks_render_in_text_fields_labels_and_headers() {
+        let definitions = foundation_fonts();
+        let samples: Vec<_> = [
+            ("cjk_japanese", "日本語ひらがなカタカナ"),
+            ("cjk_chinese_simplified", "简体中文汉语"),
+            ("cjk_chinese_traditional", "繁體中文漢語"),
+            ("cjk_korean", "한국어한글"),
+        ].into_iter().filter(|(name, _)| definitions.font_data.contains_key(*name)).collect();
+        // Minimal CI systems need not have optional system language fonts.
+        // Exercise actual glyph coverage for every installed fallback.
+        let ctx = egui::Context::default();
+        ctx.set_fonts(definitions);
+        let _ = crate::app::run_ui_test(&ctx, Default::default(), |ui| {
+            ui.fonts_mut(|fonts| {
+                for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name(FOUNDATION_BOLD.into())] {
+                    let font = FontId::new(12.0, family);
+                    for (name, sample) in &samples {
+                        assert!(fonts.has_glyphs(&font, sample), "{name} missing glyphs in {font:?}: {sample}");
+                        let galley = fonts.layout_no_wrap(sample.to_string(), font.clone(), Color32::WHITE);
+                        assert!(galley.size().x > 0.0);
+                    }
+                }
+            });
+        });
     }
 
     #[test]

@@ -1044,6 +1044,7 @@ mod tests {
             pending_container_folders: _,
             // Classified field by field below.
             restore: _,
+            source_session: _,
         } = kit;
         let KitView {
             // Carried by `rekey_tag_in_kit`.

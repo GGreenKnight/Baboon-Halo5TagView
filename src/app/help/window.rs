@@ -7,7 +7,9 @@ use super::*;
 /// and tutorials are read once per session and shared from [`HelpFeature`].
 pub(in crate::app) struct HelpWindow {
     pub(in crate::app) tab: HelpPanelTab,
-    docs: Rc<HelpDocsState>,
+    pub(in crate::app) doc_section: Option<String>,
+    pub(in crate::app) doc_reveal_selection: bool,
+    pub(super) docs: Rc<HelpDocsState>,
     tutorials: Rc<TutorialsState>,
     tutorials_game: String,
     tutorials_category: TutorialCategory,
@@ -21,6 +23,8 @@ impl HelpWindow {
     pub(in crate::app) fn new(help: &HelpFeature, tab: HelpPanelTab) -> Self {
         Self {
             tab,
+            doc_section: None,
+            doc_reveal_selection: false,
             docs: help.docs.clone(),
             tutorials: help.tutorials.clone(),
             tutorials_game: GameId::CampaignEvolved.as_str().to_owned(),
@@ -62,7 +66,7 @@ impl Dialog for HelpWindow {
                 ui.add_space(8.0);
                 match self.tab {
                     HelpPanelTab::About => draw_about_tab(ui),
-                    HelpPanelTab::Doc => draw_doc_tab(ui, &self.docs),
+                    HelpPanelTab::Doc => draw_doc_tab(ui, &self.docs, &mut self.doc_section, &mut self.doc_reveal_selection),
                     HelpPanelTab::Tutorials => draw_tutorials_tab(
                         ui,
                         &self.tutorials,
@@ -608,23 +612,73 @@ fn draw_about_tab(ui: &mut Ui) {
     ui.hyperlink_to(BABOON_GITHUB_URL, BABOON_GITHUB_URL);
 }
 
-fn draw_doc_tab(ui: &mut Ui, docs: &HelpDocsState) {
-    ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| match docs {
-            HelpDocsState::Loaded(docs) => {
-                if let Some(tab) = docs.tab("doc") {
-                    for section in &tab.sections {
-                        doc_section(ui, section);
-                    }
-                } else {
-                    doc_load_error(ui, "Documentation failed to load: missing doc tab.");
-                }
-            }
-            HelpDocsState::Failed(error) => {
-                doc_load_error(ui, &format!("Documentation failed to load: {error}"));
-            }
-        });
+fn help_sidebar<R>(ui: &mut Ui, size: Vec2, contents: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
+        Frame::NONE.fill(left_panel())
+            .inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 6 })
+            .show(ui, |ui| {
+                ui.set_width((size.x - 16.0).max(0.0));
+                ui.set_min_height((size.y - 12.0).max(0.0));
+                contents(ui)
+            }).inner
+    }).inner
+}
+
+fn help_sidebar_button(ui: &mut Ui, selected: bool, label: &str) -> egui::Response {
+    ui.add(egui::Button::selectable(selected, label).right_text("").wrap()
+        .min_size(Vec2::new(ui.available_width(), BUTTON_HEIGHT)))
+}
+
+fn draw_doc_tab(ui: &mut Ui, docs: &HelpDocsState, selected: &mut Option<String>, reveal: &mut bool) {
+    let docs = match docs {
+        HelpDocsState::Loaded(docs) => docs,
+        HelpDocsState::Failed(error) => {
+            doc_load_error(ui, &format!("Documentation failed to load: {error}"));
+            return;
+        }
+    };
+    let Some(tab) = docs.tab("doc") else {
+        doc_load_error(ui, "Documentation failed to load: missing doc tab.");
+        return;
+    };
+    if !tab.sections.iter().any(|section| Some(section.title.as_str()) == selected.as_deref()) {
+        *selected = tab.sections.first().map(|section| section.title.clone());
+        *reveal = true;
+    }
+    let available = ui.available_size();
+    let sidebar_width = (available.x * 0.32).clamp(150.0, 230.0);
+    ui.horizontal_top(|ui| {
+        help_sidebar(
+            ui, Vec2::new(sidebar_width, available.y),
+            |ui| {
+                ui.label(RichText::new("Sections").color(subtle_dark()).strong());
+                ui.add_space(4.0);
+                ScrollArea::vertical().id_salt("documentation_sidebar")
+                    .auto_shrink([false, false]).show(ui, |ui| {
+                        for section in &tab.sections {
+                            let active = selected.as_deref() == Some(section.title.as_str());
+                            let response = help_sidebar_button(ui, active, &section.title);
+                            if *reveal && active { response.scroll_to_me(Some(egui::Align::Center)); }
+                            if response.clicked() { *selected = Some(section.title.clone()); }
+                        }
+                    });
+            },
+        );
+        ui.separator();
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), available.y),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ScrollArea::vertical().id_salt(("help documentation", selected.as_deref()))
+                    .auto_shrink([false, false]).show(ui, |ui| {
+                        if let Some(section) = tab.sections.iter().find(|section| Some(section.title.as_str()) == selected.as_deref()) {
+                            doc_section(ui, section);
+                        }
+                    });
+            },
+        );
+    });
+    *reveal = false;
 }
 
 fn draw_tutorials_tab(
@@ -635,9 +689,8 @@ fn draw_tutorials_tab(
 ) {
     let available = ui.available_size();
     ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(
-            Vec2::new(190.0, available.y),
-            egui::Layout::top_down(egui::Align::Min),
+        help_sidebar(
+            ui, Vec2::new(190.0, available.y),
             |ui| {
                 ui.label(RichText::new("Games").color(subtle_dark()).strong());
                 ui.add_space(4.0);
@@ -646,8 +699,8 @@ fn draw_tutorials_tab(
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         for shortcut in EDITING_KIT_SHORTCUTS {
-                            if ui
-                                .selectable_label(
+                            if help_sidebar_button(
+                                    ui,
                                     selected_game.as_str() == shortcut.game.as_str(),
                                     shortcut.game.display_name(),
                                 )
@@ -875,6 +928,7 @@ fn doc_section(ui: &mut Ui, section: &HelpDocSection) {
     ui.add_space(4.0);
     for block in &section.blocks {
         match block {
+            HelpDocBlock::Markdown { text, .. } => super::markdown::draw(ui, text),
             HelpDocBlock::Paragraph { text } => {
                 ui.add(
                     egui::Label::new(RichText::new(text).color(text_dark()))
@@ -915,6 +969,40 @@ fn doc_load_error(ui: &mut Ui, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopening_help_retries_failed_documentation_after_files_are_repaired() {
+        let mut app = Baboon::for_test();
+        app.apply_help_command(HelpCommand::Open(HelpPanelTab::Doc));
+        let failed = Rc::new(HelpDocsState::Failed("previously missing Markdown file".to_owned()));
+        app.help.docs = failed.clone();
+        app.dialogs.get_mut::<HelpWindow>().unwrap().docs = failed;
+        app.apply_help_command(HelpCommand::ShowDocSection(STRING_EDITOR_HELP_SECTION));
+        assert!(matches!(app.help.docs.as_ref(), HelpDocsState::Loaded(_)));
+        assert!(matches!(app.dialogs.get::<HelpWindow>().unwrap().docs.as_ref(), HelpDocsState::Loaded(_)));
+        assert_eq!(app.dialogs.get::<HelpWindow>().unwrap().doc_section.as_deref(), Some(STRING_EDITOR_HELP_SECTION));
+    }
+
+    #[test]
+    fn string_editor_help_opens_its_sidebar_section_and_navigates_to_other_docs() {
+        let mut app = Baboon::for_test();
+        app.apply_help_command(HelpCommand::ShowDocSection(STRING_EDITOR_HELP_SECTION));
+        let help = app.dialogs.get::<HelpWindow>().unwrap();
+        assert!(help.tab == HelpPanelTab::Doc);
+        assert_eq!(help.doc_section.as_deref(), Some(STRING_EDITOR_HELP_SECTION));
+        let mut driver = crate::app::loose_fixture::PromptDriver::new();
+        driver.frame(&mut app, Vec::new());
+        let page = driver.frame(&mut app, Vec::new());
+        assert!(page.iter().any(|(text, _)| text == "Strings Editor"));
+        assert!(page.iter().any(|(text, _)| text == "Sections"));
+        driver.click(&mut app, "Function editor");
+        let function = driver.frame(&mut app, Vec::new());
+        assert_eq!(app.dialogs.get::<HelpWindow>().unwrap().doc_section.as_deref(), Some("Function editor"));
+        assert!(function.iter().filter(|(text, _)| text == "Function editor").count() >= 2, "sidebar and selected content heading");
+        app.apply_help_command(HelpCommand::ShowDocSection(STRING_EDITOR_HELP_SECTION));
+        app.apply_help_command(HelpCommand::Open(HelpPanelTab::Doc));
+        assert_eq!(app.dialogs.get::<HelpWindow>().unwrap().doc_section.as_deref(), Some(STRING_EDITOR_HELP_SECTION), "ordinary Help retains the last selected documentation section");
+    }
 
     #[test]
     fn tutorial_tab_renders_at_minimum_size_in_both_themes() {

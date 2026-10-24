@@ -211,6 +211,7 @@ pub(in crate::app) enum EditorCommand {
     },
     /// Apply what a tag pane collected while it drew.
     PaneDrawn(Box<PaneDrawn>),
+    StringRows(Box<super::string_row_clipboard::RowCommand>),
     /// The pane showing `key` in `kit` took focus: it is the tag the file
     /// actions act on.
     FocusTab { kit: KitId, key: String },
@@ -234,6 +235,7 @@ impl Baboon {
     /// frame draws. Only the two sent every frame a tag is open can say no.
     pub(in crate::app) fn apply_editor_command(&mut self, command: EditorCommand, ctx: &egui::Context) -> bool {
         match command {
+            EditorCommand::StringRows(command) => self.apply_string_row_command(*command, ctx),
             EditorCommand::PaneDrawn(drawn) => return self.apply_pane_drawn(*drawn, ctx),
             EditorCommand::SyncOpenTabs { kit } => {
                 return self

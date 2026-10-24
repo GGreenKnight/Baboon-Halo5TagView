@@ -3251,6 +3251,43 @@ mod tests {
         fixture::synthetic_ce_sound(2, 1.0)
     }
 
+    const STRING_TAG: &str = "ui\\smoke.multilingual_unicode_string_list";
+
+    fn string_kit(h: &mut Harness) {
+        use blam_tags::string_list::{StringListEdit, apply_string_list_edits, read_string_list};
+        let mut tag = fixture::new_tag("multilingual_unicode_string_list");
+        let mut entry = read_string_list(&tag).unwrap().new_entry();
+        entry.id = Some("smoke_message".to_owned());
+        entry.texts[0] = Some("Smoke string".to_owned());
+        apply_string_list_edits(&mut tag, Some(GameId::Halo3), &[StringListEdit::Insert { at: 0, entries: vec![entry] }]).unwrap();
+        pane_kit(h, fixture::GAME, STRING_TAG, &tag);
+        fixture::open_document(&mut h.app, STRING_TAG, tag);
+    }
+
+    /// Exercise the actual Cut/Paste command path that requests confirmation
+    /// before moving between engines with different language sets.
+    fn open_string_language_warning(h: &mut Harness) {
+        use crate::app::editor::string_row_clipboard::{self as clipboard, RowAction, RowCommand, RowDocument, RowRequest, PasteMode};
+        let key = fixture::entry_key(STRING_TAG);
+        let doc = &h.app.model.kits[h.app.model.active].parsed_tags[&key];
+        h.app.apply_string_row_command(RowCommand {
+            document: RowDocument { kit: active_id(h), key, id: doc.id },
+            revision: None, confirmed: false, cut_token: None,
+            request: RowRequest { action: RowAction::Copy { cut: true }, selected: [0].into_iter().collect(), language: 0, scope: "smoke".to_owned() },
+        }, &h.ctx);
+        let data = clipboard::active(&h.ctx).expect("the source row is cut").data.clone();
+        h.app.add_kit();
+        let target = fixture::new_tag_for("halo2_mcc", "multilingual_unicode_string_list");
+        pane_kit(h, "halo2_mcc", STRING_TAG, &target);
+        let key = fixture::open_document(&mut h.app, STRING_TAG, target);
+        let doc = &h.app.model.kits[h.app.model.active].parsed_tags[&key];
+        h.app.apply_string_row_command(RowCommand {
+            document: RowDocument { kit: active_id(h), key, id: doc.id },
+            revision: None, confirmed: false, cut_token: None,
+            request: RowRequest { action: RowAction::Paste { mode: PasteMode::Above, data }, selected: Default::default(), language: 0, scope: "smoke".to_owned() },
+        }, &h.ctx);
+    }
+
     fn render_model_tag() -> TagFile {
         fixture::new_tag("render_model")
     }
@@ -4399,6 +4436,30 @@ mod tests {
                 &["Extract Geometry"],
             ),
             case(
+                "string_extract",
+                &["dialog:StringTransferWindow"],
+                &["export/string_transfer_ui.rs"],
+                string_kit,
+                |h| h.app.open_string_transfer(&fixture::entry_key(STRING_TAG), false, &h.ctx),
+                &["Extract Strings Settings", "Method:", "Destination:"],
+            ),
+            case(
+                "string_import",
+                &["dialog:StringTransferWindow"],
+                &["export/string_transfer_ui.rs"],
+                string_kit,
+                |h| h.app.open_string_transfer(&fixture::entry_key(STRING_TAG), true, &h.ctx),
+                &["Import Strings Settings", "Method:", "Destination:"],
+            ),
+            case(
+                "string_move_language_warning",
+                &["dialog:LanguageWarning"],
+                &["editor/string_row_clipboard_app.rs"],
+                string_kit,
+                open_string_language_warning,
+                &["Move String Rows Between Languages", "These source languages cannot be retained in the destination:", "Move Rows"],
+            ),
+            case(
                 "chimp_discard",
                 &["dialog:ChimpDiscardPrompt"],
                 &["chimp/save.rs"],
@@ -4529,6 +4590,7 @@ mod tests {
         ("kit_tools.kit_tool_drag", "drag-and-drop tracker"),
         ("ce_usmap", "parsed mappings cache"),
         ("export.pending_sound_extract", "a queued request"),
+        ("export.pending_string_tool_reload", "background tool completion bookkeeping; reloads clean documents and has no window"),
         ("editor.pending_ce_sound_ref", "a queued request"),
         ("references.pending_open", "a queued request"),
         ("kit_tools.pending_tool_import", "a queued request"),

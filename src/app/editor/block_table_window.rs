@@ -7,7 +7,7 @@ use crate::app::search::draw_icon_window_header_without_close;
 #[derive(Clone)]
 struct BlockTableDrag(u64);
 
-fn block_table_move_order(len: usize, from: usize, before: usize) -> Vec<usize> {
+pub(super) fn block_table_move_order(len: usize, from: usize, before: usize) -> Vec<usize> {
     let mut order: Vec<_> = (0..len).collect();
     let moved = order.remove(from);
     let destination = if before > from { before - 1 } else { before };

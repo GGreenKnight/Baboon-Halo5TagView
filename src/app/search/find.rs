@@ -425,7 +425,39 @@ impl Baboon {
     /// frame on a large tag, so it reruns only when [`Self::find_results_key`]
     /// changes; otherwise only the cheap render snapshot is republished.
     pub(in crate::app) fn refresh_find(&mut self, ctx: &egui::Context) {
-        if !self.search.find.open || self.search.find.query.is_empty() || self.search.find.look_in.is_empty() {
+        if let Some(context) = &self.search.find.string_context {
+            if let Some(latest) = ctx.data(|data| data.get_temp::<StringFindContext>(string_find_context_id(context.kit, &context.tag_key))) {
+                self.search.find.string_context = Some(latest);
+            }
+        }
+        if self.search.find.open && self.search.find.strings.as_ref().is_some_and(|options| options.selected_rows) {
+            // Preserve explicit result membership until Find is pressed again.
+            // Known edits already rebase indices; undo and whole-tag changes
+            // use unique row identities, never an old index by itself.
+            let current = self.search.find.selection_run.as_ref().and_then(|run| {
+                let same_context = self.search.find.string_context.as_ref().is_some_and(|context|
+                    context.kit == run.context.kit && context.tag_key == run.context.tag_key && context.scope == run.context.scope);
+                if !same_context || run.context.kit != self.model.active_kit_id() { return None; }
+                let doc = self.model.kits[self.model.active].parsed_tags.get(&run.context.tag_key)?;
+                if doc.id != run.document_id { return None; }
+                let stamp = format!("{:?}", doc.content_stamp());
+                if stamp == run.document_stamp { Some((stamp, None)) }
+                else { blam_tags::string_list::read_string_list(&doc.tag).map(|list| (stamp, Some(list.entries))) }
+            });
+            if let Some((stamp, rows)) = current {
+                if let Some(rows) = rows { self.rebase_selected_string_find(rows, None, stamp); }
+            } else {
+                if self.search.find.selection_run.is_some() { self.search.find.filter_results = false; }
+                self.search.find.selection_run = None;
+                self.search.find.occurrences.clear();
+                self.search.find.active = None;
+                self.search.find.matching_cells = Default::default();
+            }
+            self.publish_find_snapshot(ctx);
+            return;
+        }
+        let nothing = self.search.find.strings.as_ref().map_or_else(|| self.search.find.look_in.is_empty(), |options| !options.ids && !options.text);
+        if !self.search.find.open || self.search.find.query.is_empty() || nothing {
             self.search.find.occurrences.clear();
             self.search.find.active = None;
             self.search.find.results_key = None;
@@ -439,7 +471,9 @@ impl Baboon {
             return;
         }
         let old_active = self.search.find.active_occurrence().cloned();
-        if self.search.find.within == FindWithin::AllTags {
+        if self.search.find.strings.is_some() {
+            self.refresh_string_find();
+        } else if self.search.find.within == FindWithin::AllTags {
             self.refresh_all_tag_find(ctx);
         } else {
             self.refresh_open_tag_find();
@@ -469,6 +503,13 @@ impl Baboon {
             self.search.find.searching,
             self.search.find.query,
         );
+        if let Some(options) = &self.search.find.strings {
+            let context = self.search.find.string_context.as_ref()?;
+            let current = if options.language == StringFindLanguage::Current { context.language } else { 0 };
+            let _ = write!(key, "|strings:{options:?}|{:?}|{}|{current}|{}", context.kit, context.tag_key, context.scope);
+            if let Some(doc) = kit.parsed_tags.get(&context.tag_key) { let _ = write!(key, "|{:?}", doc.content_stamp()); }
+            return Some(key);
+        }
         let keys: Vec<&String> = match self.search.find.within {
             FindWithin::CurrentTag => kit.selected_key.iter().collect(),
             FindWithin::OpenTags => kit.open_tabs.iter().collect(),
@@ -537,7 +578,7 @@ impl Baboon {
         self.search.find.occurrences = occurrences;
     }
 
-    fn finish_find_refresh(&mut self, ctx: &egui::Context, old_active: Option<FindOccurrence>) {
+    pub(super) fn finish_find_refresh(&mut self, ctx: &egui::Context, old_active: Option<FindOccurrence>) {
         self.search.find.active = old_active
             .and_then(|active| self.search.find.occurrences.iter().position(|hit| *hit == active))
             .or_else(|| (!self.search.find.occurrences.is_empty()).then_some(0));
@@ -556,12 +597,16 @@ impl Baboon {
     /// Install the render snapshot. Cheap: the match set is shared, and the
     /// active occurrence is re-read because stepping moves it between walks.
     fn publish_find_snapshot(&self, ctx: &egui::Context) {
+        let run = self.search.find.selection_run.as_ref()
+            .filter(|_| self.search.find.strings.as_ref().is_some_and(|options| options.selected_rows));
         let snapshot = std::sync::Arc::new(FindRenderSnapshot {
-            query: self.search.find.query.clone(),
-            match_case: self.search.find.match_case,
-            whole_word: self.search.find.whole_word,
+            query: run.map_or_else(|| self.search.find.query.clone(), |run| run.query.text.clone()),
+            match_case: run.map_or(self.search.find.match_case, |run| run.query.match_case),
+            whole_word: run.map_or(self.search.find.whole_word, |run| run.query.whole_word),
             active: self.search.find.active_occurrence().cloned(),
             matching_cells: self.search.find.matching_cells.clone(),
+            string_context: self.search.find.string_context.clone(),
+            filter_results: self.search.find.filter_results,
         });
         ctx.data_mut(|data| data.insert_temp(find_render_snapshot_id(), snapshot));
     }
@@ -804,6 +849,18 @@ impl Baboon {
 
     /// Select a Find result's tag and navigate immediately or after its load completes.
     pub(in crate::app) fn activate_find_occurrence(&mut self, ctx: &egui::Context, hit: FindOccurrence) {
+        if hit.kind.string_row().is_some() {
+            if let Some(context) = self.search.find.string_context.clone() {
+                if context.kit == self.model.active_kit_id() {
+                    if self.model.kits[self.model.active].selected_key.as_deref() != Some(hit.tag_key.as_str()) {
+                        self.select_entry(hit.tag_key.clone(), ctx.clone());
+                    }
+                    ctx.data_mut(|data| data.insert_temp(string_find_jump_id(&context.scope, &hit.tag_key), hit));
+                    self.publish_find_snapshot(ctx);
+                }
+            }
+            return;
+        }
         if self.model.kits[self.model.active].selected_key.as_deref() != Some(hit.tag_key.as_str()) {
             self.select_entry(hit.tag_key.clone(), ctx.clone());
         }

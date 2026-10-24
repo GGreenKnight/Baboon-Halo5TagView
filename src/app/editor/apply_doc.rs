@@ -49,7 +49,13 @@ impl Baboon {
             }
             return None;
         }
+        // Only retain operation data when an explicit string search needs its
+        // captured rows rebased after this edit.
+        let find_ops = self.search.find.selection_run.as_ref()
+            .filter(|run| run.context.kit == self.model.kits[kit_index].id && run.context.tag_key == tag_key)
+            .map(|_| DeferredOps { string_list_ops: ops.string_list_ops.clone(), block_ops: ops.block_ops.clone(), ..Default::default() });
         let kit = &mut self.model.kits[kit_index];
+        let kit_id = kit.id;
         let view = &mut self.views[kit.id];
         let doc = kit.parsed_tags.get_mut(tag_key)?;
         let applied = apply_deferred_ops(doc, ops, label);
@@ -69,6 +75,7 @@ impl Baboon {
         if let Some(status) = &applied.status {
             self.model.status = status.clone();
         }
+        if let Some(ops) = find_ops { self.track_selected_string_find_edits(kit_id, tag_key, &ops); }
         Some(applied)
     }
 }

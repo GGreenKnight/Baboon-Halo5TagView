@@ -277,6 +277,10 @@ impl EditDrafts {
         self.entries.retain(|key, _| !key.starts_with(&prefix));
     }
 
+    pub(in crate::app) fn has_changed_prefix(&self, prefix: &str) -> bool {
+        self.entries.iter().any(|(key, draft)| key.starts_with(prefix) && draft.changed)
+    }
+
     pub(in crate::app) fn accept_successful_edits(
         &mut self,
         tag_key: &str,
@@ -524,6 +528,11 @@ pub(in crate::app) struct FieldEditContext<'a> {
     /// Expert mode: fields the definitions mark read-only can be edited too.
     pub(in crate::app) expert_mode: bool,
     pub(in crate::app) show_block_sizes: bool,
+    pub(in crate::app) string_list_checkboxes: bool,
+    pub(in crate::app) string_list_wrap_text: bool,
+    pub(in crate::app) string_list_help_requested: bool,
+    pub(in crate::app) string_row_document: Option<super::string_row_clipboard::RowDocument>,
+    pub(in crate::app) string_row_request: Option<super::string_row_clipboard::RowRequest>,
     pub(in crate::app) buffers: &'a mut EditDrafts,
     pub(in crate::app) pending: &'a mut Vec<PendingFieldEdit>,
     pub(in crate::app) block_ops: &'a mut Vec<BlockOp>,
@@ -551,6 +560,7 @@ pub(in crate::app) struct FieldEditContext<'a> {
     /// Whether this pane is the focused tab, which is where the player's
     /// keyboard shortcuts act.
     pub(in crate::app) sound_has_focus: bool,
+    pub(in crate::app) string_list_has_focus: bool,
     /// Set when the user extracts sound audio to disk (per-perm or whole-tag);
     /// the app drains it to decode + write the files.
     pub(in crate::app) sound_extract_request:
@@ -764,6 +774,11 @@ impl<'a> FieldEditContext<'a> {
             editable: false,
             expert_mode: false,
             show_block_sizes: false,
+            string_list_checkboxes: false,
+            string_list_wrap_text: false,
+            string_list_help_requested: false,
+            string_row_document: None,
+            string_row_request: None,
             buffers: &mut sinks.buffers,
             pending: &mut sinks.pending,
             block_ops: &mut sinks.block_ops,
@@ -780,6 +795,7 @@ impl<'a> FieldEditContext<'a> {
             sound_looping: false,
             sound_preview: None,
             sound_has_focus: false,
+            string_list_has_focus: false,
             sound_extract_request: &mut sinks.sound_extract_request,
             sound_language: None,
             ce_sound: None,

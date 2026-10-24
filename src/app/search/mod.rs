@@ -20,6 +20,8 @@ pub(in crate::app) use find_window::{
 };
 pub(in crate::app) mod find_state;
 pub(in crate::app) use find_state::*;
+mod string_find;
+pub(in crate::app) use string_find::*;
 pub(in crate::app) mod field_index;
 pub(in crate::app) use field_index::*;
 pub(in crate::app) mod field_search;
@@ -45,6 +47,7 @@ pub(in crate::app) enum SearchCommand {
     /// Find's query or options changed to these: search again from the first
     /// match.
     FindChanged(FindQuery),
+    FindRunSelection,
     /// Show only what Find matches, or everything.
     FindFilter(bool),
     /// The Find window closed: stop finding.
@@ -66,6 +69,35 @@ pub(in crate::app) enum SearchCommand {
 }
 
 impl Baboon {
+    pub(in crate::app) fn open_find_in_context(&mut self, ctx: &egui::Context) {
+        let kit = &self.model.kits[self.model.active];
+        let context = kit.selected_key.as_ref().and_then(|key| {
+            ctx.data(|data| data.get_temp::<StringFindContext>(string_find_context_id(kit.id, key)))
+        }).filter(|context| context.editor_active);
+        let strings = context.as_ref().map(|context| {
+            let same_tag = self.search.find.string_context.as_ref().is_some_and(|previous| previous.kit == context.kit && previous.tag_key == context.tag_key);
+            let mut options = if same_tag { self.search.find.strings.clone().unwrap_or_default() } else { StringFindOptions::default() };
+            if !context.has_ids { options.ids = false; }
+            if let StringFindLanguage::Language(index) = options.language && index >= context.languages.len() {
+                options.language = StringFindLanguage::Current;
+            }
+            options
+        });
+        if self.search.find.strings != strings || self.search.find.string_context.as_ref().map(|c| (&c.tag_key, c.kit)) != context.as_ref().map(|c| (&c.tag_key, c.kit)) {
+            self.search.find.results_key = None;
+            self.search.find.selection_run = None;
+            self.search.find.active = None;
+            self.search.find.filter_results = false;
+            self.search.find.all_request_id += 1;
+            self.search.find.searching = false;
+            self.search.pending_find_jump = None;
+        }
+        if strings.is_some() { self.search.find.within = FindWithin::CurrentTag; }
+        self.search.find.strings = strings;
+        self.search.find.string_context = context;
+        self.open_find();
+    }
+
     /// Open Find, or select its query again if it is open.
     pub(in crate::app) fn open_find(&mut self) {
         self.search.find.open = true;
@@ -75,7 +107,12 @@ impl Baboon {
     pub(in crate::app) fn apply_search_command(&mut self, command: SearchCommand, ctx: &egui::Context) {
         match command {
             SearchCommand::FindChanged(query) => {
+                let manual = query.strings.as_ref().is_some_and(|options| options.selected_rows);
+                if !manual || !self.search.find.strings.as_ref().is_some_and(|options| options.selected_rows) {
+                    self.search.find.selection_run = None;
+                }
                 self.search.find.set_query(query);
+                if manual { self.refresh_find(ctx); return; }
                 self.search.find.active = None;
                 self.search.find.results_key = None;
                 self.refresh_find(&ctx);
@@ -84,6 +121,7 @@ impl Baboon {
                 }
             }
             SearchCommand::FindFilter(filter) => self.search.find.filter_results = filter,
+            SearchCommand::FindRunSelection => self.run_selected_string_find(ctx),
             SearchCommand::FindClose => self.search.find.close(),
             SearchCommand::FindStep(delta) => self.step_find(&ctx, delta),
             SearchCommand::QueryResult { kit, action } => self.apply_query_result_action(kit, action, ctx),
@@ -96,7 +134,7 @@ impl Baboon {
                     self.focus_kit(index);
                     self.model.kits[index].selected_key = Some(key);
                     self.search.find.within = FindWithin::CurrentTag;
-                    self.open_find();
+                    self.open_find_in_context(ctx);
                 }
             }
         }

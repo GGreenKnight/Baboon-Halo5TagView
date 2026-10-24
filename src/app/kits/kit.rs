@@ -78,6 +78,8 @@ pub(in crate::app) struct Kit {
     /// fresh data. Per kit, so reloading one kit cannot invalidate another's.
     pub(in crate::app) generation: u64,
     pub(in crate::app) field_index: FieldValueIndex,
+    /// Source replacement only; unlike generation, ordinary reindexing keeps it.
+    pub(in crate::app) source_session: u64,
     pub(in crate::app) keywords: KeywordStore,
     /// The favourites the browser lists, resolved against this kit's source:
     /// tags as entries, folders as paths.
@@ -132,6 +134,7 @@ impl Kit {
             open_tabs: Vec::new(),
             index_jobs: IndexJobs::default(),
             generation: 0,
+            source_session: 0,
             field_index: FieldValueIndex::default(),
             keywords: KeywordStore::default(),
             active_favorite_entries: Vec::new(),
@@ -399,9 +402,11 @@ impl Baboon {
         // gave every source in the kit generation 1, so a stale result from
         // the previous source passed `resolve_stamp`.
         let generation = self.model.kits[index].generation.wrapping_add(1);
+        let source_session = self.model.kits[index].source_session.wrapping_add(1);
         self.model.kits[index] = Kit {
             source: Some(source),
             generation,
+            source_session,
             names,
             requested_path,
             profile,
