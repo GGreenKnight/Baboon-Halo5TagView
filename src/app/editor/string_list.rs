@@ -415,6 +415,9 @@ fn draw_strings_frame(
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.set_height(BUTTON_HEIGHT);
+                edit.string_list_help_requested |= icon_button(
+                    ui, ButtonIcon::About, "Open Strings Editor documentation", true, text_dark(),
+                ).clicked();
                 let shown = cache.visible.len();
                 let count = list.entries.len();
                 let noun = if count == 1 { "string" } else { "strings" };
@@ -1702,6 +1705,12 @@ fn string_find_job(
         }
     }
     job
+}
+
+/// Documentation examples use the same tokenizer and theme colours as fields.
+pub(in crate::app) fn highlighted_example(shown: &str, font: &FontId) -> egui::text::LayoutJob {
+    let syntax = text_syntax(None, Some(GameId::Halo3));
+    highlighted_job(shown, &strings::analyze(shown, &syntax), &[], font, &TokenColors::new())
 }
 
 fn highlighted_job(

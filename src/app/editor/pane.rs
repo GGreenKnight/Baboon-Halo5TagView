@@ -372,6 +372,7 @@ pub(in crate::app) fn draw_tag_pane(
         show_block_sizes: cx.model.prefs.show_block_sizes,
         string_list_checkboxes: cx.model.prefs.string_list_checkboxes,
         string_list_wrap_text: cx.model.prefs.string_list_wrap_text,
+        string_list_help_requested: false,
         string_row_document: Some(string_row_clipboard::RowDocument { kit: kit_id, key: key.clone(), id: doc.id }),
         string_row_request: None,
         buffers: &mut view.edit_buffers,
@@ -485,6 +486,9 @@ pub(in crate::app) fn draw_tag_pane(
             &mut edit_context,
         );
         if blam_tags::string_list::is_string_list_group(entry.group_tag) {
+            if edit_context.string_list_help_requested {
+                cx.send(crate::app::help::HelpCommand::ShowDocSection(crate::app::help::STRING_EDITOR_HELP_SECTION));
+            }
             string_list::publish_find_context(ui, kit_id, &edit_context);
             if edit_context.string_list_checkboxes != cx.model.prefs.string_list_checkboxes {
                 let checked = edit_context.string_list_checkboxes;

@@ -44,6 +44,9 @@ pub(in crate::app) struct HelpDocSection {
 #[derive(Clone, Deserialize)]
 #[serde(tag = "kind")]
 pub(in crate::app) enum HelpDocBlock {
+    /// Markdown may live in a separate, directly editable file beside help.json.
+    #[serde(rename = "markdown")]
+    Markdown { file: String, #[serde(skip)] text: String },
     #[serde(rename = "paragraph")]
     Paragraph { text: String },
     #[serde(rename = "bullets")]
@@ -57,9 +60,36 @@ impl HelpDocs {
 }
 
 fn load_help_docs() -> Result<HelpDocs, String> {
-    let path = locate_help_docs_root().join(HELP_DOCS_FILE);
+    load_help_docs_from(&locate_help_docs_root())
+}
+
+fn load_help_docs_from(root: &Path) -> Result<HelpDocs, String> {
+    let path = root.join(HELP_DOCS_FILE);
     let text = std::fs::read_to_string(&path)
         .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
-    serde_json::from_str::<HelpDocs>(&text)
-        .map_err(|error| format!("Could not parse {}: {error}", path.display()))
+    let mut docs = serde_json::from_str::<HelpDocs>(&text)
+        .map_err(|error| format!("Could not parse {}: {error}", path.display()))?;
+    for block in docs.tabs.iter_mut().flat_map(|tab| &mut tab.sections).flat_map(|section| &mut section.blocks) {
+        if let HelpDocBlock::Markdown { file, text } = block {
+            let path = root.join(file);
+            *text = std::fs::read_to_string(&path)
+                .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+        }
+    }
+    Ok(docs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_output_contains_and_loads_referenced_markdown() {
+        // Tests normally find source docs through the development fallback.
+        // Verify the build output explicitly, as the app runs beside that copy.
+        let root = Path::new(env!("OUT_DIR")).join("docs");
+        let docs = load_help_docs_from(&root).expect("copied help docs must load all referenced files");
+        let section = docs.tab("doc").unwrap().sections.iter().find(|section| section.title == STRING_EDITOR_HELP_SECTION).unwrap();
+        assert!(matches!(&section.blocks[0], HelpDocBlock::Markdown { text, .. } if text.contains("## Reading string text")));
+    }
 }

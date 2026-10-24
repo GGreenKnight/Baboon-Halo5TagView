@@ -6,6 +6,7 @@ use crate::app::editor::field_display_meta;
 
 pub(in crate::app) mod docs;
 pub(in crate::app) use docs::*;
+mod markdown;
 pub(in crate::app) mod script_docs;
 pub(in crate::app) use script_docs::*;
 pub(in crate::app) mod field_docs;
@@ -18,6 +19,8 @@ pub(in crate::app) mod map_names;
 pub(in crate::app) use map_names::*;
 pub(in crate::app) mod window;
 pub(in crate::app) use window::HelpWindow;
+
+pub(in crate::app) const STRING_EDITOR_HELP_SECTION: &str = "Strings Editor";
 
 /// Help: the About and help windows, tutorials, HaloScript and field docs, tag
 /// compatibility and map names.
@@ -35,6 +38,8 @@ pub(in crate::app) struct HelpFeature {
 pub(in crate::app) enum HelpCommand {
     /// Open the Help window on this tab.
     Open(HelpPanelTab),
+    /// Open the documentation directly on one dedicated section.
+    ShowDocSection(&'static str),
     /// Open Help on the compatibility of one tag group crossing from one game
     /// to another.
     ShowTagCompat {
@@ -49,7 +54,16 @@ pub(in crate::app) enum HelpCommand {
 impl Baboon {
     pub(in crate::app) fn apply_help_command(&mut self, command: HelpCommand) {
         match command {
-            HelpCommand::Open(tab) => self.help_window().tab = tab,
+            HelpCommand::Open(tab) => {
+                let help = self.help_window();
+                help.tab = tab;
+            }
+            HelpCommand::ShowDocSection(section) => {
+                let help = self.help_window();
+                help.tab = HelpPanelTab::Doc;
+                help.doc_section = Some(section.to_owned());
+                help.doc_reveal_selection = true;
+            }
             HelpCommand::ShowTagCompat {
                 source_game,
                 target_game,
@@ -66,6 +80,15 @@ impl Baboon {
 
     /// The open Help window, opening it on About if it is not.
     fn help_window(&mut self) -> &mut HelpWindow {
+        // Failed loads are recoverable after documentation files are repaired.
+        // Retry on an explicit Help request rather than caching the error for
+        // the entire session or retrying file I/O on every rendered frame.
+        if matches!(self.help.docs.as_ref(), HelpDocsState::Failed(_)) {
+            self.help.docs = Rc::new(HelpDocsState::load());
+            if let Some(window) = self.dialogs.get_mut::<HelpWindow>() {
+                window.docs = self.help.docs.clone();
+            }
+        }
         if self.dialogs.get::<HelpWindow>().is_none() {
             self.dialogs
                 .open(HelpWindow::new(&self.help, HelpPanelTab::About));

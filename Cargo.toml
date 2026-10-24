@@ -32,6 +32,7 @@ egui_tiles = "0.17"
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["ico", "png"] }
 libc = "0.2"
+pulldown-cmark = { version = "0.13", default-features = false }
 rfd = "0.17"
 rodio = { version = "0.20", default-features = false }
 rusqlite = { version = "0.40", features = ["bundled"] }
