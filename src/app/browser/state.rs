@@ -106,6 +106,7 @@ pub(in crate::app) enum BrowserAction {
     /// Replace a scenario's `source files` block from a folder of `.hsc` files.
     /// Leaves the document modified rather than saving it.
     ImportScenarioScripts(String),
+    StringTransfer { key: String, import: bool },
     FindReferences(String),
     ExploreReferences(String),
     /// Write every tag this one pulls in, recursively, to a text file the user

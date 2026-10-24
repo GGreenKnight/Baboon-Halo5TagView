@@ -378,6 +378,7 @@ impl Baboon {
                 self.begin_extract_scenario_scripts(key, ctx)
             }
             BrowserAction::ImportScenarioScripts(key) => self.import_scenario_scripts(&key),
+            BrowserAction::StringTransfer { key, import } => self.open_string_transfer(&key, import, &ctx),
             BrowserAction::RenameTag(key) => self.open_rename_tag(&key),
             BrowserAction::DuplicateTag(key) => self.open_duplicate_tag(&key),
             BrowserAction::DeleteTag(key) => self.open_delete_tag(&key),
@@ -705,7 +706,7 @@ mod tests {
     const UNKNOWN: &str = "file:/no/such/tag.model";
 
     /// How many variants `BrowserAction` has. Bump it with `variant_index`.
-    const VARIANTS: usize = 49;
+    const VARIANTS: usize = 50;
 
     fn variant_index(action: &BrowserAction) -> usize {
         use BrowserAction as A;
@@ -759,6 +760,7 @@ mod tests {
             A::NewContainerFolder { .. } => 46,
             A::RenameContainerFolder { .. } => 47,
             A::DeleteContainerFolder { .. } => 48,
+            A::StringTransfer { .. } => 49,
         }
     }
 
@@ -1384,6 +1386,11 @@ mod tests {
                     ensure(dialog.renaming.as_deref() == Some(FOLDER), "renaming")?;
                     ensure(dialog.name_input == "props", "prefilled leaf")
                 },
+            },
+            Case {
+                action: |kit| A::StringTransfer { key: kit.key(MODEL), import: false },
+                setup: no_setup,
+                check: |app, _, _| status_is(app, "String import/export requires a Unicode string list tag"),
             },
             // 48: on a loose kit there is no pending folder to remove, and the
             // arm reports a removal anyway (QUIRK; the menu never offers it here).

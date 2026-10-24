@@ -154,6 +154,8 @@ fn prefs_from_value(value: &Value) -> GuiPrefs {
             .get("show_block_sizes")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        string_list_checkboxes: value.get("string_list_checkboxes").and_then(Value::as_bool).unwrap_or(false),
+        string_list_wrap_text: value.get("string_list_wrap_text").and_then(Value::as_bool).unwrap_or(false),
         angles_in_degrees: value
             .get("angles_in_degrees")
             .and_then(Value::as_bool)
@@ -825,6 +827,8 @@ fn prefs_to_value(
     value["hidden_shortcuts"] = json!(prefs.hidden_shortcuts);
     value["blender_shortcut_migrated"] = json!(prefs.blender_shortcut_migrated);
     value["follow_system_theme"] = Value::Bool(prefs.follow_system_theme);
+    value["string_list_checkboxes"] = Value::Bool(prefs.string_list_checkboxes);
+    value["string_list_wrap_text"] = Value::Bool(prefs.string_list_wrap_text);
     value["reveal_active_tab_in_browser"] = Value::Bool(prefs.reveal_active_tab_in_browser);
     value["browser_search_scope"] = json!({
         "tags": prefs.browser_search_scope.tags,
@@ -1227,6 +1231,28 @@ mod tests {
             .browser_search_scope,
             tags_only
         );
+    }
+
+    #[test]
+    fn string_selection_checkboxes_default_hidden_and_remember_the_choice() {
+        assert!(!GuiPrefs::default().string_list_checkboxes);
+        assert!(!prefs_from_value(&json!({})).string_list_checkboxes);
+        for shown in [false, true] {
+            let prefs = GuiPrefs { string_list_checkboxes: shown, ..GuiPrefs::default() };
+            let saved = prefs_to_value(&prefs, &HashSet::new(), false);
+            assert_eq!(prefs_from_value(&saved).string_list_checkboxes, shown);
+        }
+    }
+
+    #[test]
+    fn string_wrapping_defaults_off_and_remembers_the_choice() {
+        assert!(!GuiPrefs::default().string_list_wrap_text);
+        assert!(!prefs_from_value(&json!({})).string_list_wrap_text);
+        for wrap in [false, true] {
+            let prefs = GuiPrefs { string_list_wrap_text: wrap, ..GuiPrefs::default() };
+            let saved = prefs_to_value(&prefs, &HashSet::new(), false);
+            assert_eq!(prefs_from_value(&saved).string_list_wrap_text, wrap);
+        }
     }
 
     // Every saved format Baboon reads, fed through the real readers from the

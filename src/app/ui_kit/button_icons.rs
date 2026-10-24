@@ -29,6 +29,9 @@ pub(in crate::app) enum ButtonIcon {
     Closed,
     CopyPath,
     Copy,
+    Cut,
+    Paste,
+    SelectAll,
     Undo,
     Redo,
     Compare,
@@ -36,6 +39,8 @@ pub(in crate::app) enum ButtonIcon {
     Container,
     DefaultTag,
     Doc,
+    UnicodeStringList,
+    Localization,
     Down,
     Duplicate,
     Errors,
@@ -53,11 +58,13 @@ pub(in crate::app) enum ButtonIcon {
     Group,
     HaloMods,
     InsertRow,
+    InsertRowBelow,
     Json,
     Loop,
     Markers,
     JumpTo,
     JumpUp,
+    JumpDown,
     Left,
     ListDropdownLeft,
     ListDropdownRight,
@@ -113,6 +120,9 @@ pub(in crate::app) fn button_icon_svg(icon: ButtonIcon) -> &'static str {
         ButtonIcon::Closed => include_root_str!("assets/Button Icons/Closed.svg"),
         ButtonIcon::CopyPath => include_root_str!("assets/Button Icons/Copy Path.svg"),
         ButtonIcon::Copy => include_root_str!("assets/Button Icons/Copy.svg"),
+        ButtonIcon::Cut => include_root_str!("assets/Button Icons/Cut.svg"),
+        ButtonIcon::Paste => include_root_str!("assets/Button Icons/Paste.svg"),
+        ButtonIcon::SelectAll => include_root_str!("assets/Button Icons/Select All.svg"),
         ButtonIcon::Undo => include_root_str!("assets/Button Icons/Undo.svg"),
         ButtonIcon::Redo => include_root_str!("assets/Button Icons/Redo.svg"),
         ButtonIcon::Compare => include_root_str!("assets/Button Icons/Compare.svg"),
@@ -120,6 +130,8 @@ pub(in crate::app) fn button_icon_svg(icon: ButtonIcon) -> &'static str {
         ButtonIcon::Container => include_root_str!("assets/Button Icons/Container.svg"),
         ButtonIcon::DefaultTag => include_root_str!("assets/icons/default_tag.svg"),
         ButtonIcon::Doc => include_root_str!("assets/Button Icons/Doc.svg"),
+        ButtonIcon::UnicodeStringList => include_root_str!("assets/icons/unicode_string_list.svg"),
+        ButtonIcon::Localization => include_root_str!("assets/Button Icons/localization.svg"),
         ButtonIcon::Down => include_root_str!("assets/Button Icons/Down.svg"),
         ButtonIcon::Duplicate => include_root_str!("assets/Button Icons/Duplicate.svg"),
         ButtonIcon::Errors => include_root_str!("assets/icons/errors.svg"),
@@ -139,11 +151,13 @@ pub(in crate::app) fn button_icon_svg(icon: ButtonIcon) -> &'static str {
         ButtonIcon::Group => include_root_str!("assets/Button Icons/Group.svg"),
         ButtonIcon::HaloMods => include_root_str!("assets/Button Icons/Halo Mods.svg"),
         ButtonIcon::InsertRow => include_root_str!("assets/Button Icons/Insert Row.svg"),
+        ButtonIcon::InsertRowBelow => include_root_str!("assets/Button Icons/Insert Row (below).svg"),
         ButtonIcon::Json => include_root_str!("assets/Button Icons/JSON.svg"),
         ButtonIcon::Loop => include_root_str!("assets/Button Icons/Loop.svg"),
         ButtonIcon::Markers => include_root_str!("assets/icons/markers.svg"),
         ButtonIcon::JumpTo => include_root_str!("assets/Button Icons/Jump To.svg"),
         ButtonIcon::JumpUp => include_root_str!("assets/Button Icons/Jump Up.svg"),
+        ButtonIcon::JumpDown => include_root_str!("assets/Button Icons/Jump Down.svg"),
         ButtonIcon::Left => include_root_str!("assets/Button Icons/Left.svg"),
         ButtonIcon::ListDropdownLeft => {
             include_root_str!("assets/Button Icons/List Dropdown - Left.svg")
@@ -289,6 +303,33 @@ pub(in crate::app) fn icon_text_button(
         enabled,
         egui::Button::image_and_text(image, label).min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
     )
+}
+
+/// Menu shortcuts share a right edge and the same subdued styling throughout the app.
+pub(in crate::app) fn shortcut_menu_button(
+    ui: &mut Ui,
+    label: &str,
+    icon: Option<ButtonIcon>,
+    modifiers: egui::Modifiers,
+    key: egui::Key,
+    enabled: bool,
+) -> egui::Response {
+    let shortcut = shortcut_text(ui.ctx(), modifiers, key);
+    let hint = egui::RichText::new(shortcut)
+        .color(ui.visuals().text_color().gamma_multiply(0.5));
+    let button = match icon {
+        Some(icon) => egui::Button::image_and_text(
+            button_icon_image(ui, icon, text_dark(), BUTTON_ICON_SIZE),
+            label,
+        ),
+        None => egui::Button::new(label),
+    };
+    ui.add_enabled(enabled, button.right_text(hint))
+}
+
+/// The platform's shortcut notation: Ctrl on Windows/Linux, Command on macOS.
+pub(in crate::app) fn shortcut_text(ctx: &egui::Context, modifiers: egui::Modifiers, key: egui::Key) -> String {
+    ctx.format_shortcut(&egui::KeyboardShortcut::new(modifiers, key))
 }
 
 pub(in crate::app) fn icon_button(
@@ -609,10 +650,64 @@ pub(in crate::app) fn icon_text_dropdown_button<R>(
     label: &str,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
-    let (response, inner) = egui::containers::menu::MenuButton::new(format!("     {label}      "))
-        .config(menu_config())
-        .ui(ui, add_contents);
-    let menu = egui::InnerResponse::new(inner.map(|inner| inner.inner), response);
+    icon_text_dropdown_button_sized(ui, icon, label, None, add_contents)
+}
+
+pub(in crate::app) fn fixed_width_icon_text_dropdown_button<R>(
+    ui: &mut Ui,
+    icon: ButtonIcon,
+    label: &str,
+    width: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let mut rect = ui.available_rect_before_wrap();
+    rect.set_width(width);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        icon_text_dropdown_button_sized(ui, icon, label, Some(width), add_contents)
+    }).inner
+}
+
+fn icon_text_dropdown_button_sized<R>(
+    ui: &mut Ui,
+    icon: ButtonIcon,
+    label: &str,
+    width: Option<f32>,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let mut button = egui::Button::new(format!("     {label}      "));
+    if let Some(width) = width {
+        button = egui::Button::new(format!("     {label}"))
+            .right_text("")
+            .min_size(Vec2::new(width, BUTTON_HEIGHT))
+            .truncate();
+    }
+    let menu = if width.is_some() {
+        let response = ui.add(button);
+        let frame = Frame::menu(ui.style());
+        let content_width = (response.rect.width() - frame.total_margin().sum().x).max(0.0);
+        let mut anchor = response.clone();
+        anchor.rect.min.x += frame.total_margin().left;
+        let config = menu_config();
+        let inner = egui::Popup::menu(&anchor)
+            .close_behavior(config.close_behavior)
+            .frame(frame)
+            .width(response.rect.width())
+            .info(
+                egui::UiStackInfo::new(egui::UiKind::Menu)
+                    .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
+            )
+            .show(|ui| {
+                ui.set_width(content_width);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                add_contents(ui)
+            });
+        egui::InnerResponse::new(inner.map(|inner| inner.inner), response)
+    } else {
+        let (response, inner) = egui::containers::menu::MenuButton::from_button(button)
+            .config(menu_config())
+            .ui(ui, add_contents);
+        egui::InnerResponse::new(inner.map(|inner| inner.inner), response)
+    };
     let icon_rect = egui::Rect::from_center_size(
         egui::pos2(
             menu.response.rect.left() + 13.0,
@@ -859,6 +954,9 @@ mod tests {
             ButtonIcon::Closed,
             ButtonIcon::CopyPath,
             ButtonIcon::Copy,
+            ButtonIcon::Cut,
+            ButtonIcon::Paste,
+            ButtonIcon::SelectAll,
             ButtonIcon::Undo,
             ButtonIcon::Redo,
             ButtonIcon::Compare,
@@ -882,9 +980,11 @@ mod tests {
             ButtonIcon::HaloMods,
             ButtonIcon::Import,
             ButtonIcon::InsertRow,
+            ButtonIcon::InsertRowBelow,
             ButtonIcon::Json,
             ButtonIcon::JumpTo,
             ButtonIcon::JumpUp,
+            ButtonIcon::JumpDown,
             ButtonIcon::Left,
             ButtonIcon::Loop,
             ButtonIcon::Markers,

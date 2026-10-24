@@ -21,6 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+arboard = { version = "3.6", default-features = false }
 atomic-write-file = "0.3"
 blam-tags = { git = "https://github.com/camden-smallwood/blam-tags", rev = "7aff2f1", features = ["audio", "iostore"] }
 directories = "6"

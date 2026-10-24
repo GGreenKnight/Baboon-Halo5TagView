@@ -36,7 +36,8 @@ mod bitmap;
 pub(super) use bitmap::*;
 mod model;
 pub(super) use model::*;
-mod string_list;
+pub(in crate::app) mod string_list;
+pub(in crate::app) mod string_row_clipboard;
 use string_list::draw_string_list_tag;
 mod layout_diff;
 pub(in crate::app) use layout_diff::*;
@@ -347,6 +348,7 @@ pub(in crate::app) use dialogs::{
 /// popups, the reference picker, TSV paste and block confirmation — are
 /// dialogs in the host.
 pub(in crate::app) struct EditorFeature {
+    pub(in crate::app) string_row_links: Vec<string_row_clipboard::LinkedMove>,
     /// Clipboard for copy/paste of a block element between identical tags.
     pub(in crate::app) block_clipboard: Option<BlockClipboard>,
     /// Pending play/extract of a `.sound` a container-source tag only refers to,

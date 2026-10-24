@@ -109,6 +109,13 @@ const GROUP_ICONS: &[(TagIcon, &[IconGroup])] = &[
     (tag_icon!("sky"), &[(b"sky ", "sky")]),
     (tag_icon!("sound"), &[(b"snd!", "sound")]),
     (tag_icon!("style"), &[(b"styl", "style")]),
+    (
+        tag_icon!("unicode_string_list"),
+        &[
+            (b"ustr", "unicode_string_list"),
+            (b"unic", "multilingual_unicode_string_list"),
+        ],
+    ),
     (tag_icon!("vehicle"), &[(b"vehi", "vehicle")]),
     (tag_icon!("weapon"), &[(b"weap", "weapon")]),
 ];
@@ -166,8 +173,17 @@ pub(in crate::app) fn tag_icon_image(
     icon: TagIcon,
     size: f32,
 ) -> egui::Image<'static> {
+    let uri = tag_icon_uri_for_pixels_per_point_and_size(icon.name, ctx.pixels_per_point(), size);
+    if icon.svg.contains("currentColor") {
+        let [r, g, b, _] = text_dark().to_array();
+        let color = format!("#{r:02x}{g:02x}{b:02x}");
+        return egui::Image::from_bytes(
+            format!("{}-rgb{r:02x}{g:02x}{b:02x}.svg", uri.trim_end_matches(".svg")),
+            icon.svg.replace("currentColor", &color).into_bytes(),
+        );
+    }
     egui::Image::from_bytes(
-        tag_icon_uri_for_pixels_per_point_and_size(icon.name, ctx.pixels_per_point(), size),
+        uri,
         icon.svg.as_bytes(),
     )
 }
@@ -303,6 +319,18 @@ mod tests {
                     String::from_utf8_lossy(*fourcc)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn themed_unicode_icon_loads_as_an_svg() {
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let icon = tag_icon_image(&ctx, tag_icon!("unicode_string_list"), 16.0);
+        match icon.load_for_size(&ctx, Vec2::splat(16.0)) {
+            Ok(egui::load::TexturePoll::Ready { .. }) => {}
+            Ok(_) => panic!("embedded SVG should load immediately"),
+            Err(error) => panic!("icon failed to load: {error}"),
         }
     }
 

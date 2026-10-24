@@ -231,6 +231,7 @@ name = "baboon"
 version = "0.3.2"
 dependencies = [
  "anyhow",
+ "arboard",
  "atomic-write-file",
  "blam-tags",
  "directories",

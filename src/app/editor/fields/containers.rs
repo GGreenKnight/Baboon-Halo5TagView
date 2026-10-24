@@ -807,7 +807,7 @@ fn add_foundation_header_spacing(ui: &mut Ui) {
     ui.add_space((8.0 - ui.spacing().item_spacing.y).max(0.0));
 }
 
-const FOUNDATION_CONTAINER_RADIUS: f32 = 5.0;
+pub(in crate::app) const FOUNDATION_CONTAINER_RADIUS: f32 = 5.0;
 
 fn foundation_header_rounding(joined_to_body: bool) -> egui::CornerRadius {
     if joined_to_body {

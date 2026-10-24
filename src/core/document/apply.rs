@@ -148,6 +148,9 @@ pub(crate) fn apply_deferred_ops(
             status = next;
         }
     };
+    // String cell commits address the rows drawn this frame, before a drag
+    // reorders the complete entries (including all language offsets).
+    keep(apply_string_list_ops(tag, &string_list_ops, dirty));
     keep(apply_block_ops(tag, block_ops, dirty));
     keep(apply_shader_ops(tag, shader_ops, dirty));
     keep(apply_shader_param_ops(tag, shader_param_ops, dirty));
@@ -156,7 +159,6 @@ pub(crate) fn apply_deferred_ops(
     let model_variants_changed = variant_status.is_some();
     keep(variant_status);
     keep(apply_function_data_ops(tag, function_data_ops, dirty));
-    keep(apply_string_list_ops(tag, &string_list_ops, dirty));
     let mut outcomes = applied.outcomes;
     outcomes.extend(unchanged);
     AppliedDeferredOps {
@@ -1761,6 +1763,41 @@ mod tests {
 
     /// A string list edit changes the tag, marks it modified, and undoes as
     /// one step back to the bytes it started from.
+    #[test]
+    fn string_reorder_preserves_all_languages_offsets_and_undo_in_every_engine() {
+        use blam_tags::string_list::{StringEntry, read_string_list};
+        for game in GameId::ALL {
+            let group = if game == GameId::HaloCe { "unicode_string_list" } else { "multilingual_unicode_string_list" };
+            let schema = locate_definitions_root().join(game.as_str()).join(format!("{group}.json"));
+            let mut tag = TagFile::new(schema).unwrap();
+            let list = read_string_list(&tag).unwrap();
+            let entries: Vec<_> = (0..3).map(|index| StringEntry {
+                id: (game != GameId::HaloCe).then(|| format!("s{index}")),
+                texts: (0..list.languages.len()).map(|language| {
+                    (language == 0 || (index + language) % 3 != 0).then(|| format!("{index}:{language} 日本語 \u{E156}"))
+                }).collect(),
+            }).collect();
+            apply_string_list_edits(&mut tag, Some(game), &[StringListEdit::Insert { at: 0, entries: entries.clone() }]).unwrap();
+            let mut doc = TagDocument::clean(tag);
+            let before = doc.tag.write_to_bytes().unwrap();
+            apply_deferred_ops(&mut doc, DeferredOps {
+                string_list_ops: vec![StringListOp { game: Some(game), edit: StringListEdit::SetText { index: 2, language: 0, text: "Edited before dropping".to_owned() } }],
+                block_ops: vec![BlockOp { path: "string references".to_owned(), kind: BlockOpKind::Reorder { order: vec![2, 0, 1] } }],
+                ..DeferredOps::default()
+            }, "Reorder strings");
+            let bytes = doc.tag.write_to_bytes().unwrap();
+            let reopened = TagFile::read_from_bytes(&bytes).unwrap();
+            let list = read_string_list(&reopened).unwrap();
+            let mut expected = vec![entries[2].clone(), entries[0].clone(), entries[1].clone()];
+            expected[0].texts[0] = Some("Edited before dropping".to_owned());
+            assert_eq!(list.entries, expected, "{game:?}");
+            assert_eq!(list.damaged_offsets, 0, "{game:?}");
+            doc.journal.end_edit_window();
+            let (snapshot, _) = doc.journal.undo(&doc.tag).unwrap();
+            assert_eq!(*snapshot, before, "{game:?}");
+        }
+    }
+
     #[test]
     fn string_list_ops_apply_and_undo() {
         let schema = locate_definitions_root().join("halo3_mcc/multilingual_unicode_string_list.json");

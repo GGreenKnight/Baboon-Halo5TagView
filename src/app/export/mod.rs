@@ -22,6 +22,9 @@ pub(super) mod import_info;
 pub(super) mod json;
 pub(super) mod references;
 pub(super) mod scripts;
+pub(in crate::app) mod string_lists;
+pub(in crate::app) mod string_list_window;
+pub(in crate::app) mod string_transfer;
 pub(super) mod shader_source;
 pub(in crate::app) mod sound_extract;
 pub(in crate::app) mod extract_target_window;
@@ -134,10 +137,29 @@ pub(in crate::app) struct ExportFeature {
     pub(in crate::app) container_dump_job: Option<ContainerDumpJob>,
     /// Pending sound-extraction batch (decode + write), drained by the audio layer.
     pub(in crate::app) pending_sound_extract: Option<ExtractRequest>,
+    pub(in crate::app) pending_string_tool_reload: Option<string_list_window::StringToolReload>,
 }
 
 /// What export can be asked to do.
 pub(in crate::app) enum ExportCommand {
+    StringTransfer {
+        stamp: KitStamp,
+        key: String,
+        import: bool,
+        language: Option<usize>,
+        path: PathBuf,
+        options: string_transfer::StringTransferOptions,
+    },
+    ToolStringTransfer {
+        stamp: KitStamp,
+        key: String,
+        import: bool,
+    },
+    SaveStringTransferTags {
+        stamp: KitStamp,
+        key: String,
+        all: bool,
+    },
     /// Extract `scope` of the containers of `kit` into `output`. The
     /// extraction reads the active kit's source, so the handler returns to
     /// that workspace first and drops the run if it has closed.
@@ -161,6 +183,21 @@ pub(in crate::app) enum ExportCommand {
 impl Baboon {
     pub(in crate::app) fn apply_export_command(&mut self, command: ExportCommand, ctx: &egui::Context) {
         match command {
+            ExportCommand::StringTransfer { stamp, key, import, language, path, options } => {
+                self.finish_string_transfer_options(stamp, &key, import, language, &path, options);
+            }
+            ExportCommand::ToolStringTransfer { stamp, key, import } => {
+                self.start_tool_string_transfer(stamp, &key, import, ctx);
+            }
+            ExportCommand::SaveStringTransferTags { stamp, key, all } => {
+                if let Some(index) = self.model.resolve_stamp(stamp) {
+                    self.model.active = index;
+                    let keys = if all { self.model.kits[index].parsed_tags.iter().filter(|(_, doc)| doc.dirty.is_set()).map(|(key, _)| key.clone()).collect() } else { vec![key] };
+                    for key in keys {
+                        if let Err(error) = self.save_tag_by_key(&key) { self.model.status = error; break; }
+                    }
+                }
+            }
             ExportCommand::StartContainerDump { kit, output, scope } => {
                 if self.focus_navigation_kit(kit) {
                     self.start_container_dump(kit, output, scope, ctx.clone());

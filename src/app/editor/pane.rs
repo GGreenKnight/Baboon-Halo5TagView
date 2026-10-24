@@ -40,6 +40,7 @@ pub(in crate::app) struct PaneDrawn {
     ops: DeferredOps,
     find_filter_block_jump: Option<String>,
     bitmap_hover_requests: Arc<std::sync::Mutex<Vec<TagEntry>>>,
+    row_command: Option<string_row_clipboard::RowCommand>,
 }
 
 impl Baboon {
@@ -55,6 +56,7 @@ impl Baboon {
             ops,
             find_filter_block_jump,
             bitmap_hover_requests,
+            mut row_command,
         } = drawn;
         let Some(kit_index) = self.model.kit_index(kit) else {
             return false;
@@ -63,7 +65,18 @@ impl Baboon {
         let mut changed = !ops.is_empty();
         // Applying them opens the undo window, or closes it on a frame with
         // none, which is why a pane sends this every frame.
+        if row_command.as_ref().is_some_and(|command| command.revision.is_some_and(|revision| self.model.kits[kit_index].parsed_tags.get(&key).is_none_or(|doc| doc.id != command.document.id || doc.dirty.revision() != revision))) {
+            row_command = None;
+            self.model.status = "The string list changed. Select the destination and paste again.".to_owned();
+        }
         self.apply_doc_ops(kit_index, &key, "Edit", ops, UndoStep::Coalesce);
+        if let Some(command) = &mut row_command {
+            command.revision = self.model.kits[kit_index].parsed_tags.get(&key).map(|doc| doc.dirty.revision());
+        }
+        if let Some(command) = row_command {
+            self.apply_string_row_command(command, ctx);
+            changed = true;
+        }
         if find_filter_block_jump.is_some() {
             // Preserve find_filter_applied until the next render so disabling
             // the filter produces the normal one-shot restore-defaults pass.
@@ -135,6 +148,10 @@ pub(in crate::app) fn draw_tag_pane(
     editor: &mut EditorFeature,
 ) {
     let ctx = cx.egui;
+    if string_row_clipboard::refresh_cut(cx.model, ctx) {
+        cx.set_status("Cut cancelled because the source changed. The clipboard can still be pasted as a copy.".to_owned());
+    }
+    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) { string_row_clipboard::dismiss(ctx); }
     let key = entry.key.clone();
     let kit_read_only = cx.model.editing_kit_is_read_only(kit_index);
     draw_responsive_tag_header(cx, ui, kit_index, entry, show_keyword_bar);
@@ -205,6 +222,7 @@ pub(in crate::app) fn draw_tag_pane(
         }
     };
     let apply_find_filter = supports_field_search
+        && find.strings.is_none()
         && find.open
         && find.filter_results
         && !find.query.is_empty()
@@ -352,6 +370,10 @@ pub(in crate::app) fn draw_tag_pane(
         editable: !kit_read_only && is_editable_tag(entry, &doc.tag),
         expert_mode,
         show_block_sizes: cx.model.prefs.show_block_sizes,
+        string_list_checkboxes: cx.model.prefs.string_list_checkboxes,
+        string_list_wrap_text: cx.model.prefs.string_list_wrap_text,
+        string_row_document: Some(string_row_clipboard::RowDocument { kit: kit_id, key: key.clone(), id: doc.id }),
+        string_row_request: None,
         buffers: &mut view.edit_buffers,
         pending: &mut ops.pending,
         block_ops: &mut ops.block_ops,
@@ -368,6 +390,7 @@ pub(in crate::app) fn draw_tag_pane(
         sound_looping,
         sound_preview,
         sound_has_focus,
+        string_list_has_focus: sound_has_focus,
         sound_extract_request: &mut sound_extract_request,
         sound_language: audio.language.as_deref(),
         ce_sound: ce_sound.as_deref(),
@@ -461,12 +484,27 @@ pub(in crate::app) fn draw_tag_pane(
             cx.model.prefs.expert_mode,
             &mut edit_context,
         );
+        if blam_tags::string_list::is_string_list_group(entry.group_tag) {
+            string_list::publish_find_context(ui, kit_id, &edit_context);
+            if edit_context.string_list_checkboxes != cx.model.prefs.string_list_checkboxes {
+                let checked = edit_context.string_list_checkboxes;
+                cx.edit_prefs(move |prefs| prefs.string_list_checkboxes = checked);
+            }
+            if edit_context.string_list_wrap_text != cx.model.prefs.string_list_wrap_text {
+                let wrap = edit_context.string_list_wrap_text;
+                cx.edit_prefs(move |prefs| prefs.string_list_wrap_text = wrap);
+            }
+        }
         if model_preview.perspective != model_preview_perspective {
             let perspective = model_preview.perspective;
             cx.edit_prefs(move |prefs| prefs.model_preview_perspective = perspective);
         }
     }
 
+    let row_command = edit_context.string_row_request.take().map(|request| string_row_clipboard::RowCommand {
+        document: string_row_clipboard::RowDocument { kit: kit_id, key: key.clone(), id: doc.id },
+        revision: Some(doc.dirty.revision()), request, confirmed: false, cut_token: None,
+    });
     let find_filter_block_jump = ctx.data_mut(|data| {
         let id = find_filter_block_jump_id(scope, &key);
         let request = data.get_temp::<String>(id);
@@ -551,6 +589,13 @@ pub(in crate::app) fn draw_tag_pane(
             Err(error) => cx.set_status(format!("Could not open block table: {error}")),
         }
     }
+    // New entries may not match Find. Reveal them so the requested scroll/focus
+    // can reach the actual rows rather than leaving an invisible selection.
+    if find.filter_results && find.strings.as_ref().is_some_and(|options| !options.selected_rows)
+        && find.string_context.as_ref().is_some_and(|context| context.kit == kit_id && context.tag_key == key && context.scope == scope)
+        && ops.string_list_ops.iter().any(|op| matches!(op.edit, blam_tags::string_list::StringListEdit::Insert { .. })) {
+        cx.send(SearchCommand::FindFilter(false));
+    }
     cx.send(EditorCommand::PaneDrawn(Box::new(PaneDrawn {
         kit: kit_id,
         key,
@@ -558,6 +603,7 @@ pub(in crate::app) fn draw_tag_pane(
         ops,
         find_filter_block_jump,
         bitmap_hover_requests,
+        row_command,
     })));
 }
 
@@ -599,6 +645,7 @@ fn draw_responsive_tag_header(
     let dynamic_actions_width = match &entry.group_tag.to_be_bytes() {
         b"scnr" => TAG_HEADER_DYNAMIC_ACTIONS_WIDTH,
         b"bitm" => BITMAP_HEADER_ACTIONS_WIDTH,
+        b"unic" | b"ustr" => 250.0,
         _ => 0.0,
     };
     let has_dynamic_actions = dynamic_actions_width > 0.0;
@@ -762,6 +809,20 @@ fn draw_responsive_tag_header(
 
 fn draw_tag_header_specific_actions(cx: &Ctx, ui: &mut Ui, kit_index: usize, entry: &TagEntry) {
     match &entry.group_tag.to_be_bytes() {
+        b"unic" | b"ustr" => {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = PANE_HEADER_ACTION_GAP;
+                for (import, icon, label) in [(true, ButtonIcon::Import, "Import"), (false, ButtonIcon::Export, "Extract")] {
+                    let enabled = !import || !cx.model.editing_kit_is_read_only(kit_index);
+                    if icon_text_button(ui, icon, label, enabled).clicked() {
+                        cx.send(BrowserCommand::Action {
+                            kit: cx.model.kits[kit_index].id,
+                            action: BrowserAction::StringTransfer { key: entry.key.clone(), import },
+                        });
+                    }
+                }
+            });
+        }
         b"scnr" => draw_scenario_launcher_buttons(cx, ui, kit_index, entry),
         b"bitm" => {
             let tags_root = cx.model.loaded_tags_root_for(kit_index);

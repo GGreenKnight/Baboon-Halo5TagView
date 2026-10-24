@@ -40,12 +40,6 @@ pub(in crate::app) const SHORTCUTS: &[(egui::Modifiers, egui::Key, fn() -> AppAc
 ];
 
 /// The actions this frame's key presses ask for, each press consumed.
-/// How the shortcut for `key` with `modifiers` reads on this platform, for a
-/// menu item: "Ctrl+S" on Windows and Linux, "⌘S" on macOS.
-pub(in crate::app) fn shortcut_text(ctx: &egui::Context, modifiers: egui::Modifiers, key: egui::Key) -> String {
-    ctx.format_shortcut(&egui::KeyboardShortcut::new(modifiers, key))
-}
-
 pub(in crate::app) fn pressed_shortcuts(ctx: &egui::Context) -> Vec<AppAction> {
     SHORTCUTS
         .iter()
@@ -141,7 +135,7 @@ impl Baboon {
                     self.open_new_tag_dialog();
                 }
             }
-            AppAction::OpenFind => self.open_find(),
+            AppAction::OpenFind => self.open_find_in_context(ctx),
             AppAction::ImportTags => {
                 if self.model.current_source_is_container() {
                     self.begin_import_tag(None);
