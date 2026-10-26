@@ -1,4 +1,4 @@
-Open a `multilingual_unicode_string_list`, or a Halo CE `unicode_string_list`, and choose **Strings Editor**. Each row shows its **Index**, **String ID** (multilingual lists), and the selected language's **Text**. *Index is the zero-based storage position.* **Tag Fields** shows the raw field tree.
+Open a `multilingual_unicode_string_list`, or a Halo CE `unicode_string_list` or `hud_message_text`, and choose **Strings Editor**. Each row shows its **Index**, **String ID** (multilingual lists), and the selected language's **Text**. *Index is the zero-based storage position.* **Tag Fields** shows the raw field tree.
 
 ## Reading string text
 
@@ -118,3 +118,13 @@ Halo CE CSV uses **Index** instead of String ID. Amend updates existing indices 
 Tool mode is available for verified commands: **Halo 2 import/export** and **Halo CE import**. It uses saved files and native language folders. Directory imports may overwrite sibling tags and write directly to disk, without Baboon's import modes or undo.
 
 **Save open edits first.** Clean open lists reload when Tool finishes; newer edits are preserved.
+
+## Halo CE HUD messages
+
+`hud_message_text` uses **Index**, **Name**, and **Text** columns. It supports the same row editing, clipboard, Find/Replace, and undo/redo actions as other string lists. Names occupy a 32-byte field: use 1–31 ASCII bytes without surrounding whitespace, control characters, or `=`. Renaming or deleting does not update external references.
+
+Type `%` for button/action prompts such as `%action`, `%a-button`, and `%rotate-weapons`, or runtime substitutions `%custom-1` through `%custom-8`. Tokens are highlighted and completed; invalid tokens remain red drafts. `|n` is the engine line-break notation. `%%` in the editor or CSV preserves a literal percent sign in a text run. Ordinary CE Unicode lists keep treating `%` as literal text.
+
+Native text transfers use UTF-16 `.hmt` files containing `name=text` lines, preserving whitespace and literal backslashes. CSV uses **Name,Text** headers and the editor's escape notation. Both provide the existing Amend/Replace preview and one undoable, unsaved import. Native HMT cannot represent actual embedded line breaks or literal percent escapes losslessly; use CSV for those values. Rare ambiguous token boundaries use braces, such as `%{back}-button` for the Back action followed by literal `-button`; this also requires CSV. Tool mode is unavailable for HUD messages.
+
+The editor rebuilds the text blob and message elements together and validates the format limits before applying edits. Tags with malformed offsets, UTF-16, or unknown element codes cannot be edited through the Strings Editor; use Tag Fields to inspect them.

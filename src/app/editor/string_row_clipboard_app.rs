@@ -71,13 +71,14 @@ impl Baboon {
         }
         let list = strings::read_string_list(&document.tag).ok_or("This tag has no readable string list.")?;
         let game = self.model.kits[index].source.as_ref().and_then(|source| source.game);
-        let syntax = self.row_syntax(index);
+        let syntax = list.storage.text_syntax(self.row_syntax(index));
         match command.request.action.clone() {
             RowAction::Copy { cut: cutting } => {
                 if cutting && self.model.editing_kit_is_read_only(index) { return Err("This tag is read-only.".to_owned()); }
                 let indices: BTreeSet<_> = command.request.selected.iter().copied().filter(|&index| index < list.entries.len()).collect();
                 if indices.is_empty() { return Ok(()); }
                 let data = RowData {
+                    hud: list.storage == Storage::HudMessages,
                     token: uuid::Uuid::new_v4().to_string(), classic: list.storage == Storage::Classic,
                     languages: list.languages.iter().map(|language| language.name.clone()).collect(),
                     language: command.request.language.min(list.languages.len() - 1),
@@ -283,6 +284,24 @@ mod tests {
         let data = clipboard(ctx, &list(app, key), 0, &app.row_syntax(0)).unwrap();
         let command = command(app, key, selected, RowAction::Paste { mode, data });
         app.apply_string_row_command(command, ctx);
+    }
+
+    #[test]
+    fn hud_cross_tag_cut_preserves_tokens_names_and_linked_undo() {
+        let kit=crate::app::loose_fixture::LooseKit::new("hud-cut", "haloce_mcc");
+        for (file,name,text) in [("a","pickup","Hold %action %custom-1"),("b","exit","%back")] {
+            let mut tag=TagFile::new_classic(crate::core::bundled::locate_definitions_root().join("haloce_mcc/hud_message_text.json"),blam_tags::classic::ClassicEngine::HaloCe).unwrap();
+            strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&[StringListEdit::Insert {at:0,entries:vec![StringEntry {id:Some(name.into()),texts:vec![Some(text.into())]}]}]).unwrap();
+            std::fs::write(kit.path(&format!("{file}.hud_message_text")),tag.write_to_bytes().unwrap()).unwrap();
+        }
+        let mut app=Baboon::for_test(); kit.install(&mut app);
+        let a=kit.open(&mut app,"a.hud_message_text"); let b=kit.open(&mut app,"b.hud_message_text"); let ctx=egui::Context::default();
+        let before_a=app.model.kits[0].parsed_tags[&a].tag.write_to_bytes().unwrap(); let before_b=app.model.kits[0].parsed_tags[&b].tag.write_to_bytes().unwrap();
+        copy(&mut app,&ctx,&a,&[0],true); paste(&mut app,&ctx,&b,&[0],PasteMode::Below);
+        assert!(list(&app,&a).entries.is_empty()); assert_eq!(list(&app,&b).entries[1].texts[0].as_deref(),Some("Hold %action %custom-1"));
+        assert_eq!(list(&app,&b).entries[1].id.as_deref(),Some("pickup"));
+        app.undo_current_tag();
+        assert_eq!(app.model.kits[0].parsed_tags[&a].tag.write_to_bytes().unwrap(),before_a); assert_eq!(app.model.kits[0].parsed_tags[&b].tag.write_to_bytes().unwrap(),before_b);
     }
 
     #[test]

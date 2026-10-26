@@ -173,6 +173,10 @@ pub(in crate::app) fn text_syntax(definitions_root: Option<&Path>, game: Option<
         .clone()
 }
 
+pub(in crate::app) fn tag_text_syntax(definitions_root: Option<&Path>, game: Option<GameId>, key: &str) -> TextSyntax {
+    text_syntax(definitions_root, game).with_hud_messages(key.ends_with(".hud_message_text"))
+}
+
 /// Draw the Strings / Tag Fields toggle for a string list tag, and the
 /// Strings tab when it is the one shown. Returns whether it drew the tab,
 /// leaving nothing for the field tree.
@@ -277,7 +281,7 @@ pub(in crate::app) fn publish_find_context(ui: &Ui, kit: KitId, edit: &FieldEdit
     let context = StringFindContext { selected: view.selected.clone(), kit, tag_key: edit.tag_key.to_owned(), scope: edit.view_scope.to_owned(), game: edit.game,
         definitions_root: edit.definitions_root.map(Path::to_path_buf), language: view.language,
         languages: cache.list.languages.iter().map(|language| language.name.clone()).collect(),
-        has_ids: cache.list.storage == Storage::Multilingual, editor_active: view.tab == StringListTab::Strings };
+        has_ids: cache.list.storage.has_ids(), editor_active: view.tab == StringListTab::Strings };
     let id = string_find_context_id(kit, edit.tag_key);
     let other_pane = ui.data(|data| data.get_temp::<StringFindContext>(id)).is_some_and(|previous| previous.scope != context.scope);
     // In split views retain the last interacted pane instead of whichever
@@ -334,7 +338,7 @@ fn draw_strings_frame(
 ) {
     let list = &cache.list;
     // Halo CE's syntax has no glyphs; its renderer still reads `|n`.
-    let syntax = text_syntax(edit.definitions_root, game);
+    let syntax = list.storage.text_syntax(text_syntax(edit.definitions_root, game));
     let editable = edit.editable;
     view.selected.retain(|&index| index < list.entries.len());
     let mut actions = ToolbarActions::default();
@@ -502,7 +506,7 @@ fn draw_table(
 ) -> egui::Rect {
     let list = &cache.list;
     let visible = cache.visible.clone();
-    let multilingual = list.storage == Storage::Multilingual;
+    let multilingual = list.storage.has_ids();
     let language = view.language;
     let scroll_to = view.scroll_to.take().and_then(|index| visible.iter().position(|&shown| shown == index));
     let height = (ui.available_height() - HEADER_HEIGHT).max(0.0);
@@ -570,15 +574,15 @@ fn draw_table(
             }
             if multilingual {
                 header.col(|ui| padded_table_cell(ui, |ui| {
-                    ui.strong("String ID");
+                    ui.strong(list.storage.identity_label());
                 }));
             }
             header.col(|ui| padded_table_cell(ui, |ui| {
                 header_bottom = ui.max_rect().bottom() + column_spacing * 0.5;
-                if multilingual {
+                if list.storage == Storage::Multilingual {
                     ui.strong(format!("{} Text", list.languages[language].name));
                 } else {
-                    ui.strong("String Text");
+                    ui.strong(list.storage.text_label());
                 }
             }));
         })
@@ -816,7 +820,7 @@ fn draw_table(
             view.scroll_to = order.iter().position(|index| from.contains(index));
             view.completion.close();
             edit.block_ops.push(crate::core::document::ops::BlockOp {
-                path: "string references".to_owned(),
+                path: list.storage.rows_block().to_owned(),
                 kind: crate::core::document::ops::BlockOpKind::Reorder { order },
             });
         }
@@ -1037,7 +1041,8 @@ fn id_cell(ui: &mut Ui, list: &StringList, index: usize, editable: bool, interac
     let tag_key = edit.tag_key.to_owned();
     let game = edit.game;
     let scope = edit.view_scope.to_owned();
-    let syntax = text_syntax(edit.definitions_root, game);
+    let syntax = list.storage.text_syntax(text_syntax(edit.definitions_root, game));
+    let storage = list.storage;
     let wrap = edit.string_list_wrap_text;
     let mut layouter = |ui: &Ui, buffer: &dyn egui::TextBuffer, width: f32| {
         let mut job = egui::text::LayoutJob::default();
@@ -1079,7 +1084,7 @@ fn id_cell(ui: &mut Ui, list: &StringList, index: usize, editable: bool, interac
     };
     draft.note_response(&response);
     let mut status = None;
-    if !valid_id(&draft.text) {
+    if !valid_id(&draft.text) || (storage == Storage::HudMessages && strings::validate_hud_name(&draft.text).is_err()) {
         status = keep_refused_draft(ui, &response, draft, &current);
     } else if editable && draft.should_commit(ui, &response) {
         edit.string_list_ops.push(StringListOp { game: edit.game, edit: StringListEdit::SetId { index, id: draft.text.clone() } });
@@ -1087,6 +1092,7 @@ fn id_cell(ui: &mut Ui, list: &StringList, index: usize, editable: bool, interac
     draft.keep_commit(|| {
         DraftCommit::new(&tag_key, vec![key.clone()], move |texts| {
             let id = texts[0];
+            if storage == Storage::HudMessages { strings::validate_hud_name(id)?; }
             if !valid_id(id) {
                 return Err(format!("string {index}: an id can't be empty or start or end with a space"));
             }
@@ -1108,6 +1114,7 @@ fn valid_id(id: &str) -> bool {
 
 /// What is wrong with `id` as string `index`'s id, if anything.
 fn id_problem(list: &StringList, index: usize, id: &str) -> Option<String> {
+    if list.storage == Storage::HudMessages { if let Err(error) = strings::validate_hud_name(id) { return Some(error); } }
     if !valid_id(id) {
         return Some("An id can't be empty, or start or end with a space.".to_owned());
     }
@@ -1272,7 +1279,7 @@ fn text_cell(
     paint_cell_fill(ui, background, rect, (errors || too_long).then(invalid_value_fill));
     let response = output.response.response.clone();
     let response = if errors {
-        response.on_hover_text("The tool would refuse this text: a literal & is &&, and a glyph is &name or &U+XXXX.")
+        response.on_hover_text(if list.storage == Storage::HudMessages { "Unknown HUD token or invalid escape. Use % followed by a button, action or custom substitution; %% represents a literal percent." } else { "The tool would refuse this text: a literal & is &&, and a glyph is &name or &U+XXXX." })
     } else if too_long {
         response.on_hover_text(format!("{units} characters: the tool keeps only the first {max_units}."))
     } else {
@@ -1494,7 +1501,7 @@ fn open_completion(
     // `typed`. Match the complete token under the caret when it is known,
     // including underscores, so its own entry is highlighted. Incomplete
     // names still use prefix matching while the user types.
-    if cursor < found.replace.end && matches!(found.kind, strings::CompletionKind::Glyph | strings::CompletionKind::Keyword) {
+    if cursor < found.replace.end && matches!(found.kind, strings::CompletionKind::Hud | strings::CompletionKind::Glyph | strings::CompletionKind::Keyword) {
         let name = &shown[found.replace.start + 1..found.replace.end];
         if choices.iter().any(|choice| choice.name.eq_ignore_ascii_case(name)) {
             found.typed = name.to_owned();
@@ -1749,7 +1756,9 @@ fn highlighted_job(
         match token.map(|token| token.kind) {
             Some(TokenKind::Escape | TokenKind::Ampersand) => format.color = colors.escape,
             Some(TokenKind::Glyph) => {
-                format.color = if token.is_some_and(|token| shown[token.range.clone()].starts_with("&U+")) {
+                format.color = if token.is_some_and(|token| shown[token.range.clone()].starts_with("%custom-") || shown[token.range.clone()].starts_with("%{custom-")) {
+                    colors.keyword
+                } else if token.is_some_and(|token| shown[token.range.clone()].starts_with("&U+")) {
                     colors.code_point
                 } else {
                     colors.glyph
@@ -1887,7 +1896,7 @@ fn apply_actions(
             .iter()
             .map(|&index| {
                 let mut entry = list.entries[index].clone();
-                entry.id = entry.id.map(|id| unused_copy_id(&id, &mut taken));
+                entry.id = entry.id.map(|id| unused_copy_id(&id, &mut taken, list.storage));
                 entry
             })
             .collect();
@@ -1935,13 +1944,14 @@ fn blank_entries(list: &StringList, count: usize, taken: &mut BTreeSet<String>) 
 
 /// `id` with `_copy` (or `_copy_2`, …) added, unused by any id in `taken`,
 /// which it joins.
-fn unused_copy_id(id: &str, taken: &mut BTreeSet<String>) -> String {
-    let copy = std::iter::once(format!("{id}_copy"))
-        .chain((2..).map(|n| format!("{id}_copy_{n}")))
-        .find(|candidate| !taken.contains(candidate))
-        .expect("unbounded");
-    taken.insert(copy.clone());
-    copy
+fn unused_copy_id(id: &str, taken: &mut BTreeSet<String>, storage: Storage) -> String {
+    for number in 1.. {
+        let suffix = if number == 1 { "_copy".to_owned() } else { format!("_copy_{number}") };
+        let base = if storage == Storage::HudMessages { id.chars().take(31 - suffix.len()).collect::<String>() } else { id.to_owned() };
+        let candidate = format!("{base}{suffix}");
+        if taken.insert(candidate.clone()) { return candidate; }
+    }
+    unreachable!()
 }
 
 fn insert_entries(edit: &mut FieldEditContext<'_>, view: &mut StringListView, at: usize, entries: Vec<StringEntry>) {
@@ -2051,16 +2061,18 @@ mod tests {
             events.insert(0, egui::Event::ModifiersChanged(modifiers));
             let input = crate::app::loose_fixture::screen(events, self.time);
             let output = crate::app::run_ui_test(&self.ctx, input, |ui| {
-                let mut edit = FieldEditContext::read_only(sinks, "test", "strings.multilingual_unicode_string_list");
+                let game = if tag.group().tag == strings::HUD_GROUP { GameId::HaloCe } else { GameId::Halo3 };
+                let tag_key = if tag.group().tag == strings::HUD_GROUP { "strings.hud_message_text" } else { "strings.multilingual_unicode_string_list" };
+                let mut edit = FieldEditContext::read_only(sinks, "test", tag_key);
                 edit.root = Some(tag.root());
-                edit.game = Some(GameId::Halo3);
+                edit.game = Some(game);
                 edit.editable = editable;
                 edit.string_list_has_focus = true;
                 edit.string_list_checkboxes = *checkboxes;
                 edit.string_list_wrap_text = *wrap_text;
                 edit.string_row_document = Some(row_clipboard::RowDocument { kit: KitId(1), key: edit.tag_key.to_owned(), id: 1 });
                 edit.buffers.begin_pass(ui.ctx().cumulative_pass_nr());
-                draw_string_list_tag(ui, tag, (1, 1, 1, 1), Some(GameId::Halo3), false, &mut edit);
+                draw_string_list_tag(ui, tag, (1, 1, 1, 1), Some(game), false, &mut edit);
                 *checkboxes = edit.string_list_checkboxes;
                 *wrap_text = edit.string_list_wrap_text;
                 selected = ui.data(|data| data.get_temp::<StringListView>(edit.widget_id("string list view"))).unwrap().selected;
@@ -2068,7 +2080,7 @@ mod tests {
                     crate::core::document::ops::BlockOpKind::Reorder { order } => Some(order),
                     _ => None,
                 }));
-                assert!(edit.string_list_ops.iter().all(|op| op.game == Some(GameId::Halo3)), "each op names its game");
+                assert!(edit.string_list_ops.iter().all(|op| op.game == Some(game)), "each op names its game");
                 edits.extend(edit.string_list_ops.drain(..).map(|op| op.edit));
                 row_request = edit.string_row_request.take();
                 let key = format!("{}|strings|0|0", edit.tag_key);
@@ -2122,6 +2134,33 @@ mod tests {
 
     fn text(text: &str) -> egui::Event {
         egui::Event::Text(text.to_owned())
+    }
+
+    #[test]
+    fn hud_table_uses_native_names_and_rejects_unknown_runtime_tokens() {
+        let mut panel = Panel::new(&[]);
+        panel.tag = TagFile::new_classic(locate_definitions_root().join("haloce_mcc/hud_message_text.json"), blam_tags::classic::ClassicEngine::HaloCe).unwrap();
+        strings::apply_string_list_edits(&mut panel.tag, Some(GameId::HaloCe), &[StringListEdit::Insert { at: 0, entries: vec![StringEntry { id: Some("pickup".into()), texts: vec![Some("Hold %action|n%custom-1".into())] }] }]).unwrap();
+        let frame = panel.frame(Vec::new());
+        for label in ["Index", "Name", "Text", "pickup", "Hold %action|n%custom-1"] {
+            assert!(frame.texts.iter().any(|text| text == label), "{label} missing: {:?}", frame.texts);
+        }
+        assert!(!frame.pink);
+        panel.focus_first_text("Hold %action|n%custom-1".len());
+        let frame = panel.frame(vec![text(" %bogus")]);
+        assert!(frame.pink, "invalid HUD tokens stay visibly editable");
+        let frame = panel.frame(vec![key(egui::Key::Enter)]);
+        assert!(frame.edits.is_empty());
+    }
+
+    #[test]
+    fn hud_duplicate_names_fit_the_engine_field_and_remain_unique() {
+        let name = "n".repeat(31);
+        let mut taken = BTreeSet::from([name.clone()]);
+        let first = unused_copy_id(&name, &mut taken, Storage::HudMessages);
+        let second = unused_copy_id(&name, &mut taken, Storage::HudMessages);
+        assert_ne!(first, second);
+        strings::validate_hud_name(&first).unwrap(); strings::validate_hud_name(&second).unwrap();
     }
 
     #[test]
@@ -2384,7 +2423,7 @@ mod tests {
     fn copied_and_cut_rows_have_the_requested_dashed_borders_and_escape_restores_insert() {
         for (cutting, color) in [(false, Color32::from_rgb(71, 174, 235)), (true, Color32::from_rgb(255, 209, 56))] {
             let mut panel = Panel::new(&["One", "Two"]);
-            let data = RowData { token: "outline".to_owned(), classic: false, languages: vec!["English".to_owned()], language: 0,
+            let data = RowData { hud: false, token: "outline".to_owned(), classic: false, languages: vec!["English".to_owned()], language: 0,
                 rows: vec![row_clipboard::Row { id: Some("new".to_owned()), texts: vec![Some("Copied".to_owned())] }] };
             row_clipboard::write(&panel.ctx, &data, &text_syntax(None, Some(GameId::Halo3))).unwrap();
             row_clipboard::set_active(&panel.ctx, row_clipboard::ActiveRows { cutting,

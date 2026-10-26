@@ -72,8 +72,8 @@ pub(in crate::app) fn delimited_rows(text: &str, delimiter: char) -> Result<Vec<
 pub(in crate::app) fn export_csv(list: &StringList, language: Option<usize>, syntax: &TextSyntax) -> Result<Vec<u8>, String> {
     let languages: Vec<_> = language.map_or_else(|| (0..list.languages.len()).collect(), |index| vec![index]);
     if languages.iter().any(|&index| index >= list.languages.len()) { return Err("Language no longer exists".to_owned()); }
-    let mut header = vec![if list.storage == Storage::Classic { "Index".to_owned() } else { "String ID".to_owned() }];
-    header.extend(languages.iter().map(|&index| if list.storage == Storage::Classic { "String Text".to_owned() } else { format!("{} Text", list.languages[index].name) }));
+    let mut header = vec![if list.storage == Storage::Classic { "Index".to_owned() } else { list.storage.identity_label().to_owned() }];
+    header.extend(languages.iter().map(|&index| if list.storage != Storage::Multilingual { list.storage.text_label().to_owned() } else { format!("{} Text", list.languages[index].name) }));
     let mut text = format!("\u{feff}{}\r\n", header.iter().map(|value| csv_field(value)).collect::<Vec<_>>().join(","));
     let mut ids = BTreeSet::new();
     for (index, entry) in list.entries.iter().enumerate() {
@@ -102,10 +102,10 @@ pub(in crate::app) fn plan_csv_import(list: &StringList, bytes: &[u8], mode: Imp
         let normalized = name.trim().to_lowercase();
         if !names.insert(normalized.clone()) { return Err(format!("Duplicate CSV column: {name}")); }
         match normalized.as_str() {
-            "string id" | "string_id" => { if id_column.replace(column).is_some() { return Err("Multiple String ID columns".to_owned()); } }
+            "name" | "message name" | "string id" | "string_id" => { if id_column.replace(column).is_some() { return Err("Multiple String ID columns".to_owned()); } }
             "index" => index_column = Some(column),
             _ => {
-                let language = if list.storage == Storage::Classic && normalized == "string text" { Some(0) }
+                let language = if list.storage != Storage::Multilingual && matches!(normalized.as_str(), "string text" | "text") { Some(0) }
                 else { list.languages.iter().position(|language| {
                     normalized == language.name.to_lowercase() || normalized == format!("{} text", language.name.to_lowercase())
                 }) };
@@ -115,7 +115,7 @@ pub(in crate::app) fn plan_csv_import(list: &StringList, bytes: &[u8], mode: Imp
             }
         }
     }
-    if list.storage == Storage::Multilingual && id_column.is_none() { return Err("CSV requires a String ID column".to_owned()); }
+    if list.storage.has_ids() && id_column.is_none() { return Err("CSV requires a String ID column".to_owned()); }
     if columns.is_empty() { return Err("CSV has no language text columns".to_owned()); }
     let mut rows = Vec::new();
     for (number, record) in records.enumerate() {
@@ -142,7 +142,7 @@ fn plan_rows(list: &StringList, rows: Vec<ImportRow>, mut languages: BTreeSet<us
     });
     let mut seen = BTreeSet::new();
     let mut existing = HashMap::new();
-    if list.storage == Storage::Multilingual {
+    if list.storage.has_ids() {
         for (index, entry) in list.entries.iter().enumerate() {
             let id = entry.id.as_deref().unwrap_or_default();
             if existing.insert(id.to_owned(), index).is_some() { return Err(format!("Duplicate String ID in tag: {id}")); }
@@ -154,8 +154,9 @@ fn plan_rows(list: &StringList, rows: Vec<ImportRow>, mut languages: BTreeSet<us
     let mut cleared = 0;
     let mut reordered = 0;
     for row in rows {
-        let old = if list.storage == Storage::Multilingual {
+        let old = if list.storage.has_ids() {
             let id = row.id.as_deref().unwrap_or_default();
+            if list.storage == Storage::HudMessages { strings::validate_hud_name(id)?; }
             if id.trim().is_empty() || id.trim() != id || id.chars().any(char::is_control) { return Err("String IDs must be nonempty and cannot contain surrounding whitespace or control characters".to_owned()); }
             if !seen.insert(id.to_owned()) { return Err(format!("Duplicate String ID in file: {id}")); }
             existing.get(id).copied()
@@ -211,7 +212,8 @@ pub(in crate::app) fn plan_text_import(list: &StringList, paths: &[(usize, PathB
             }
         } else {
             let mut seen = BTreeSet::new();
-            for (id, text) in strings::parse_strings_file(&text, syntax)? {
+            let parsed = if list.storage == Storage::HudMessages { strings::parse_hud_messages_file(&text)? } else { strings::parse_strings_file(&text, syntax)? };
+            for (id, text) in parsed {
                 if !seen.insert(id.clone()) { return Err(format!("Duplicate String ID in {}: {id}", path.display())); }
                 if text.encode_utf16().count() > list.max_text_units() { return Err("An imported string exceeds this engine's length limit".to_owned()); }
                 let index = *by_id.entry(id.clone()).or_insert_with(|| {
@@ -248,7 +250,7 @@ pub(in crate::app) fn kit_text_paths(layout: &crate::core::source::KitLayout, ga
             "simplified chinese" | "chinese (simplified)" => Some("chs"),
             "portuguese" => Some("pt"), "polish" => Some("pl"), "russian" => Some("ru"),
             "mexican" | "spanish (mexican)" | "mexican spanish" | "spanish (latin america)" => Some("mx"),
-            _ if list.storage == Storage::Classic => None,
+            _ if list.storage != Storage::Multilingual => None,
             _ => return Err(format!("No verified data-folder mapping for {}", list.languages[index].name)),
         };
         let directory = if matches!(game, Some(GameId::Halo3 | GameId::Halo3Odst)) && suffix.is_some() {
@@ -257,7 +259,7 @@ pub(in crate::app) fn kit_text_paths(layout: &crate::core::source::KitLayout, ga
             };
             layout.data_for_language(Some(long))
         } else { layout.data_for_language(suffix) };
-        paths.push((index, directory.join(relative).with_extension("txt")));
+        paths.push((index, directory.join(relative).with_extension(list.storage.text_extension())));
     }
     Ok(paths)
 }
@@ -377,6 +379,36 @@ mod tests {
         assert_eq!(replace.entries[0].texts[0], before.entries[0].texts[0]);
         assert_eq!(replace.entries[0].texts[1], None);
         assert_eq!(plan.cleared, 1);
+    }
+
+    #[test]
+    fn hud_csv_and_hmt_share_named_amend_replace_and_lossless_exports() {
+        let root=crate::core::bundled::locate_definitions_root();
+        let mut tag=TagFile::new(root.join("haloce_mcc/hud_message_text.json")).unwrap();
+        let entries=vec![StringEntry {id:Some("one".into()),texts:vec![Some("First %action".into())]},StringEntry {id:Some("two".into()),texts:vec![Some("Second %custom-1".into())]}];
+        strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&[StringListEdit::Insert {at:0,entries}]).unwrap();
+        let list=strings::read_string_list(&tag).unwrap();
+        let syntax=list.storage.text_syntax(TextSyntax::load(root.join("haloce_mcc")).unwrap());
+        let csv=export_csv(&list,None,&syntax).unwrap();
+        assert!(String::from_utf8(csv.clone()).unwrap().starts_with("\u{feff}Name,Text\r\n"));
+        assert!(plan_csv_import(&list,&csv,ImportMode::Replace,&syntax).unwrap().edits.is_empty());
+        let amend=plan_csv_import(&list,b"Name,Text\ntwo,Changed %jump\nthree,New\n",ImportMode::Amend,&syntax).unwrap();
+        strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&amend.edits).unwrap();
+        let amended=strings::read_string_list(&tag).unwrap();
+        assert_eq!(amended.entries[0],list.entries[0]); assert_eq!(amended.entries.len(),3);
+        assert_eq!(amended.entries[1].texts[0].as_deref(),Some("Changed %jump"));
+        let native=super::string_lists::export_text(&amended,0,&syntax).unwrap();
+        let folder=std::env::temp_dir().join(format!("baboon-hud-{}",uuid::Uuid::new_v4())); fs::create_dir_all(&folder).unwrap();
+        let source=folder.join("messages.hmt"); fs::write(&source,super::string_lists::encode_text(&native)).unwrap();
+        assert!(plan_text_import(&amended,&[(0,source.clone())],ImportMode::Replace,&syntax).unwrap().edits.is_empty());
+        let replaced=plan_csv_import(&amended,b"Name,Text\nthree,%zoom\none,\n",ImportMode::Replace,&syntax).unwrap();
+        assert_eq!((replaced.removed,replaced.cleared),(1,1));
+        strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&replaced.edits).unwrap();
+        let replaced=strings::read_string_list(&tag).unwrap(); assert_eq!(replaced.entries[0].id.as_deref(),Some("three")); assert_eq!(replaced.entries[1].texts[0],None);
+        assert!(plan_csv_import(&replaced,b"Name,Text\nthree,%unknown",ImportMode::Replace,&syntax).is_err());
+        let layout=crate::core::source::KitLayout::from_tags_folder(Path::new("kit/tags")).unwrap();
+        assert_eq!(kit_text_paths(&layout,Some(GameId::HaloCe),Path::new("ui/hud/messages"),&list,Some(0)).unwrap()[0].1,PathBuf::from("kit/data/ui/hud/messages.hmt"));
+        fs::remove_file(source).unwrap(); fs::remove_dir(folder).unwrap();
     }
 
     #[test]

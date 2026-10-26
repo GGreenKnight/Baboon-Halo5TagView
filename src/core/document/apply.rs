@@ -1799,6 +1799,22 @@ mod tests {
     }
 
     #[test]
+    fn hud_reorder_keeps_message_text_and_runtime_elements_together_and_undoes() {
+        use blam_tags::string_list::{self as strings,StringEntry,StringListEdit};
+        let mut tag=TagFile::new_classic(locate_definitions_root().join("haloce_mcc/hud_message_text.json"),blam_tags::classic::ClassicEngine::HaloCe).unwrap();
+        let entries=vec![StringEntry {id:Some("pickup".into()),texts:vec![Some("Hold %action %custom-1".into())]},StringEntry {id:Some("exit".into()),texts:vec![Some("%back-button".into())]}];
+        strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&[StringListEdit::Insert {at:0,entries:entries.clone()}]).unwrap();
+        let mut doc=TagDocument::clean(tag); let before=doc.tag.write_to_bytes().unwrap();
+        apply_deferred_ops(&mut doc,DeferredOps {block_ops:vec![BlockOp {path:"messages".into(),kind:BlockOpKind::Reorder {order:vec![1,0]}}],..Default::default()},"Reorder HUD messages");
+        assert_eq!(strings::read_string_list(&doc.tag).unwrap().entries,vec![entries[1].clone(),entries[0].clone()]);
+        strings::apply_string_list_edits(&mut doc.tag,Some(GameId::HaloCe),&[StringListEdit::SetText {index:0,language:0,text:"Changed %zoom".into()}]).unwrap();
+        let bytes=doc.tag.write_to_bytes().unwrap();
+        let reopened=blam_tags::classic::read_classic_tag_file(&bytes,blam_tags::layout::TagLayout::from_json(locate_definitions_root().join("haloce_mcc/hud_message_text.json")).unwrap()).unwrap();
+        assert_eq!(strings::read_string_list(&reopened).unwrap().entries[1],entries[0]);
+        doc.journal.end_edit_window(); let (snapshot,_)=doc.journal.undo(&doc.tag).unwrap(); assert_eq!(*snapshot,before);
+    }
+
+    #[test]
     fn string_list_ops_apply_and_undo() {
         let schema = locate_definitions_root().join("halo3_mcc/multilingual_unicode_string_list.json");
         let mut doc = TagDocument::clean(TagFile::new(schema).unwrap());
