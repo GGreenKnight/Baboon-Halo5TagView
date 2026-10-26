@@ -1,5 +1,5 @@
 //! The kit tools' string editors: a menu of the values a `string_id` field
-//! expects, on a button beside its box, and the box pink while its value
+//! expects, on a button beside its box, and the shared error style while its value
 //! isn't one of them. Drawn as Foundation's `TagFieldElementWithMenuPanel`
 //! draws them: the box, the units, then the button. blam-tags'
 //! `string_editor` builds the menus; this opens the other tags they read
@@ -176,7 +176,7 @@ fn menu_for(edit: &FieldEditContext<'_>, editors: &StringEditors, editor: &str, 
     menu
 }
 
-/// A string editor's row: the value's box (pink while the value isn't one
+/// A string editor's row: the value's box (styled as an error while the value isn't one
 /// the menu offers), the units, and the editor's menu button. Picking a
 /// menu entry writes it to the field.
 pub(in crate::app) fn draw_string_editor_row(
@@ -202,7 +202,7 @@ pub(in crate::app) fn draw_string_editor_row(
     let mut opened = false;
     draw_foundation_labelled_cell_row(ui, meta, "", depth, |ui, available_width| {
         let width = foundation_value_width(&draft.text, available_width).clamp(150.0, 300.0);
-        let response = foundation_value_cell_filled(ui, &mut draft.text, width, id, enabled, (!valid).then(invalid_value_fill));
+        let response = foundation_value_cell_with_error(ui, &mut draft.text, width, id, enabled, !valid);
         draft.note_response(&response);
         if enabled && draft.should_commit(ui, &response) {
             edit.pending.extend(field_edit_ops(path, &draft.text).pending);

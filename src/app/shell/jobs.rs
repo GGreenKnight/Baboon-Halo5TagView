@@ -2,6 +2,7 @@
 //! channel and hands every message to the feature it belongs to.
 
 use super::*;
+use crate::app::search::FindWithin;
 
 impl Baboon {
     pub(in crate::app) fn process_worker_messages(&mut self, ctx: &egui::Context) {
@@ -43,9 +44,12 @@ impl Baboon {
                     processed,
                     total,
                 } => {
-                    if self.model.resolve_stamp(stamp).is_some() && request_id == self.search.find.all_request_id
+                    if self.model.resolve_stamp(stamp) == Some(self.model.active)
+                        && self.search.find.open && self.search.find.all_requested
+                        && self.search.find.within == FindWithin::AllTags && request_id == self.search.find.all_request_id
                     {
                         self.search.find.progress = Some((processed, total));
+                        self.model.status = format!("Find: searching all tags… {processed}/{total}");
                     }
                     false
                 }
@@ -55,8 +59,17 @@ impl Baboon {
                     occurrences,
                     unreadable,
                 } => {
-                    if self.model.resolve_stamp(stamp).is_some() && request_id == self.search.find.all_request_id
+                    if self.model.resolve_stamp(stamp) == Some(self.model.active)
+                        && self.search.find.open && self.search.find.all_requested
+                        && self.search.find.within == FindWithin::AllTags && request_id == self.search.find.all_request_id
                     {
+                        let open_hits = self.search.find.occurrences.iter().filter(|hit|
+                            self.model.kits[self.model.active].parsed_tags.contains_key(&hit.tag_key)).count();
+                        let matches = open_hits + occurrences.len();
+                        self.model.status = format!("Find: {matches} {}", if matches == 1 { "match" } else { "matches" });
+                        if unreadable > 0 {
+                            self.model.status.push_str(&format!("; {unreadable} {} could not be read", if unreadable == 1 { "tag" } else { "tags" }));
+                        }
                         self.search.find.all_closed_occurrences = occurrences;
                         self.search.find.unreadable = unreadable;
                         self.search.find.searching = false;

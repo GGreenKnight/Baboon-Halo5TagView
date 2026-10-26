@@ -628,7 +628,9 @@ fn draw_foundation_data_row(
                 let frame_rect = ui.max_rect();
                 let background = ui.painter().add(egui::Shape::Noop);
                 // Greyed when it can't be edited, as the value boxes are.
-                let text_color = if editable { text_dark() } else { subtle_dark() };
+                let text_color = if stored_bytes(&draft.text).is_err() {
+                    invalid_value_text()
+                } else if editable { text_dark() } else { subtle_dark() };
                 let scroll = egui::ScrollArea::both()
                     .id_salt(id.with("scroll"))
                     .auto_shrink([false, false])
@@ -666,7 +668,10 @@ fn draw_foundation_data_row(
                         }
                     });
                 let visuals = ui.visuals();
-                let stroke = if ui.memory(|memory| memory.has_focus(id)) {
+                let invalid = stored_bytes(&draft.text).is_err();
+                let stroke = if invalid {
+                    invalid_value_stroke()
+                } else if ui.memory(|memory| memory.has_focus(id)) {
                     visuals.selection.stroke
                 } else {
                     visuals.widgets.inactive.bg_stroke
@@ -677,7 +682,8 @@ fn draw_foundation_data_row(
                         egui::Shape::rect_filled(
                             frame_rect,
                             0.0,
-                            if editable { visuals.text_edit_bg_color() } else { foundation_input_read_only() },
+                            if invalid { invalid_value_fill() }
+                            else if editable { visuals.text_edit_bg_color() } else { foundation_input_read_only() },
                         ),
                         egui::Shape::rect_stroke(frame_rect, 0.0, stroke, egui::StrokeKind::Inside),
                     ]),
@@ -711,7 +717,7 @@ fn draw_foundation_data_row(
     if let Err(too_long) = stored_bytes(&draft.text) {
         ui.horizontal(|ui| {
             ui.add_space(indent + FOUNDATION_LABEL_WIDTH + ui.spacing().item_spacing.x);
-            ui.label(RichText::new(too_long.to_string()).color(REFERENCE_MISSING_COLOR).small());
+            ui.label(RichText::new(too_long.to_string()).color(invalid_value_text()).small());
         });
     }
 }

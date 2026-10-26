@@ -18,9 +18,68 @@ pub(in crate::app) const ALPHA_CHECKER_TILE_SIZE: usize = 4;
 pub(in crate::app) const ALPHA_CHECKER_LIGHT_RGBA: [u8; 4] = [255, 255, 255, 13];
 pub(in crate::app) const ALPHA_CHECKER_DARK_RGBA: [u8; 4] = [0, 0, 0, 13];
 
+/// Join a header/footer fill to its enclosing frame without separately
+/// antialiasing an inset curve against the frame's border. Paint fill and
+/// border together at the outer radius, behind the band's controls.
+pub(in crate::app) fn paint_frame_band(
+    ui: &Ui,
+    background: egui::layers::ShapeIdx,
+    inner: egui::Rect,
+    mut radius: egui::CornerRadius,
+    stroke: Stroke,
+    fill: Color32,
+    header: bool,
+) {
+    let mut outer = inner.expand2(Vec2::new(stroke.width, 0.0));
+    if header {
+        outer.min.y -= stroke.width;
+        radius.sw = 0;
+        radius.se = 0;
+    } else {
+        outer.max.y += stroke.width;
+        radius.nw = 0;
+        radius.ne = 0;
+    }
+    // Move the joined edge beyond the clip, so it adds no horizontal border
+    // between the band and the body.
+    let mut shape_rect = outer;
+    if header { shape_rect.max.y += stroke.width + 1.0; }
+    else { shape_rect.min.y -= stroke.width + 1.0; }
+    let clip = outer.intersect(ui.clip_rect().expand(stroke.width)).intersect(ui.ctx().content_rect());
+    let shape = egui::epaint::RectShape::new(shape_rect, radius, fill, stroke, egui::StrokeKind::Inside);
+    ui.ctx().graphics_mut(|graphics| {
+        graphics.entry(ui.layer_id()).mutate_shape(background, |paint| {
+            paint.clip_rect = clip;
+            paint.shape = shape.into();
+        });
+    });
+}
+
 /// Baboon's default for a single-row text field: keep text vertically centered.
 pub(in crate::app) fn singleline_text_edit(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(text).vertical_align(egui::Align::Center)
+}
+
+/// The standard input with the shared error palette. A custom frame keeps
+/// the error border visible through hover and focus, with the usual padding.
+pub(in crate::app) fn singleline_text_edit_with_error<'a>(
+    ui: &Ui,
+    text: &'a mut dyn egui::TextBuffer,
+    invalid: bool,
+) -> egui::TextEdit<'a> {
+    let edit = singleline_text_edit(text);
+    if invalid {
+        edit.text_color(invalid_value_text()).frame(
+            egui::Frame::new()
+                .fill(invalid_value_fill())
+                .stroke(invalid_value_stroke())
+                .corner_radius(ui.visuals().widgets.inactive.corner_radius)
+                // The one-pixel stroke completes the usual 4-by-2 margin.
+                .inner_margin(egui::Margin::symmetric(3, 1)),
+        )
+    } else {
+        edit
+    }
 }
 
 pub(in crate::app) fn paint_alpha_checkerboard(painter: &egui::Painter, rect: egui::Rect) {
@@ -586,18 +645,16 @@ pub(in crate::app) fn good_news() -> Color32 {
     }
 }
 
-/// The fill of a value box holding a value that isn't valid: Foundation's
-/// pink (`#FFC0CB`) in the light theme, and a dark red in the dark theme,
-/// where pink under light text can't be read.
+/// Shared error fill for inputs: a subtle red tint in either theme.
 pub(in crate::app) fn invalid_value_fill() -> Color32 {
     invalid_value_fill_for(is_dark_mode())
 }
 
 fn invalid_value_fill_for(dark_mode: bool) -> Color32 {
     if dark_mode {
-        Color32::from_rgb(92, 34, 42)
+        Color32::from_rgb(48, 30, 32)
     } else {
-        Color32::from_rgb(0xFF, 0xC0, 0xCB)
+        Color32::from_rgb(255, 240, 240)
     }
 }
 
@@ -609,10 +666,19 @@ pub(in crate::app) fn invalid_value_text() -> Color32 {
 
 fn invalid_value_text_for(dark_mode: bool) -> Color32 {
     if dark_mode {
-        Color32::from_rgb(255, 150, 160)
+        Color32::from_rgb(255, 124, 124)
     } else {
-        Color32::from_rgb(176, 16, 32)
+        Color32::from_rgb(166, 35, 45)
     }
+}
+
+/// Keep an erroneous input's border red even when the input has focus.
+pub(in crate::app) fn invalid_value_stroke() -> Stroke {
+    Stroke::new(1.0_f32, if is_dark_mode() {
+        Color32::from_rgb(171, 70, 76)
+    } else {
+        Color32::from_rgb(192, 75, 84)
+    })
 }
 
 /// Formatting tags in string list text: `<color …>`, `<br/>`.
@@ -971,7 +1037,7 @@ mod tests {
             assert!(contrast(invalid_value_text_for(dark), fill) >= 4.5, "marked text on the fill, dark {dark}");
         }
         assert!(contrast(text_dark_for(true), Color32::from_rgb(0xFF, 0xC0, 0xCB)) < 1.5);
-        assert_eq!(invalid_value_fill_for(false), Color32::from_rgb(0xFF, 0xC0, 0xCB), "Foundation's pink");
+        assert_eq!(invalid_value_fill_for(false), Color32::from_rgb(255, 240, 240), "subtle red tint");
     }
 
     #[test]

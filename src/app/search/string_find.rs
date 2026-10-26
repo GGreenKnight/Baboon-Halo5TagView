@@ -170,8 +170,9 @@ impl Baboon {
             self.search.find.string_context = Some(latest);
         }
         let find = &self.search.find;
-        if !find.strings.as_ref().is_some_and(|options| options.selected_rows) { return; }
-        let Some(context) = find.string_context.clone().filter(|context| !context.selected.is_empty() && context.kit == self.model.active_kit_id()) else { return; };
+        let selected_rows = find.strings.as_ref().is_some_and(|options| options.selected_rows);
+        if !selected_rows && !find.replace_mode { return; }
+        let Some(context) = find.string_context.clone().filter(|context| (!selected_rows || !context.selected.is_empty()) && context.kit == self.model.active_kit_id()) else { return; };
         let Some(doc) = self.model.kits[self.model.active].parsed_tags.get(&context.tag_key) else { return; };
         let Some(list) = strings::read_string_list(&doc.tag) else { return; };
         self.search.find.selection_run = Some(StringSelectionRun {
@@ -181,6 +182,8 @@ impl Baboon {
         self.refresh_string_find();
         self.search.find.active = None;
         self.finish_find_refresh(ctx, None);
+        self.capture_find_filter();
+        self.publish_find_snapshot(ctx);
         if let Some(hit) = self.search.find.active_occurrence().cloned() { self.activate_find_occurrence(ctx, hit); }
     }
 
@@ -200,6 +203,18 @@ impl Baboon {
         let find = &mut self.search.find;
         let Some(run) = &mut find.selection_run else { return; };
         let mapping = mapping.unwrap_or_else(|| surviving_row_mapping(&run.rows, &rows));
+        if let Some(capture) = &mut find.replace_run {
+            capture.matching_cells = std::sync::Arc::new(capture.matching_cells.iter().filter_map(|(key, path, kind)| {
+                let index = mapping.get(kind.string_row()?).copied().flatten()?;
+                let kind = match kind {
+                    FindTargetKind::StringId(_) => FindTargetKind::StringId(index),
+                    FindTargetKind::StringText { language, .. } => FindTargetKind::StringText { index, language: *language },
+                    _ => return None,
+                };
+                Some((key.clone(), path.clone(), kind))
+            }).collect());
+            if let Some(filter) = &mut find.filter_run { filter.cells = capture.matching_cells.clone(); }
+        }
         let syntax = crate::app::editor::string_list::text_syntax(run.context.definitions_root.as_deref(), run.context.game);
         find.occurrences.retain_mut(|hit| {
             let Some(index) = hit.kind.string_row().and_then(|old| mapping.get(old).copied().flatten()) else { return false; };
@@ -228,6 +243,9 @@ impl Baboon {
         run.changed = true;
         find.active = (!find.occurrences.is_empty()).then_some(0);
         find.matching_cells = std::sync::Arc::new(find.occurrences.iter().map(|hit| (hit.tag_key.clone(), hit.field_path.clone(), hit.kind)).collect());
+        if find.replace_run.is_none() {
+            if let Some(filter) = &mut find.filter_run { filter.cells = find.matching_cells.clone(); }
+        }
     }
 
     pub(super) fn refresh_string_find(&mut self) {
@@ -521,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_rows_find_captures_on_run_and_keeps_results_until_refreshed() {
+    fn selected_rows_find_captures_on_run_and_clears_results_when_query_changes() {
         let fixture = LooseKit::new("selected-string-find", "halo3_mcc");
         fixture.write_mcc("ui/strings", "multilingual_unicode_string_list", |tag| *tag = fixture_tag());
         let mut app = Baboon::for_test();
@@ -554,9 +572,9 @@ mod tests {
         let mut query = app.search.find.query();
         query.text = "français".to_owned();
         app.apply_search_command(SearchCommand::FindChanged(query), &ctx);
-        assert_eq!(app.search.find.occurrences, original, "draft query doesn't replace captured results");
+        assert!(app.search.find.occurrences.is_empty(), "changed query requires another explicit Find");
         let snapshot = ctx.data(|data| data.get_temp::<std::sync::Arc<FindRenderSnapshot>>(find_render_snapshot_id())).unwrap();
-        assert_eq!(snapshot.query, "Find", "highlights use the executed query");
+        assert_eq!(snapshot.query, "français", "obsolete highlights are cleared with the results");
         app.run_selected_string_find(&ctx);
         assert_eq!(app.search.find.occurrences.len(), 1);
         assert_eq!(app.search.find.occurrences[0].kind.string_row(), Some(1));
@@ -587,7 +605,7 @@ mod tests {
         assert!(
             labels
                 .iter()
-                .any(|(text, _)| text.starts_with("Current language"))
+                .any(|(text, _)| text.starts_with("Current Language"))
         );
         assert!(
             !labels
@@ -610,6 +628,14 @@ mod tests {
         driver.frame(&mut app, Vec::new());
         let labels = driver.frame(&mut app, Vec::new());
         assert!(labels.iter().any(|(text, _)| text == "Selected Rows"));
-        assert!(labels.iter().any(|(text, _)| text == "Select rows in the Strings Editor to search"));
+        assert!(!labels.iter().any(|(text, _)| text == "Select rows in the Strings Editor to search"), "instructions no longer take up space in the window");
+        let find = labels.iter().rev().find(|(text, _)| text == "Find").unwrap().1.center();
+        driver.frame(&mut app, vec![egui::Event::PointerMoved(find)]);
+        let mut tooltip_shown = false;
+        for _ in 0..12 {
+            let labels = driver.frame(&mut app, Vec::new());
+            tooltip_shown |= labels.iter().any(|(text, _)| text == "Select rows in the Strings Editor to search");
+        }
+        assert!(tooltip_shown, "the disabled Find button explains how to select rows on hover");
     }
 }

@@ -299,7 +299,8 @@ impl Baboon {
         for action in shortcuts {
             // Opened now, before Find refreshes and draws below; applied with
             // the frame's commands, it opened a frame late.
-            if matches!(action, AppAction::OpenFind) {
+            if matches!(action, AppAction::OpenFind | AppAction::OpenReplace) {
+                self.set_find_mode(matches!(action, AppAction::OpenReplace), ctx);
                 self.open_find_in_context(ctx);
             } else {
                 self.commands.send(action);
@@ -1242,6 +1243,20 @@ pub(in crate::app) mod tests {
     }
 
     /// Ctrl+F opens Find on the frame the key is pressed, before Find draws.
+    #[test]
+    fn ctrl_h_opens_replace_before_it_draws_and_ctrl_f_switches_back() {
+        let mut app = Baboon::for_test();
+        let ctx = egui::Context::default();
+        for (key, replace) in [(egui::Key::H, true), (egui::Key::F, false)] {
+            let _ = crate::app::run_ui_test(&ctx, input(vec![egui::Event::Key {
+                key, physical_key: None, pressed: true, repeat: false,
+                modifiers: egui::Modifiers::CTRL.plus(egui::Modifiers::COMMAND),
+            }]), |_| app.prepare_root_frame(&ctx));
+            assert!(app.search.find.open);
+            assert_eq!(app.search.find.replace_mode, replace);
+        }
+    }
+
     #[test]
     fn ctrl_f_opens_find_before_it_draws() {
         let mut app = Baboon::for_test();

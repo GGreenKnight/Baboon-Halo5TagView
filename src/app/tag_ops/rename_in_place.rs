@@ -853,6 +853,7 @@ mod tests {
                 AppliedFindFilter {
                     signature: "shield".to_owned(),
                     filter: Default::default(),
+                    captured_cells: None,
                 },
             );
             kit.loading_tags.insert(key.to_owned());

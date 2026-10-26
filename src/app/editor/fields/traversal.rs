@@ -73,6 +73,25 @@ pub(in crate::app) fn compute_find_field_filter(
     }
 }
 
+/// A manual Replace pass filters by its captured cells, including fields
+/// whose replacement no longer contains the query. Open their ancestors too.
+pub(in crate::app) fn captured_find_field_filter(
+    cells: &crate::app::search::FindMatchingCells,
+    tag_key: &str,
+) -> FieldFilter {
+    let mut visible_paths = std::collections::HashSet::new();
+    for (key, path, kind) in cells {
+        if key != tag_key || kind.string_row().is_some() { continue; }
+        let mut path = strip_node_indices(path);
+        while !path.is_empty() {
+            visible_paths.insert(path.clone());
+            if let Some(slash) = path.rfind('/') { path.truncate(slash); }
+            else { break; }
+        }
+    }
+    FieldFilter { visible_paths }
+}
+
 /// One filter walk. `canon` is the canonical path of the node being visited,
 /// grown and truncated in place; every element of a block shares its
 /// canonical paths, so most visits find theirs already recorded and allocate

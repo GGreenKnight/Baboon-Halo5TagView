@@ -47,9 +47,32 @@ The footer shows the total and selected counts, including selected rows hidden b
 - **Filter Results** shows matching rows only. Searches use displayed glyph names and escapes; literal glyph queries also match their named or numeric notation. CE lists have no String IDs.
 - **Within: Current Tag** updates results live.
 - **Within: Selected Rows** runs when you press **Find**, or **Enter** in the search box. Each run captures the current selection—including hidden selected rows—and search options. Press **Find** again to refresh that scope.
+- Changing the query or search options in Selected Rows clears the previous results and requires another **Find**. Changing only **Replace With** preserves the results.
 - Editing a captured result keeps its row visible, even if it no longer matches, while clearing obsolete highlights. Insertions and reorders track the captured rows; deleted rows leave the results. A changed-results hint prompts a refresh. Find is disabled when no rows are selected.
 
 Find from **Tag Fields** keeps the usual field-search options.
+
+### Replacing matches
+
+**Replace (Ctrl+H)** opens the Replace tab in the same floating window. The left-aligned Find and Replace tabs preserve the query, case/whole-word settings, and compatible scope and target options. **Ctrl+F** returns to Find.
+
+Opening Replace with multiple rows selected in the Strings Editor defaults **Within** to **Selected Rows**. Compatible Find results carry over only for those selected rows; a new search still waits for Find.
+
+Search instructions appear in button tooltips. All Tags search progress and unreadable-tag counts appear in the bottom status bar. Replacement failures and skipped locked matches appear in popups with an **OK** acknowledgment.
+
+- **Replace** changes the current occurrence and advances past the inserted text. **Replace All** processes every original match in the selected scope once and reports the count.
+- Every Replace scope uses **Find** (or **Enter** in the search box) to run or reload the search. Switching from Find carries over compatible results, the active match and Filter Results, so those matches can be replaced immediately. All Tags results cannot carry into Replace's Current Tag scope. **Filter Results** retains the captured rows/fields after replacement and while editing the pending search query or settings. In any scope with an explicit Find button, only the next Find applies those changes to filtering. Other edits may require refreshing before more replacements can be made.
+- Routine tag-index refreshes preserve captured matches, navigation and filtering. Reloading or closing a searched document still invalidates its captured results.
+- Replacement text is literal, with the Strings Editor's normal Unicode, glyph and escape conversion. An empty replacement removes the matched text; the search query must be nonempty.
+- String IDs and text follow the selected rows and language options. ID changes do not update references elsewhere; duplicates retain their usual warning highlight.
+- Every replacement is prepared before the operation changes anything. Invalid IDs or field values abort the entire operation. Invalid String Text notation (an unknown `&name` or malformed `&U+XXXX`) appears in the affected cells as red editable drafts; the stored text stays unchanged until those drafts are corrected and committed. Undo and Redo include these drafts. Finish or cancel pending field edits before replacing again.
+- Changes remain unsaved. Each replacement action has one undo step. Undo and Redo preserve the captured Filter Results view while restoring replacement values. Undo also restores that pass's original matches and active position, allowing Replace or Replace All again without Find, provided the search and documents have not otherwise changed. Redo restores the post-replacement matches. Find reloads the matching rows and fields. Replace All across open tags has linked undo/redo, available from any affected tag when the action is next in every affected history. Closing or reloading a peer leaves local undo in the remaining tags.
+
+In **Tag Fields**, Replace supports editable field values in **Current Tag** and **Open Tags**. Field names, block names and documentation remain Find-only. Returning to Find restores those target options.
+
+Outside Expert mode, matches in normally locked fields are skipped while editable matches are replaced. A popup reports the skipped matches out of the total attempted. In Expert mode, replacing normally locked fields requires confirmation showing how many fields are affected. All replacement values are validated before that confirmation; cancelling or changing the search before confirming leaves the fields untouched.
+
+**All Tags** supports Find only and requires pressing **Find** to run; typing or changing search options clears old results. Entering Replace from All Tags switches to Current Tag, which remains selected when returning to Find.
 
 ## Copy, cut and paste
 

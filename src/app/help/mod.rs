@@ -21,6 +21,7 @@ pub(in crate::app) mod window;
 pub(in crate::app) use window::HelpWindow;
 
 pub(in crate::app) const STRING_EDITOR_HELP_SECTION: &str = "Strings Editor";
+pub(in crate::app) const FIND_REPLACE_HELP_SECTION: &str = "Find and Replace";
 
 /// Help: the About and help windows, tutorials, HaloScript and field docs, tag
 /// compatibility and map names.

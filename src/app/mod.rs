@@ -405,6 +405,7 @@ impl Baboon {
                 poke_undo_running: false,
             },
             search: SearchFeature {
+                replace_links: Vec::new(),
                 find: FindDialogState::default(),
                 pending_find_jump: None,
                 field_value_searching: false,

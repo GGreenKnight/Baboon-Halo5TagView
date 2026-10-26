@@ -23,7 +23,7 @@ impl Baboon {
             self.model.status = "Nothing to undo".to_owned();
             return;
         };
-        if self.step_linked_string_rows(false) { return; }
+        if self.step_linked_replace(false) || self.step_linked_string_rows(false) { return; }
         let restored = self.model.kits[self.model.active]
             .parsed_tags
             .get_mut(&key)
@@ -49,7 +49,7 @@ impl Baboon {
             self.model.status = "Nothing to redo".to_owned();
             return;
         };
-        if self.step_linked_string_rows(true) { return; }
+        if self.step_linked_replace(true) || self.step_linked_string_rows(true) { return; }
         let restored = self.model.kits[self.model.active]
             .parsed_tags
             .get_mut(&key)

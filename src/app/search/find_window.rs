@@ -2,6 +2,16 @@
 
 use super::*;
 
+const FIND_LABEL_WIDTH: f32 = 100.0;
+const FIND_ROW_GAP: f32 = 8.0;
+
+fn find_row_label(ui: &mut Ui, label: &str) {
+    ui.allocate_ui_with_layout(Vec2::new(FIND_LABEL_WIDTH, 25.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_min_size(Vec2::new(FIND_LABEL_WIDTH, 25.0));
+        ui.label(RichText::new(label).strong().color(text_dark()));
+    });
+}
+
 /// The modeless Find window. What it searches for and what it found are the
 /// Find search's, in [`SearchFeature`]; the window shows them as they stand
 /// each frame and sends any change to the query, a step to the next or
@@ -19,6 +29,10 @@ impl Dialog for FindWindow {
             return false;
         }
         let mut query = find.query();
+        let mut replacement = find.replacement.clone();
+        let mut replace_mode = find.replace_mode;
+        let mut replacement_changed = false;
+        let mut replace_action = None;
         let mut filter_results = find.filter_results;
         let ctx = cx.egui;
         let mut open = true;
@@ -31,7 +45,7 @@ impl Dialog for FindWindow {
         // the app stepped to the next match, and Escape out of any menu or edit
         // closed Find.
         let mut query_escape = false;
-        let default_pos = ctx.content_rect().right_top() + egui::vec2(-488.0, 72.0);
+        let default_pos = ctx.content_rect().right_top() + egui::vec2(-618.0, 72.0);
         egui::Window::new("Find")
             .id(egui::Id::new("find_in_tag"))
             .title_bar(false)
@@ -41,14 +55,23 @@ impl Dialog for FindWindow {
             .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin {
                 left: 12, right: 12, top: 0, bottom: 0,
             }))
-            .default_width(window_width(ctx, 470.0))
+            .default_width(window_width(ctx, 600.0))
             .default_pos(default_pos)
             .show(ctx, |ui| {
                 ui.spacing_mut().window_margin = egui::Margin { left: 12, right: 12, top: 0, bottom: 0 };
-                draw_find_window_header(ui, &mut open);
+                let mut selected = usize::from(replace_mode);
+                if draw_tabbed_window_header(ui, &[("Find", ButtonIcon::Find), ("Replace", ButtonIcon::Replace)],
+                    &mut selected, &mut open, Some(("Open Find and Replace documentation", egui::Id::new("find_replace_help")))) {
+                    cx.send(crate::app::help::HelpCommand::ShowDocSection(crate::app::help::FIND_REPLACE_HELP_SECTION));
+                }
+                replace_mode = selected == 1;
+                if replace_mode != find.replace_mode { self.focus_query = true; }
                 ui.add_space(8.0);
+                ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.y = FIND_ROW_GAP;
                 ui.horizontal(|ui| {
-                        ui.label(RichText::new("find:").strong().color(text_dark()));
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        find_row_label(ui, "Find:");
                         let response = ui.add_sized(
                             [ui.available_width(), 25.0],
                             crate::app::ui_kit::singleline_text_edit(&mut query.text)
@@ -80,8 +103,9 @@ impl Dialog for FindWindow {
                             )
                         });
                         if in_query && enter && !find.searching {
-                            if query.strings.as_ref().is_some_and(|options| options.selected_rows) {
-                                run_selection = find.string_context.as_ref().is_some_and(|context| !context.selected.is_empty());
+                            if replace_mode || query.within == FindWithin::AllTags || query.strings.as_ref().is_some_and(|options| options.selected_rows) {
+                                run_selection = !query.text.is_empty() && (query.strings.as_ref().is_none_or(|options| !options.selected_rows)
+                                    || find.string_context.as_ref().is_some_and(|context| !context.selected.is_empty()));
                             } else {
                                 step = if shift { -1 } else { 1 };
                             }
@@ -90,13 +114,29 @@ impl Dialog for FindWindow {
                         }
                         query_escape = in_query && escape;
                 });
-                ui.add_space(8.0);
-                let option_width = if query.strings.is_some() { 240.0 } else { 190.0 };
+                if replace_mode {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        find_row_label(ui, "Replace With:");
+                        let response = ui.add_sized([ui.available_width(), 25.0],
+                            crate::app::ui_kit::singleline_text_edit(&mut replacement)
+                                .id(egui::Id::new("find_replacement")).vertical_align(egui::Align::Center));
+                        replacement_changed = response.changed();
+                        let focused = response.has_focus() || lost_focus_once(&response);
+                        query_escape |= focused && ui.input(|input| input.key_pressed(egui::Key::Escape));
+                    });
+                }
+                let selection_width = 170.0;
+                let options_width = ui.available_width() - selection_width - 16.0;
+                let option_width = (options_width - FIND_LABEL_WIDTH - 12.0).max(130.0);
+                ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                ui.allocate_ui_with_layout(Vec2::new(options_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                 egui::Grid::new("find_options")
-                    .num_columns(3)
-                    .spacing([12.0, 8.0])
+                    .num_columns(2)
+                    .spacing([12.0, FIND_ROW_GAP])
                     .show(ui, |ui| {
-                        ui.label(RichText::new("within:").strong().color(text_dark()));
+                        find_row_label(ui, "Within:");
                         if let Some(options) = &mut query.strings {
                             egui::ComboBox::from_id_salt("find_string_within")
                                 .selected_text(if options.selected_rows { "Selected Rows" } else { "Current Tag" })
@@ -108,7 +148,7 @@ impl Dialog for FindWindow {
                         ui.scope(|ui| {
                             egui::ComboBox::from_id_salt("find_within")
                                 .selected_text(query.within.label())
-                                .width(190.0)
+                                .width(option_width)
                                 .show_ui(ui, |ui| {
                                     changed |= ui
                                         .selectable_value(
@@ -124,20 +164,20 @@ impl Dialog for FindWindow {
                                             FindWithin::OpenTags.label(),
                                         )
                                         .changed();
-                                    changed |= ui
+                                    changed |= ui.add_enabled_ui(!replace_mode, |ui| ui
                                         .selectable_value(
                                             &mut query.within,
                                             FindWithin::AllTags,
                                             FindWithin::AllTags.label(),
                                         )
-                                        .changed();
+                                        .on_disabled_hover_text("Replace is available in Current Tag and Open Tags")
+                                        .changed()).inner;
                                 });
                         });
                         }
-                        changed |= ui.checkbox(&mut query.match_case, "match case").changed();
                         ui.end_row();
 
-                        ui.label(RichText::new("look in:").strong().color(text_dark()));
+                        find_row_label(ui, "Look In:");
                         if let Some(options) = &mut query.strings {
                             let has_ids = find
                                     .string_context
@@ -165,9 +205,21 @@ impl Dialog for FindWindow {
                                 changed |= ui.checkbox(&mut options.text, "String Text").changed();
                             });
                         } else {
+                            if replace_mode {
+                                let (rect, response) = ui.allocate_exact_size(Vec2::new(option_width, 25.0), Sense::hover());
+                                ui.painter().rect_stroke(rect, ui.visuals().widgets.inactive.corner_radius,
+                                    Stroke::new(1.0, foundation_input_edge()), egui::StrokeKind::Inside);
+                                let content = rect.shrink2(ui.spacing().button_padding);
+                                ui.scope_builder(egui::UiBuilder::new().max_rect(content)
+                                    .layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+                                    ui.add(egui::Label::new(RichText::new("Field Values")
+                                        .text_style(TextStyle::Button).color(text_dark())).truncate());
+                                });
+                                response.on_hover_text("Field Values is the only option in Replace mode because only field values can be edited.");
+                            } else {
                             egui::ComboBox::from_id_salt("find_look_in")
                                 .selected_text(query.look_in.label())
-                                .width(190.0)
+                                .width(option_width)
                                 .show_ui(ui, |ui| {
                                     changed |= ui
                                         .checkbox(&mut query.look_in.field_names, "Field names")
@@ -178,31 +230,30 @@ impl Dialog for FindWindow {
                                     changed |=
                                         ui.checkbox(&mut query.look_in.blocks, "Blocks").changed();
                                 });
+                            }
                         }
-                        changed |= ui
-                            .checkbox(&mut query.whole_word, "match whole word")
-                            .changed();
+
                         ui.end_row();
                         if let (Some(options), Some(context)) =
                             (&mut query.strings, &find.string_context)
                         {
-                            ui.label(RichText::new("language:").strong().color(text_dark()));
+                            find_row_label(ui, "Language:");
                             ui.add_enabled_ui(options.text, |ui| {
                                 let label = match options.language {
                                     StringFindLanguage::Current => format!(
-                                        "Current language ({})",
+                                        "Current Language ({})",
                                         context
                                             .languages
                                             .get(context.language)
                                             .map(String::as_str)
                                             .unwrap_or("English")
                                     ),
-                                    StringFindLanguage::All => "All languages".to_owned(),
+                                    StringFindLanguage::All => "All Languages".to_owned(),
                                     StringFindLanguage::Language(index) => context
                                         .languages
                                         .get(index)
                                         .cloned()
-                                        .unwrap_or_else(|| "Current language".to_owned()),
+                                        .unwrap_or_else(|| "Current Language".to_owned()),
                                 };
                                 egui::ComboBox::from_id_salt("find_string_language")
                                     .selected_text(label)
@@ -212,14 +263,14 @@ impl Dialog for FindWindow {
                                             .selectable_value(
                                                 &mut options.language,
                                                 StringFindLanguage::Current,
-                                                "Current language",
+                                                "Current Language",
                                             )
                                             .changed();
                                         changed |= ui
                                             .selectable_value(
                                                 &mut options.language,
                                                 StringFindLanguage::All,
-                                                "All languages",
+                                                "All Languages",
                                             )
                                             .changed();
                                         ui.separator();
@@ -239,67 +290,48 @@ impl Dialog for FindWindow {
                             ui.end_row();
                         }
                     });
-                if query.strings.as_ref().is_some_and(|options| options.selected_rows) {
-                    let empty = find.string_context.as_ref().is_none_or(|context| context.selected.is_empty());
-                    let hint = if find.selection_run.as_ref().is_some_and(|run| run.changed) { Some("Strings changed—press Find to refresh. Results still show the last search.") }
-                        else if empty { Some("Select rows in the Strings Editor to search") }
-                        else if changed || find.selection_needs_refresh() { Some("Press Find to search the current selection and settings") }
-                        else { None };
-                    if let Some(hint) = hint { ui.label(RichText::new(hint).small().color(subtle_dark())); }
-                }
-                if let (Some(hit), Some(context)) = (find.active_occurrence(), &find.string_context)
-                {
-                    let label = match hit.kind {
-                        FindTargetKind::StringId(index) => {
-                            Some(format!("Index {index} · String ID"))
-                        }
-                        FindTargetKind::StringText { index, language } => Some(format!(
-                            "Index {index} · {}",
-                            context
-                                .languages
-                                .get(language)
-                                .map(String::as_str)
-                                .unwrap_or("Unknown language")
-                        )),
-                        _ => None,
-                    };
-                    if let Some(label) = label {
-                        ui.label(RichText::new(label).small().color(subtle_dark()));
-                    }
-                }
-                ui.add_space(8.0);
-                if find.searching {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        let text = find
-                            .progress
-                            .map(|(done, total)| format!("searching… {done}/{total}"))
-                            .unwrap_or_else(|| "preparing all-tag search…".to_owned());
-                        ui.label(RichText::new(text).small().color(subtle_dark()));
+                });
+                egui::Frame::new()
+                    .stroke(Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color))
+                    .corner_radius(4)
+                    .inner_margin(8)
+                    .show(ui, |ui| {
+                        ui.set_width(selection_width - 18.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.spacing_mut().item_spacing.y = FIND_ROW_GAP;
+                        // Native checkboxes otherwise reserve a button-height
+                        // row around their smaller square, inflating visible gaps.
+                        ui.spacing_mut().interact_size.y = ui.spacing().icon_width;
+                        ui.label(RichText::new("Selection Options").strong().color(subtle_dark()));
+                        changed |= ui.checkbox(&mut query.match_case, "Match Case").changed();
+                        changed |= ui.checkbox(&mut query.whole_word, "Match Whole Word").changed();
+                        });
                     });
-                } else if find.unreadable > 0 && find.within == FindWithin::AllTags {
-                    ui.label(
-                        RichText::new(format!("{} tag(s) could not be read", find.unreadable))
-                            .small()
-                            .color(subtle_dark()),
-                    );
-                }
-                ui.add_space(10.0);
+                });
+                });
+                ui.add_space(8.0);
                 ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 40.0),
                     egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let background = ui.max_rect().expand2(Vec2::new(12.0, 0.0));
-                    let mut painter = ui.painter().clone();
-                    painter.set_clip_rect(background.intersect(ctx.content_rect()));
-                    let mut rounding = ui.visuals().window_corner_radius;
-                    rounding.nw = 0;
-                    rounding.ne = 0;
-                    painter.rect_filled(background, rounding, foundation_block_bar());
-                    if query.strings.as_ref().is_some_and(|options| options.selected_rows) {
-                        let enabled = find.string_context.as_ref().is_some_and(|context| !context.selected.is_empty());
+                    let fill = ui.painter().add(egui::Shape::Noop);
+                    paint_frame_band(ui, fill, background, ui.visuals().window_corner_radius,
+                        ui.visuals().window_stroke, foundation_block_bar(), false);
+                    let manual = replace_mode || query.within == FindWithin::AllTags
+                        || query.strings.as_ref().is_some_and(|options| options.selected_rows);
+                    if manual {
+                        let no_selection = query.strings.as_ref().is_some_and(|options| options.selected_rows)
+                            && find.string_context.as_ref().is_none_or(|context| context.selected.is_empty());
+                        let enabled = !find.searching && !query.text.is_empty() && !no_selection;
+                        let hint = if find.searching { "A search is in progress; see the bottom status bar" }
+                            else if no_selection { "Select rows in the Strings Editor to search" }
+                            else if query.text.is_empty() { "Enter text to find" }
+                            else if query.within == FindWithin::AllTags { "Search all tags using the current settings" }
+                            else if find.selection_run.as_ref().is_some_and(|run| run.changed) { "Strings changed; click Find to refresh the results" }
+                            else { "Search or refresh results using the current scope and settings" };
                         run_selection |= icon_text_button(ui, ButtonIcon::Find, "Find", enabled)
-                            .on_disabled_hover_text("Select rows in the Strings Editor to search").clicked();
+                            .on_hover_text(hint).on_disabled_hover_text(hint).clicked();
                     }
-                    if selectable_icon_text_button(
+                    if ui.add_enabled_ui(!manual || find.filter_run.as_ref().is_some_and(|run| run.kit == cx.model.active_kit_id()), |ui| selectable_icon_text_button(
                         ui,
                         ButtonIcon::Filter,
                         "Filter Results",
@@ -310,12 +342,21 @@ impl Dialog for FindWindow {
                     } else {
                         "Show only matching fields and blocks in the selected scope"
                     })
-                    .clicked()
+                    .on_disabled_hover_text("Run Find before filtering its results")
+                    .clicked()).inner
                     {
                         filter_results = !filter_results;
                         filter_changed = true;
                     }
-                    let can_navigate = !find.occurrences.is_empty() && !find.searching;
+                    if replace_mode {
+                        let ready = !changed && !find.searching && !query.text.is_empty()
+                            && replace_mode == find.replace_mode && query.within != FindWithin::AllTags
+                            && !cx.model.editing_kit_is_read_only(cx.model.active)
+                            && !find.replace_needs_refresh();
+                        if icon_text_button(ui, ButtonIcon::Replace, "Replace", ready && find.active_occurrence().is_some()).clicked() { replace_action = Some(false); }
+                        if icon_text_button(ui, ButtonIcon::Replace, "Replace All", ready && !find.occurrences.is_empty()).clicked() { replace_action = Some(true); }
+                    }
+                    let can_navigate = !changed && !find.occurrences.is_empty() && !find.searching;
                     let counter = find
                         .active
                         .map(|index| format!("{}/{}", index + 1, find.occurrences.len()))
@@ -324,7 +365,7 @@ impl Dialog for FindWindow {
                         if icon_button(
                             ui,
                             ButtonIcon::Right,
-                            if query.strings.as_ref().is_some_and(|options| options.selected_rows) { "Next match" } else { "Next match (Enter)" },
+                            if replace_mode || query.strings.as_ref().is_some_and(|options| options.selected_rows) { "Next match" } else { "Next match (Enter)" },
                             can_navigate,
                             text_dark(),
                         )
@@ -335,7 +376,7 @@ impl Dialog for FindWindow {
                         if icon_button(
                             ui,
                             ButtonIcon::Left,
-                            if query.strings.as_ref().is_some_and(|options| options.selected_rows) { "Previous match" } else { "Previous match (Shift+Enter)" },
+                            if replace_mode || query.strings.as_ref().is_some_and(|options| options.selected_rows) { "Previous match" } else { "Previous match (Shift+Enter)" },
                             can_navigate,
                             text_dark(),
                         )
@@ -350,6 +391,9 @@ impl Dialog for FindWindow {
         if changed {
             cx.send(SearchCommand::FindChanged(query));
         }
+        if replace_mode != find.replace_mode { cx.send(SearchCommand::FindMode(replace_mode)); }
+        if replacement_changed { cx.send(SearchCommand::ReplacementChanged(replacement)); }
+        if let Some(all) = replace_action { cx.send(SearchCommand::Replace(all)); }
         if run_selection {
             cx.send(SearchCommand::FindRunSelection);
         }
@@ -371,8 +415,60 @@ impl Dialog for FindWindow {
     }
 }
 
-fn draw_find_window_header(ui: &mut Ui, open: &mut bool) {
-    draw_icon_window_header(ui, "Find", ButtonIcon::Find, open);
+/// Compact icon tabs for a floating window. Shares the standard header's
+/// height, background, corners and close control; unused space remains draggable.
+pub(in crate::app) fn draw_tabbed_window_header(
+    ui: &mut Ui, tabs: &[(&str, ButtonIcon)], selected: &mut usize, open: &mut bool,
+    help: Option<(&str, egui::Id)>,
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
+    let margin = ui.spacing().window_margin;
+    let background = egui::Rect::from_min_max(
+        rect.min - egui::vec2(f32::from(margin.left), f32::from(margin.top)),
+        rect.max + egui::vec2(f32::from(margin.right), ui.spacing().item_spacing.y * 0.5));
+    let fill = ui.painter().add(egui::Shape::Noop);
+    paint_frame_band(ui, fill, background, ui.visuals().window_corner_radius,
+        ui.visuals().window_stroke, foundation_block_bar(), true);
+    let painter = ui.painter().with_clip_rect(background.intersect(ui.ctx().content_rect()));
+    let mut left = background.left();
+    for (index, (label, icon)) in tabs.iter().enumerate() {
+        const PADDING: f32 = 12.0;
+        const ICON_SIZE: f32 = 18.0;
+        const GAP: f32 = 6.0;
+        let color = text_dark();
+        let galley = painter.layout_no_wrap((*label).to_owned(), TextStyle::Button.resolve(ui.style()), color);
+        let tab = egui::Rect::from_min_size(egui::pos2(left, rect.top()), egui::vec2(PADDING * 2.0 + ICON_SIZE + GAP + galley.size().x, rect.height()));
+        let response = ui.interact(tab, ui.id().with(("window_header_tab", index)), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, *selected == index, *label));
+        let mut rounding = egui::CornerRadius::same(4);
+        if index == 0 { rounding.nw = ui.visuals().window_corner_radius.nw.saturating_sub(ui.visuals().window_stroke.width.ceil() as u8); }
+        if *selected == index {
+            rounding.sw = 0; rounding.se = 0;
+            let active = egui::Rect::from_min_max(tab.min, egui::pos2(tab.right(), background.bottom()));
+            painter.rect_filled(active, rounding, ui.visuals().window_fill);
+        } else if response.hovered() { painter.rect_filled(tab, rounding, ui.visuals().widgets.hovered.weak_bg_fill); }
+        paint_button_icon_at(ui, *icon, egui::Rect::from_center_size(egui::pos2(tab.left() + PADDING + ICON_SIZE * 0.5, tab.center().y), Vec2::splat(ICON_SIZE)), color);
+        painter.galley(egui::pos2(tab.left() + PADDING + ICON_SIZE + GAP, tab.center().y - galley.size().y * 0.5), galley, color);
+        if response.clicked() { *selected = index; }
+        left = tab.right();
+    }
+    let close_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 10.0, rect.center().y), Vec2::splat(20.0));
+    let mut help_clicked = false;
+    if let Some((tooltip, id)) = help {
+        let help_rect = egui::Rect::from_center_size(egui::pos2(close_rect.left() - 14.0, rect.center().y), Vec2::splat(20.0));
+        let response = ui.interact(help_rect, id, Sense::click()).on_hover_text(tooltip);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tooltip));
+        paint_button_icon_at(ui, ButtonIcon::About, help_rect.shrink(2.0),
+            if response.hovered() { text_dark() } else { subtle_dark() });
+        help_clicked = response.clicked();
+    }
+    let close = ui.interact(close_rect, ui.id().with("window_header_close"), Sense::click()).on_hover_text("Close window");
+    let cross = close_rect.shrink(5.0);
+    let stroke = Stroke::new(1.5_f32, ui.style().interact(&close).fg_stroke.color);
+    painter.line_segment([cross.left_top(), cross.right_bottom()], stroke);
+    painter.line_segment([cross.right_top(), cross.left_bottom()], stroke);
+    if close.clicked() { *open = false; }
+    help_clicked
 }
 
 pub(in crate::app) fn draw_icon_window_header(
@@ -412,12 +508,9 @@ fn draw_icon_window_header_impl(
     background.max.x += f32::from(margin.right);
     background.min.y -= f32::from(margin.top);
     background.max.y += ui.spacing().item_spacing.y * 0.5;
-    let mut painter = ui.painter().clone();
-    painter.set_clip_rect(background.intersect(ui.ctx().content_rect()));
-    let mut rounding = ui.visuals().window_corner_radius;
-    rounding.sw = 0;
-    rounding.se = 0;
-    painter.rect_filled(background, rounding, foundation_block_bar());
+    let fill = ui.painter().add(egui::Shape::Noop);
+    paint_frame_band(ui, fill, background, ui.visuals().window_corner_radius,
+        ui.visuals().window_stroke, foundation_block_bar(), true);
     let font = TextStyle::Heading.resolve(ui.style());
     let galley = ui
         .painter()
@@ -471,6 +564,79 @@ fn draw_icon_window_header_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn about_opens_find_replace_docs_without_closing_or_switching_modes() {
+        use crate::app::loose_fixture::PromptDriver;
+        for strings in [false, true] {
+            for replace in [false, true] {
+                let mut driver = PromptDriver::new();
+                driver.ctx.set_fonts(foundation_fonts());
+                let mut app = Baboon::for_test();
+                app.open_find();
+                app.set_find_mode(replace, &driver.ctx);
+                if strings { app.search.find.strings = Some(StringFindOptions::default()); }
+                driver.frame(&mut app, Vec::new());
+                driver.frame(&mut app, Vec::new());
+                let pos = driver.ctx.read_response(egui::Id::new("find_replace_help")).unwrap().rect.center();
+                driver.frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+                for pressed in [true, false] {
+                    driver.frame(&mut app, vec![egui::Event::PointerButton {
+                        pos, button: egui::PointerButton::Primary, pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }]);
+                }
+                let help = app.dialogs.get::<crate::app::help::HelpWindow>().expect("About opens Help");
+                assert!(help.tab == crate::app::prefs::HelpPanelTab::Doc);
+                assert_eq!(help.doc_section.as_deref(), Some(crate::app::help::FIND_REPLACE_HELP_SECTION));
+                assert!(app.search.find.open);
+                assert_eq!(app.search.find.replace_mode, replace);
+            }
+        }
+    }
+
+    #[test]
+    fn selection_options_have_eight_point_visible_checkbox_gaps() {
+        for replace in [false, true] {
+            let ctx = egui::Context::default();
+            ctx.set_global_style(foundation_style());
+            ctx.set_fonts(foundation_fonts());
+            let mut app = Baboon::for_test();
+            app.open_find();
+            app.set_find_mode(replace, &ctx);
+            let mut boxes = Vec::new();
+            for _ in 0..3 {
+                let output = crate::app::run_ui_test(&ctx, egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1200.0, 800.0))),
+                    ..Default::default()
+                }, |_ui| { app.dialogs.draw(&cx!(app, &ctx), &app_reads!(app)); });
+                boxes = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.rect.size() == Vec2::splat(ctx.global_style().spacing.icon_width) => Some(rect.rect),
+                    _ => None,
+                }).collect();
+            }
+            boxes.sort_by(|a, b| a.top().total_cmp(&b.top()));
+            assert_eq!(boxes.len(), 2);
+            assert_eq!(boxes[1].top() - boxes[0].bottom(), 8.0,
+                "measure the painted checkbox squares, not their padded interaction rows");
+        }
+    }
+
+    #[test]
+    fn header_tabs_switch_modes_and_show_the_replacement_field() {
+        use crate::app::loose_fixture::PromptDriver;
+        let mut app = Baboon::for_test();
+        app.open_find();
+        let mut driver = PromptDriver::new();
+        driver.click(&mut app, "Replace");
+        assert!(app.search.find.replace_mode);
+        let labels = driver.frame(&mut app, Vec::new());
+        assert!(labels.iter().any(|(label, _)| label == "Replace With:"));
+        assert!(labels.iter().any(|(label, _)| label == "Replace All"));
+        driver.click(&mut app, "Find");
+        assert!(!app.search.find.replace_mode);
+        assert!(!driver.frame(&mut app, Vec::new()).iter().any(|(label, _)| label == "Replace With:"));
+    }
 
     fn occurrence(field_path: &str) -> FindOccurrence {
         FindOccurrence {
@@ -584,5 +750,18 @@ mod tests {
             );
         }
         assert_eq!(app.search.find.query, "sky");
+    }
+
+    #[test]
+    fn enter_in_replace_runs_an_explicit_search_in_current_tag() {
+        let ctx = egui::Context::default();
+        let mut app = Baboon::for_test();
+        app.open_find();
+        app.set_find_mode(true, &ctx);
+        app.search.find.query = "needle".into();
+        frame(&mut app, &ctx, Vec::new(), Some(egui::Id::new("find_query")));
+        assert!(app.search.find.replace_run.is_none());
+        frame(&mut app, &ctx, vec![key(egui::Key::Enter)], None);
+        assert!(app.search.find.replace_run.is_some(), "Enter executes Find rather than advancing stale results");
     }
 }

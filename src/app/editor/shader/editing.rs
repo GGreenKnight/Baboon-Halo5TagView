@@ -2607,7 +2607,7 @@ fn draw_shader_reference_cell(
 
     let id = edit.widget_id((cell.id, "text", buffer_key));
     let mut draft = edit.buffers.take(buffer_key, &current);
-    // Flag a referenced tag that is missing on disk (red text).
+    // Missing references use the same error style as the standard fields.
     let missing = open_enabled
         && reference_target_missing_cached(
             ui,
@@ -2617,7 +2617,7 @@ fn draw_shader_reference_cell(
             &open_ref,
         );
     let text_color = if missing {
-        REFERENCE_MISSING_COLOR
+        invalid_value_text()
     } else {
         material_text()
     };
@@ -2646,6 +2646,7 @@ fn draw_shader_reference_cell(
                     bottom: 2,
                 })
                 .desired_width(text_rect.width())
+                .background_color(if missing { invalid_value_fill() } else { material_input() })
                 .layouter(&mut layouter)
                 .hint_text(placeholder_text("(no reference)"))
                 .text_color(text_color)
@@ -2669,6 +2670,10 @@ fn draw_shader_reference_cell(
             resp.clone().on_hover_text(draft.text.clone());
         }
         if missing {
+            ui.painter().rect_stroke(
+                resp.rect, ui.visuals().widgets.inactive.corner_radius,
+                invalid_value_stroke(), egui::StrokeKind::Inside,
+            );
             resp.clone()
                 .on_hover_text(format!("Referenced {extension} not found on disk"));
         }
