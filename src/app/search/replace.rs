@@ -154,6 +154,23 @@ fn replace_ranges(
 }
 
 impl Baboon {
+    /// Seed the confirmation for the shared window-rendering smoke tests.
+    #[cfg(test)]
+    pub(in crate::app) fn open_locked_replace_smoke_confirm(&mut self, all: bool) {
+        let kit = &self.model.kits[self.model.active];
+        self.dialogs.open(LockedReplaceConfirm { approval: ReplaceApproval {
+            kit: kit.id,
+            generation: kit.generation,
+            query: self.search.find.query(),
+            replacement: "replacement".to_owned(),
+            hits: vec![FindOccurrence {
+                tag_key: "smoke".to_owned(), field_path: "locked".to_owned(),
+                kind: FindTargetKind::Value, text: "match".to_owned(), range: 0..5,
+            }],
+            documents: Vec::new(), locked_fields: 1, all,
+        }});
+    }
+
     pub(in crate::app) fn set_find_mode(&mut self, replace: bool, ctx: &egui::Context) {
         if replace {
             if let Some(context) = &self.search.find.string_context {
