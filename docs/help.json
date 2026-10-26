@@ -108,6 +108,15 @@
           ]
         },
         {
+          "title": "Find and Replace",
+          "blocks": [
+            {
+              "kind": "markdown",
+              "file": "find-replace.md"
+            }
+          ]
+        },
+        {
           "title": "Tabbed, splittable editor",
           "blocks": [
             {

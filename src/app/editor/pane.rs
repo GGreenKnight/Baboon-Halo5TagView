@@ -213,50 +213,63 @@ pub(in crate::app) fn draw_tag_pane(
         }
     }
 
-    let filter_in_scope = match find.within {
+    let filter_run = find.filter_run.as_ref().filter(|run| find.explicit_find() && run.kit == cx.model.kits[kit_index].id);
+    let current_query = find.query();
+    let filter_query = filter_run.map_or(&current_query, |run| &run.query);
+    let filter_in_scope = match filter_query.within {
         FindWithin::CurrentTag => {
-            cx.model.kits[kit_index].selected_key.as_deref() == Some(key.as_str())
+            filter_run.and_then(|run| run.selected_tag.as_deref())
+                .or(cx.model.kits[kit_index].selected_key.as_deref()) == Some(key.as_str())
         }
         FindWithin::OpenTags | FindWithin::AllTags => {
             cx.model.kits[kit_index].open_tabs.contains(&key)
         }
     };
     let apply_find_filter = supports_field_search
-        && find.strings.is_none()
+        && filter_query.strings.is_none()
         && find.open
         && find.filter_results
-        && !find.query.is_empty()
-        && !find.look_in.is_empty()
+        && (!find.explicit_find() || filter_run.is_some())
+        && !filter_query.text.is_empty()
+        && !filter_query.look_in.is_empty()
         && filter_in_scope;
     let field_filter = if apply_find_filter {
+        let captured_cells = filter_run.map(|run| run.cells.clone());
         let signature = format!(
             "{}|{:?}|{}|{}|{:?}",
-            find.query,
-            find.look_in,
-            find.match_case,
-            find.whole_word,
+            filter_query.text,
+            filter_query.look_in,
+            filter_query.match_case,
+            filter_query.whole_word,
             doc.content_stamp(),
         );
         let cached = view
             .find_filter_applied
             .get(&key)
-            .filter(|applied| applied.signature == signature)
+            .filter(|applied| applied.signature == signature && match (&applied.captured_cells, &captured_cells) {
+                (Some(old), Some(new)) => std::sync::Arc::ptr_eq(old, new),
+                (None, None) => true,
+                _ => false,
+            })
             .map(|applied| applied.filter.clone());
         let filter = cached.unwrap_or_else(|| {
-            let filter = std::sync::Arc::new(compute_find_field_filter(
+            let filter = std::sync::Arc::new(if let Some(cells) = &captured_cells {
+                captured_find_field_filter(cells, &key)
+            } else { compute_find_field_filter(
                 &doc.tag,
                 cx.model.names(),
                 def_docs.as_deref(),
-                &find.query,
-                find.look_in,
-                find.match_case,
-                find.whole_word,
-            ));
+                &filter_query.text,
+                filter_query.look_in,
+                filter_query.match_case,
+                filter_query.whole_word,
+            ) });
             view.find_filter_applied.insert(
                 key.clone(),
                 AppliedFindFilter {
                     signature,
                     filter: filter.clone(),
+                    captured_cells,
                 },
             );
             filter

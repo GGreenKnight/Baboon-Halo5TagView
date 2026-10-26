@@ -18,6 +18,7 @@ use super::recents::RecentAction;
 pub(in crate::app) const SHORTCUTS: &[(egui::Modifiers, egui::Key, fn() -> AppAction)] = &[
     (egui::Modifiers::COMMAND, egui::Key::N, || AppAction::NewTag),
     (egui::Modifiers::COMMAND, egui::Key::F, || AppAction::OpenFind),
+    (egui::Modifiers::COMMAND, egui::Key::H, || AppAction::OpenReplace),
     (egui::Modifiers::COMMAND, egui::Key::S, || {
         AppAction::Defer(DeferredFileAction::SaveCurrentTag)
     }),
@@ -58,6 +59,7 @@ pub(in crate::app) enum AppAction {
     NewTag,
     /// Open Find, or select its query again if it is open.
     OpenFind,
+    OpenReplace,
     /// Import a tag or folder: into the containers for a container source, or
     /// converted from another game's kit for a loose one.
     ImportTags,
@@ -135,7 +137,14 @@ impl Baboon {
                     self.open_new_tag_dialog();
                 }
             }
-            AppAction::OpenFind => self.open_find_in_context(ctx),
+            AppAction::OpenFind => {
+                self.set_find_mode(false, ctx);
+                self.open_find_in_context(ctx);
+            }
+            AppAction::OpenReplace => {
+                self.open_find_in_context(ctx);
+                self.set_find_mode(true, ctx);
+            }
             AppAction::ImportTags => {
                 if self.model.current_source_is_container() {
                     self.begin_import_tag(None);

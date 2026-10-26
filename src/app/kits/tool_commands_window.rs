@@ -416,12 +416,9 @@ fn draw_tool_command_arg(
                 }
             }
             _ => {
-                let mut edit = crate::app::ui_kit::singleline_text_edit(&mut value)
+                let edit = singleline_text_edit_with_error(ui, &mut value, is_invalid)
                     .desired_width(300.0)
                     .font(egui::TextStyle::Monospace);
-                if is_invalid {
-                    edit = edit.text_color(Color32::from_rgb(190, 70, 54));
-                }
                 ui.add(edit);
                 if matches!(
                     arg.kind,
@@ -438,7 +435,7 @@ fn draw_tool_command_arg(
             ui.label(
                 RichText::new("required")
                     .small()
-                    .color(Color32::from_rgb(190, 70, 54)),
+                    .color(invalid_value_text()),
             );
         }
     });

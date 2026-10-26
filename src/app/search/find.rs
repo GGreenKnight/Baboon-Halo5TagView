@@ -142,6 +142,7 @@ pub(in crate::app) struct FindFieldPlan {
     /// A `!` field: the editor draws it, and everything under it, only in
     /// expert mode. The marker comes from the definition, as the editor's does.
     pub(in crate::app) hidden: bool,
+    pub(in crate::app) read_only: bool,
 }
 
 /// Plans for one walk, keyed by struct definition index within the tag's layout.
@@ -206,14 +207,17 @@ impl<'a> FindPlans<'a> {
             .fields()
             .map(|field| {
                 let mut docs_before = 0..0;
-                let mut hidden = crate::app::editor::field_display_meta(field.name()).advanced;
+                let meta = crate::app::editor::field_display_meta(field.name());
+                let mut hidden = meta.advanced;
+                let mut read_only = meta.read_only;
                 if let Some(match_idx) = (doc_cursor..entries.len()).find(|&index| {
                     matches!(&entries[index], DefEntry::Field { clean_name, .. } if clean_name == field.name())
                 }) {
                     docs_before = doc_cursor..match_idx;
                     doc_cursor = match_idx + 1;
-                    if let DefEntry::Field { hidden: true, .. } = &entries[match_idx] {
-                        hidden = true;
+                    if let DefEntry::Field { hidden: marked_hidden, read_only: marked_read_only, .. } = &entries[match_idx] {
+                        hidden |= marked_hidden;
+                        read_only |= marked_read_only;
                     }
                 }
                 let clean = field.clean_name().into_owned();
@@ -237,6 +241,7 @@ impl<'a> FindPlans<'a> {
                     is_block,
                     is_documentation,
                     hidden,
+                    read_only,
                     label: label.into(),
                     clean: clean.into(),
                 }
@@ -425,12 +430,30 @@ impl Baboon {
     /// frame on a large tag, so it reruns only when [`Self::find_results_key`]
     /// changes; otherwise only the cheap render snapshot is republished.
     pub(in crate::app) fn refresh_find(&mut self, ctx: &egui::Context) {
+        self.refresh_find_results(ctx);
+        if std::mem::take(&mut self.search.find.reveal_restored_active)
+            && self.search.find.open && self.search.find.replace_mode
+            && !self.search.find.replace_needs_refresh()
+            && let Some(hit) = self.search.find.active_occurrence().cloned()
+        {
+            self.activate_find_occurrence(ctx, hit);
+        }
+    }
+
+    fn refresh_find_results(&mut self, ctx: &egui::Context) {
         if let Some(context) = &self.search.find.string_context {
             if let Some(latest) = ctx.data(|data| data.get_temp::<StringFindContext>(string_find_context_id(context.kit, &context.tag_key))) {
                 self.search.find.string_context = Some(latest);
             }
         }
-        if self.search.find.open && self.search.find.strings.as_ref().is_some_and(|options| options.selected_rows) {
+        if self.search.find.open && self.search.find.replace_mode && !self.refresh_replace_capture(ctx) { return; }
+        if self.search.find.open && self.search.find.strings.as_ref().is_some_and(|options| options.selected_rows || self.search.find.replace_mode) {
+            if self.search.find.selection_run.as_ref().is_some_and(|run| run.query != self.search.find.query()) {
+                self.search.find.selection_run = None;
+                self.search.find.occurrences.clear();
+                self.search.find.active = None;
+                self.search.find.matching_cells = Default::default();
+            }
             // Preserve explicit result membership until Find is pressed again.
             // Known edits already rebase indices; undo and whole-tag changes
             // use unique row identities, never an old index by itself.
@@ -453,6 +476,13 @@ impl Baboon {
                 self.search.find.active = None;
                 self.search.find.matching_cells = Default::default();
             }
+            self.publish_find_snapshot(ctx);
+            return;
+        }
+        if self.search.find.within == FindWithin::AllTags && !self.search.find.all_requested {
+            self.search.find.occurrences.clear();
+            self.search.find.active = None;
+            self.search.find.matching_cells = Default::default();
             self.publish_find_snapshot(ctx);
             return;
         }
@@ -540,7 +570,7 @@ impl Baboon {
         Some(key)
     }
 
-    fn refresh_open_tag_find(&mut self) {
+    pub(super) fn refresh_open_tag_find(&mut self) {
         let keys = match self.search.find.within {
             FindWithin::CurrentTag => self.model.kits[self.model.active]
                 .selected_key
@@ -591,21 +621,37 @@ impl Baboon {
                 .map(|hit| (hit.tag_key.clone(), hit.field_path.clone(), hit.kind))
                 .collect(),
         );
+        if self.search.find.within == FindWithin::AllTags && self.search.find.all_requested {
+            self.capture_find_filter();
+        }
         self.publish_find_snapshot(ctx);
+    }
+
+    pub(super) fn capture_find_filter(&mut self) {
+        let find = &self.search.find;
+        self.search.find.filter_run = Some(FindFilterRun {
+            query: find.query(), kit: self.model.active_kit_id(),
+            selected_tag: self.model.kits[self.model.active].selected_key.clone(),
+            cells: find.replace_run.as_ref().map_or_else(|| find.matching_cells.clone(), |run| run.matching_cells.clone()),
+            context: find.string_context.clone(),
+        });
     }
 
     /// Install the render snapshot. Cheap: the match set is shared, and the
     /// active occurrence is re-read because stepping moves it between walks.
-    fn publish_find_snapshot(&self, ctx: &egui::Context) {
+    pub(super) fn publish_find_snapshot(&self, ctx: &egui::Context) {
+        let filter = self.search.find.filter_run.as_ref().filter(|run|
+            self.search.find.explicit_find() && self.search.find.filter_results && run.kit == self.model.active_kit_id());
         let run = self.search.find.selection_run.as_ref()
             .filter(|_| self.search.find.strings.as_ref().is_some_and(|options| options.selected_rows));
         let snapshot = std::sync::Arc::new(FindRenderSnapshot {
-            query: run.map_or_else(|| self.search.find.query.clone(), |run| run.query.text.clone()),
-            match_case: run.map_or(self.search.find.match_case, |run| run.query.match_case),
-            whole_word: run.map_or(self.search.find.whole_word, |run| run.query.whole_word),
+            query: filter.map_or_else(|| run.map_or_else(|| self.search.find.query.clone(), |run| run.query.text.clone()), |run| run.query.text.clone()),
+            match_case: filter.map_or_else(|| run.map_or(self.search.find.match_case, |run| run.query.match_case), |run| run.query.match_case),
+            whole_word: filter.map_or_else(|| run.map_or(self.search.find.whole_word, |run| run.query.whole_word), |run| run.query.whole_word),
             active: self.search.find.active_occurrence().cloned(),
-            matching_cells: self.search.find.matching_cells.clone(),
-            string_context: self.search.find.string_context.clone(),
+            matching_cells: filter.map_or_else(|| self.search.find.replace_run.as_ref().filter(|_| self.search.find.replace_mode)
+                .map_or_else(|| self.search.find.matching_cells.clone(), |run| run.matching_cells.clone()), |run| run.cells.clone()),
+            string_context: filter.map_or_else(|| self.search.find.string_context.clone(), |run| run.context.clone()),
             filter_results: self.search.find.filter_results,
         });
         ctx.data_mut(|data| data.insert_temp(find_render_snapshot_id(), snapshot));
@@ -625,6 +671,8 @@ impl Baboon {
                 .entry_progress
                 .as_ref()
                 .map(|progress| (progress.processed, progress.total));
+            self.model.status = self.search.find.progress.map_or_else(|| "Find: preparing all-tag search…".to_owned(),
+                |(done, total)| format!("Find: indexing tags… {done}/{total}"));
             self.search.find.occurrences.clear();
             return;
         }
@@ -766,6 +814,7 @@ impl Baboon {
         self.search.find.all_closed_occurrences.clear();
         self.search.find.searching = true;
         self.search.find.progress = Some((0, total));
+        self.model.status = format!("Find: searching all tags… 0/{total}");
         self.search.find.unreadable = 0;
         let worker_ctx = ctx.clone();
         let progress_tx = tx.clone();
@@ -907,6 +956,29 @@ fn order_find_occurrences(
 mod tests {
     use super::*;
     use crate::core::document::value::append_field_path_for;
+
+    #[test]
+    fn all_tag_search_reports_progress_and_unreadable_tags_in_the_status_bar() {
+        let mut app = Baboon::for_test();
+        let ctx = egui::Context::default();
+        app.open_find();
+        app.search.find.within = FindWithin::AllTags;
+        app.search.find.query = "needle".into();
+        app.search.find.all_requested = true;
+        app.search.find.searching = true;
+        let stamp = app.model.kit_stamp();
+        let request_id = app.search.find.all_request_id;
+        app.apply_worker_message(WorkerMessage::FindAllProgress { stamp, request_id, processed: 2, total: 3 }, &ctx);
+        assert_eq!(app.model.status, "Find: searching all tags… 2/3");
+        app.apply_worker_message(WorkerMessage::FindAllFinished { stamp, request_id, unreadable: 2,
+            occurrences: vec![FindOccurrence { tag_key: "closed-tag".into(), field_path: "field".into(),
+                kind: FindTargetKind::Value, text: "needle".into(), range: 0..6 }] }, &ctx);
+        assert_eq!(app.model.status, "Find: 1 match; 2 tags could not be read");
+        assert!(!app.search.find.searching);
+        app.search.find.close();
+        app.apply_worker_message(WorkerMessage::FindAllProgress { stamp, request_id, processed: 3, total: 3 }, &ctx);
+        assert_eq!(app.model.status, "Find: 1 match; 2 tags could not be read", "late progress cannot overwrite status after Find closes");
+    }
 
     /// Two kits of the same shape are still two kits. Find's "All Tags"
     /// signature used to leave the kit out, so switching to a kit with the same

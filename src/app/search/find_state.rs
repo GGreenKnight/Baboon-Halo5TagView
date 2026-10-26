@@ -149,6 +149,12 @@ pub(in crate::app) struct FindOccurrence {
 /// Persistent state for the modeless Ctrl+F window.
 #[derive(Default)]
 pub(in crate::app) struct FindDialogState {
+    pub(in crate::app) replace_mode: bool,
+    pub(in crate::app) replace_run: Option<ReplaceRun>,
+    pub(in crate::app) replacement: String,
+    pub(in crate::app) replace_status: Option<String>,
+    pub(in crate::app) find_look_in: Option<FindLookIn>,
+    pub(in crate::app) all_requested: bool,
     pub(in crate::app) selection_run: Option<StringSelectionRun>,
     pub(in crate::app) open: bool,
     pub(in crate::app) query: String,
@@ -159,8 +165,12 @@ pub(in crate::app) struct FindDialogState {
     pub(in crate::app) match_case: bool,
     pub(in crate::app) whole_word: bool,
     pub(in crate::app) filter_results: bool,
+    pub(in crate::app) filter_run: Option<FindFilterRun>,
     pub(in crate::app) occurrences: Vec<FindOccurrence>,
     pub(in crate::app) active: Option<usize>,
+    /// History restoration has no egui context; reveal its active row on the
+    /// next refresh, through the same navigation used by Find Next.
+    pub(in crate::app) reveal_restored_active: bool,
     pub(in crate::app) all_request_id: u64,
     pub(in crate::app) all_signature: Option<String>,
     pub(in crate::app) all_closed_occurrences: Vec<FindOccurrence>,
@@ -178,6 +188,14 @@ pub(in crate::app) struct FindDialogState {
 
 pub(in crate::app) type FindMatchingCells =
     std::collections::HashSet<(String, String, FindTargetKind)>;
+
+pub(in crate::app) struct FindFilterRun {
+    pub(in crate::app) query: FindQuery,
+    pub(in crate::app) kit: crate::app::kits::KitId,
+    pub(in crate::app) selected_tag: Option<String>,
+    pub(in crate::app) cells: std::sync::Arc<FindMatchingCells>,
+    pub(in crate::app) context: Option<StringFindContext>,
+}
 
 /// What Find searches for, as the Find window edits it.
 #[derive(Clone, Debug, PartialEq)]
@@ -199,7 +217,32 @@ pub(in crate::app) struct StringSelectionRun {
     pub(in crate::app) changed: bool,
 }
 
+/// Membership stays fixed until the next explicit Find. Content stamps
+/// distinguish our validated replacements from other edits needing a refresh.
+pub(in crate::app) struct ReplaceRun {
+    pub(in crate::app) query: FindQuery,
+    pub(in crate::app) kit: crate::app::kits::KitId,
+    pub(in crate::app) selected_tag: Option<String>,
+    pub(in crate::app) documents: Vec<(String, u64, String, String)>,
+    pub(in crate::app) matching_cells: std::sync::Arc<FindMatchingCells>,
+    pub(in crate::app) changed: bool,
+}
+
 impl FindDialogState {
+    pub(in crate::app) fn explicit_find(&self) -> bool {
+        self.replace_mode || self.within == FindWithin::AllTags
+            || self.strings.as_ref().is_some_and(|options| options.selected_rows)
+    }
+
+    pub(in crate::app) fn replace_needs_refresh(&self) -> bool {
+        self.replace_run.as_ref().is_none_or(|run| run.changed || run.query != self.query())
+            || self.strings.as_ref().is_some_and(|options| {
+                self.selection_run.as_ref().is_none_or(|run| self.string_context.as_ref().is_none_or(|context|
+                    context.kit != run.context.kit || context.tag_key != run.context.tag_key || context.scope != run.context.scope
+                    || (options.selected_rows && context.selected != run.context.selected)
+                    || (options.language == StringFindLanguage::Current && context.language != run.context.language)))
+            })
+    }
     pub(in crate::app) fn selection_needs_refresh(&self) -> bool {
         self.selection_run.as_ref().is_none_or(|run| {
             run.changed || run.query != self.query() || self.string_context.as_ref().is_none_or(|context|
@@ -237,15 +280,19 @@ impl FindDialogState {
 
     /// Close Find and discard transient results while preserving its options.
     pub(in crate::app) fn close(&mut self) {
+        self.replace_run = None;
+        self.all_requested = false;
         self.selection_run = None;
         self.open = false;
         self.active = None;
+        self.reveal_restored_active = false;
         self.occurrences.clear();
         self.results_key = None;
         self.matching_cells = Default::default();
         self.searching = false;
         self.progress = None;
         self.filter_results = false;
+        self.filter_run = None;
     }
 }
 

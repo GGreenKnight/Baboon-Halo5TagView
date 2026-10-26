@@ -278,7 +278,11 @@ impl EditDrafts {
     }
 
     pub(in crate::app) fn has_changed_prefix(&self, prefix: &str) -> bool {
-        self.entries.iter().any(|(key, draft)| key.starts_with(prefix) && draft.changed)
+        self.has_changed_prefix_except(prefix, |_, _| false)
+    }
+
+    pub(in crate::app) fn has_changed_prefix_except(&self, prefix: &str, allowed: impl Fn(&str, &str) -> bool) -> bool {
+        self.entries.iter().any(|(key, draft)| key.starts_with(prefix) && draft.changed && !allowed(key, &draft.text))
     }
 
     pub(in crate::app) fn accept_successful_edits(
@@ -971,6 +975,7 @@ pub(in crate::app) enum FieldFilterAction {
 pub(in crate::app) struct AppliedFindFilter {
     pub(in crate::app) signature: String,
     pub(in crate::app) filter: std::sync::Arc<FieldFilter>,
+    pub(in crate::app) captured_cells: Option<std::sync::Arc<crate::app::search::FindMatchingCells>>,
 }
 
 /// Which collapsible nodes a Find query wants open. Paths are the

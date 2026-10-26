@@ -21,6 +21,7 @@ pub(in crate::app) use find_window::{
 pub(in crate::app) mod find_state;
 pub(in crate::app) use find_state::*;
 mod string_find;
+mod replace;
 pub(in crate::app) use string_find::*;
 pub(in crate::app) mod field_index;
 pub(in crate::app) use field_index::*;
@@ -34,6 +35,7 @@ pub(in crate::app) mod listings;
 /// Search: the Find dialog, tag query results, the field-value search and a
 /// Find hit waiting to be opened.
 pub(in crate::app) struct SearchFeature {
+    pub(in crate::app) replace_links: Vec<replace::ReplaceLink>,
     /// Modeless find-in-tag dialog and its exact occurrence list.
     pub(in crate::app) find: FindDialogState,
     pub(in crate::app) field_value_searching: bool,
@@ -44,6 +46,10 @@ pub(in crate::app) struct SearchFeature {
 
 /// What search can be asked to do.
 pub(in crate::app) enum SearchCommand {
+    FindMode(bool),
+    ReplacementChanged(String),
+    Replace(bool),
+    ConfirmLockedReplace,
     /// Find's query or options changed to these: search again from the first
     /// match.
     FindChanged(FindQuery),
@@ -88,6 +94,7 @@ impl Baboon {
             self.search.find.selection_run = None;
             self.search.find.active = None;
             self.search.find.filter_results = false;
+            self.search.find.filter_run = None;
             self.search.find.all_request_id += 1;
             self.search.find.searching = false;
             self.search.pending_find_jump = None;
@@ -107,11 +114,22 @@ impl Baboon {
     pub(in crate::app) fn apply_search_command(&mut self, command: SearchCommand, ctx: &egui::Context) {
         match command {
             SearchCommand::FindChanged(query) => {
-                let manual = query.strings.as_ref().is_some_and(|options| options.selected_rows);
-                if !manual || !self.search.find.strings.as_ref().is_some_and(|options| options.selected_rows) {
-                    self.search.find.selection_run = None;
-                }
+                let manual = self.search.find.replace_mode || query.within == FindWithin::AllTags || query.strings.as_ref().is_some_and(|options| options.selected_rows);
+                self.search.find.replace_run = None;
+                self.search.find.selection_run = None;
+                self.search.find.all_requested = false;
+                self.search.find.all_request_id += 1;
+                self.search.find.all_signature = None;
+                self.search.find.all_closed_occurrences.clear();
+                self.search.find.searching = false;
+                self.search.find.progress = None;
+                self.search.find.unreadable = 0;
+                self.search.pending_find_jump = None;
+                self.search.find.occurrences.clear();
+                self.search.find.matching_cells = Default::default();
+                self.search.find.replace_status = None;
                 self.search.find.set_query(query);
+                if !manual { self.search.find.filter_run = None; }
                 if manual { self.refresh_find(ctx); return; }
                 self.search.find.active = None;
                 self.search.find.results_key = None;
@@ -121,7 +139,29 @@ impl Baboon {
                 }
             }
             SearchCommand::FindFilter(filter) => self.search.find.filter_results = filter,
-            SearchCommand::FindRunSelection => self.run_selected_string_find(ctx),
+            SearchCommand::FindMode(replace) => self.set_find_mode(replace, ctx),
+            SearchCommand::ReplacementChanged(text) => {
+                self.search.find.replacement = text;
+                self.search.find.replace_status = None;
+            }
+            SearchCommand::Replace(all) => self.replace_find_matches(all, ctx),
+            SearchCommand::ConfirmLockedReplace => self.confirm_locked_replace(ctx),
+            SearchCommand::FindRunSelection => {
+                if self.search.find.replace_mode {
+                    self.run_replace_find(ctx);
+                } else if self.search.find.within == FindWithin::AllTags && self.search.find.strings.is_none() {
+                    self.search.find.all_requested = true;
+                    self.search.find.all_signature = None;
+                    self.search.find.results_key = None;
+                    self.refresh_find(ctx);
+                } else if self.search.find.strings.as_ref().is_some_and(|options| options.selected_rows) {
+                    self.run_selected_string_find(ctx);
+                } else {
+                    self.search.find.results_key = None;
+                    self.refresh_find(ctx);
+                    if let Some(hit) = self.search.find.active_occurrence().cloned() { self.activate_find_occurrence(ctx, hit); }
+                }
+            }
             SearchCommand::FindClose => self.search.find.close(),
             SearchCommand::FindStep(delta) => self.step_find(&ctx, delta),
             SearchCommand::QueryResult { kit, action } => self.apply_query_result_action(kit, action, ctx),

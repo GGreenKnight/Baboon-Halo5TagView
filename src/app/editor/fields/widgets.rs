@@ -256,24 +256,25 @@ pub(in crate::app) fn foundation_value_cell(
     id: egui::Id,
     editable: bool,
 ) -> egui::Response {
-    foundation_value_cell_filled(ui, text, width, id, editable, None)
+    foundation_value_cell_with_error(ui, text, width, id, editable, false)
 }
 
-/// [`foundation_value_cell`] with the box's fill given: a string editor's box
-/// is pink while its value isn't one the editor offers.
-pub(in crate::app) fn foundation_value_cell_filled(
+/// A value box using the shared error fill, text and border when invalid.
+pub(in crate::app) fn foundation_value_cell_with_error(
     ui: &mut Ui,
     text: &mut String,
     width: f32,
     id: egui::Id,
     editable: bool,
-    fill: Option<Color32>,
+    invalid: bool,
 ) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::hover());
+    let fill = invalid.then(invalid_value_fill);
+    let color = if invalid { invalid_value_text() } else { text_dark() };
     if editable {
-        foundation_value_text_filled(ui, rect, text, Some(id), text_dark(), VALUE_PADDING, fill)
+        foundation_value_text_filled(ui, rect, text, Some(id), color, VALUE_PADDING, fill, None)
     } else {
-        foundation_value_text_filled(ui, rect, &mut text.as_str(), Some(id), text_dark(), VALUE_PADDING, fill)
+        foundation_value_text_filled(ui, rect, &mut text.as_str(), Some(id), color, VALUE_PADDING, fill, None)
     }
 }
 
@@ -292,7 +293,7 @@ fn foundation_value_text(
     color: Color32,
     left_padding: f32,
 ) -> egui::Response {
-    foundation_value_text_filled(ui, rect, text, id, color, left_padding, None)
+    foundation_value_text_filled(ui, rect, text, id, color, left_padding, None, None)
 }
 
 fn foundation_value_text_filled(
@@ -303,15 +304,19 @@ fn foundation_value_text_filled(
     color: Color32,
     left_padding: f32,
     fill: Option<Color32>,
+    status: Option<&str>,
 ) -> egui::Response {
     // A box whose text can't change is greyed, as Foundation greys a
     // read-only field's: a dimmer fill and dimmer text (a missing reference
     // keeps its red). It still takes focus, so its text can be copied.
     let read_only = !text.is_mutable();
+    let invalid = fill == Some(invalid_value_fill());
     let fill = fill.unwrap_or(if read_only { foundation_input_read_only() } else { foundation_input() });
     let color = if read_only && color == text_dark() { subtle_dark() } else { color };
     ui.painter().rect_filled(rect, 0.0, fill);
     let font_id = ui.style().text_styles[&TextStyle::Monospace].clone();
+    let status = status.map(|status| ui.painter().layout_no_wrap(status.to_owned(), FontId::proportional(11.0), invalid_value_text()));
+    let right_padding = 4.0 + status.as_ref().map_or(0.0, |galley| galley.size().x + 8.0);
     let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap_width: f32| {
         findable_galley(ui, text.as_str(), font_id.clone(), color, FindTargetKind::Value)
     };
@@ -320,7 +325,7 @@ fn foundation_value_text_filled(
     let mut edit = crate::app::ui_kit::singleline_text_edit(text)
         .frame(egui::Frame::NONE.inner_margin(egui::Margin {
             left: left_padding as i8,
-            right: 4,
+            right: right_padding.ceil() as i8,
             top: 2,
             bottom: 2,
         }))
@@ -333,12 +338,19 @@ fn foundation_value_text_filled(
         edit = edit.id(id);
     }
     let response = ui.put(rect, edit);
-    let stroke = if response.has_focus() {
+    let stroke = if invalid {
+        invalid_value_stroke()
+    } else if response.has_focus() {
         ui.visuals().selection.stroke
     } else {
         Stroke::new(1.0_f32, foundation_input_edge())
     };
     ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
+    if let Some(status) = status {
+        ui.painter().with_clip_rect(rect.shrink(1.0)).galley(
+            egui::pos2(rect.right() - 4.0 - status.size().x, rect.center().y - status.size().y * 0.5),
+            status, invalid_value_text());
+    }
     text_edit_cursor_to_start_on_tab_focus(ui, &response);
     response
 }
@@ -375,16 +387,19 @@ pub(super) fn foundation_tag_reference_input_cell_colored(
     color: Color32,
     hover: Option<&str>,
     icon: TagIcon,
+    missing: bool,
     show_hover_text: bool,
 ) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::hover());
-    let response = foundation_value_text(
+    let response = foundation_value_text_filled(
         ui,
         rect,
         &mut text,
         None,
-        color,
+        if missing { invalid_value_text() } else { color },
         tag_reference_icon_footprint(),
+        missing.then(invalid_value_fill),
+        missing.then_some("missing"),
     );
     paint_tag_reference_icon(ui, rect, icon);
     if response.hovered() && show_hover_text {
@@ -399,18 +414,25 @@ pub(super) fn foundation_tag_reference_text_edit_cell(
     width: f32,
     id: egui::Id,
     icon: TagIcon,
+    missing: bool,
 ) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::hover());
-    let response = foundation_value_text(
+    let response = foundation_value_text_filled(
         ui,
         rect,
         text,
         Some(id),
-        text_dark(),
+        if missing { invalid_value_text() } else { text_dark() },
         tag_reference_icon_footprint(),
+        missing.then(invalid_value_fill),
+        missing.then_some("missing"),
     );
     paint_tag_reference_icon(ui, rect, icon);
-    response
+    if missing {
+        response.on_hover_text("Referenced tag not found on disk")
+    } else {
+        response
+    }
 }
 
 pub(in crate::app) fn text_edit_cursor_to_start_on_tab_focus(ui: &Ui, response: &egui::Response) {
@@ -1052,6 +1074,7 @@ mod tests {
                             320.0,
                             egui::Id::new("reference"),
                             icon,
+                            false,
                         )
                         .rect;
                     });

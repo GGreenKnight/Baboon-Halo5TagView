@@ -232,7 +232,7 @@ fn draw_chimp_header_sections(
                                     .strong(),
                             );
                             let response = ui.add(
-                                crate::app::ui_kit::singleline_text_edit(&mut edit.text)
+                                singleline_text_edit_with_error(ui, &mut edit.text, pane.header_error.is_some())
                                     .id(egui::Id::new(("chimp_name_edit", edit.index)))
                                     .desired_width(320.0)
                                     .font(egui::TextStyle::Monospace),
@@ -289,7 +289,7 @@ fn draw_chimp_header_sections(
                             if let Some(error) = pane.header_error.as_deref() {
                                 ui.label(
                                     RichText::new(error)
-                                        .color(Color32::from_rgb(150, 56, 44))
+                                        .color(invalid_value_text())
                                         .small(),
                                 );
                             }
@@ -464,7 +464,7 @@ fn draw_chimp_header_sections(
                     Err(error) => {
                         ui.label(
                             RichText::new(format!("Import map is not resolvable: {error:#}"))
-                                .color(Color32::from_rgb(150, 56, 44)),
+                                .color(invalid_value_text()),
                         );
                     }
                 });
@@ -655,10 +655,14 @@ fn draw_chimp_identity_panel(
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.label(RichText::new("Flags and versioning").strong());
 
+        let flags = edit.package_flags.trim();
+        let flags = flags.strip_prefix("0x").or_else(|| flags.strip_prefix("0X")).unwrap_or(flags);
+        let invalid_flags = error.is_some() && u32::from_str_radix(flags, 16).is_err();
+
         ui.label(RichText::new("Package flags").color(subtle_dark()).small());
         ui.horizontal(|ui| {
             ui.add(
-                crate::app::ui_kit::singleline_text_edit(&mut edit.package_flags)
+                singleline_text_edit_with_error(ui, &mut edit.package_flags, invalid_flags)
                     .desired_width(120.0)
                     .font(egui::TextStyle::Monospace),
             );
@@ -759,7 +763,7 @@ fn draw_chimp_identity_panel(
         if let Some(error) = error {
             ui.label(
                 RichText::new(error)
-                    .color(Color32::from_rgb(150, 56, 44))
+                    .color(invalid_value_text())
                     .small(),
             );
         }
@@ -797,8 +801,9 @@ fn draw_chimp_export_edit_panel(
         ui.label(RichText::new(format!("Export {}", edit.index)).strong());
 
         ui.label(RichText::new("Object name").color(subtle_dark()).small());
+        let invalid_name = error.is_some() && edit.object_name.trim().is_empty();
         ui.add(
-            crate::app::ui_kit::singleline_text_edit(&mut edit.object_name)
+            singleline_text_edit_with_error(ui, &mut edit.object_name, invalid_name)
                 .desired_width(320.0)
                 .font(egui::TextStyle::Monospace),
         );
@@ -906,7 +911,7 @@ fn draw_chimp_export_edit_panel(
         if let Some(error) = error {
             ui.label(
                 RichText::new(error)
-                    .color(Color32::from_rgb(150, 56, 44))
+                    .color(invalid_value_text())
                     .small(),
             );
         }
@@ -946,7 +951,7 @@ fn draw_chimp_import_editor(
                         .small(),
                 );
                 ui.add(
-                    crate::app::ui_kit::singleline_text_edit(&mut edit.script_path)
+                    singleline_text_edit_with_error(ui, &mut edit.script_path, error.is_some())
                         .desired_width(420.0)
                         .font(egui::TextStyle::Monospace),
                 );
@@ -966,14 +971,15 @@ fn draw_chimp_import_editor(
                         .small(),
                 );
                 ui.add(
-                    crate::app::ui_kit::singleline_text_edit(&mut edit.package_path)
+                    singleline_text_edit_with_error(ui, &mut edit.package_path,
+                        error.is_some() || matches!(&edit.resolved, Some(Err(_))))
                         .desired_width(420.0)
                         .font(egui::TextStyle::Monospace),
                 );
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Object name").color(subtle_dark()).small());
                     ui.add(
-                        crate::app::ui_kit::singleline_text_edit(&mut edit.object_name)
+                        singleline_text_edit_with_error(ui, &mut edit.object_name, error.is_some())
                             .desired_width(260.0)
                             .font(egui::TextStyle::Monospace),
                     );
@@ -1026,7 +1032,7 @@ fn draw_chimp_import_editor(
                     Some(Err(error)) => {
                         ui.label(
                             RichText::new(error)
-                                .color(Color32::from_rgb(150, 56, 44))
+                                .color(invalid_value_text())
                                 .small(),
                         );
                     }
@@ -1055,7 +1061,7 @@ fn draw_chimp_import_editor(
         if let Some(error) = error {
             ui.label(
                 RichText::new(error)
-                    .color(Color32::from_rgb(150, 56, 44))
+                    .color(invalid_value_text())
                     .small(),
             );
         }

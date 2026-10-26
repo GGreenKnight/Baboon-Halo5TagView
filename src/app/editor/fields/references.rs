@@ -252,6 +252,7 @@ pub(in crate::app) fn draw_foundation_tag_reference_row(
                     value_width,
                     id,
                     icon,
+                    missing,
                 );
 
                 draft.note_response(&response);
@@ -282,6 +283,7 @@ pub(in crate::app) fn draw_foundation_tag_reference_row(
                     subtle_dark(),
                     Some("This reference is empty"),
                     icon,
+                    false,
                     true,
                 )
             } else if missing {
@@ -289,9 +291,10 @@ pub(in crate::app) fn draw_foundation_tag_reference_row(
                     ui,
                     value,
                     value_width,
-                    REFERENCE_MISSING_COLOR,
+                    invalid_value_text(),
                     Some("Referenced tag not found on disk"),
                     icon,
+                    true,
                     true,
                 )
             } else {
@@ -302,6 +305,7 @@ pub(in crate::app) fn draw_foundation_tag_reference_row(
                     text_dark(),
                     None,
                     icon,
+                    false,
                     !is_bitmap_reference,
                 )
             };
@@ -320,15 +324,6 @@ pub(in crate::app) fn draw_foundation_tag_reference_row(
                 && let Some(Some(texture)) = bitmap_hover_texture(ui, &entry)
             {
                 paint_bitmap_hover_preview(ui, &value_response, &texture, &entry.display_path);
-            }
-            // Flag a broken reference even while the field is being edited.
-            if missing {
-                ui.label(
-                    RichText::new("⚠ missing")
-                        .color(REFERENCE_MISSING_COLOR)
-                        .small(),
-                )
-                .on_hover_text("Referenced tag not found on disk");
             }
             let browse_clicked = if let Some(catalog) = edit.tag_reference_catalog {
                 if editable && !catalog.entries.is_empty() {
@@ -931,6 +926,40 @@ pub(in crate::app) fn draw_foundation_flags_row(
 mod tests {
     use super::*;
     use crate::app::editor::{model_source_dir, sanitize_ref_path};
+
+    #[test]
+    fn missing_reference_status_does_not_shift_row_actions() {
+        let root = crate::core::test_kits::unique_temp_dir("reference-error-layout");
+        std::fs::create_dir_all(root.join("objects")).unwrap();
+        std::fs::write(root.join("objects/present.bitmap"), []).unwrap();
+        let mut suffix_positions = Vec::new();
+        for name in ["present", "missing"] {
+            let ctx = egui::Context::default();
+            ctx.set_global_style(foundation_style());
+            {
+                let mut sinks = EditSinks::default();
+                let mut edit = FieldEditContext::read_only(&mut sinks, "test", "test");
+                edit.editable = true;
+                edit.tags_root = Some(root.as_path());
+                let output = crate::app::run_ui_test(&ctx, egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1100.0, 200.0))),
+                    ..Default::default()
+                }, |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        draw_foundation_tag_reference_row(ui, &field_display_meta("bitmap"),
+                            &format!("objects\\{name}.bitmap"), Some((u32::from_be_bytes(*b"bitm"), format!("objects\\{name}"))),
+                            None, 0, "bitmap", &mut edit, 320.0);
+                    });
+                });
+                let x = output.shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "tag reference" => Some(text.pos.x),
+                    _ => None,
+                }).expect("reference row actions were drawn");
+                suffix_positions.push(x);
+            }
+        }
+        assert_eq!(suffix_positions[0], suffix_positions[1], "error status must stay inside the field rather than moving its action buttons");
+    }
 
     // Foundation unit tests.
     // It owns test-only characterization and does not participate in runtime application behavior.

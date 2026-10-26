@@ -339,12 +339,8 @@ fn draw_strings_frame(
     view.selected.retain(|&index| index < list.entries.len());
     let mut actions = ToolbarActions::default();
 
-    egui::Frame::NONE.fill(foundation_block_bar())
-        .corner_radius(egui::CornerRadius {
-            nw: (FOUNDATION_CONTAINER_RADIUS - 1.0) as u8,
-            ne: (FOUNDATION_CONTAINER_RADIUS - 1.0) as u8,
-            sw: 0, se: 0,
-        })
+    let header_background = ui.painter().add(egui::Shape::Noop);
+    let header = egui::Frame::NONE
         .inner_margin(6).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -386,6 +382,9 @@ fn draw_strings_frame(
             });
         });
     });
+    paint_frame_band(ui, header_background, header.response.rect,
+        egui::CornerRadius::same(FOUNDATION_CONTAINER_RADIUS as u8),
+        Stroke::new(1.0, foundation_block_edge()), foundation_block_bar(), true);
     if list.damaged_offsets > 0 {
         ui.label(
             RichText::new(format!(
@@ -407,10 +406,8 @@ fn draw_strings_frame(
         ui.cursor().min, Vec2::new(ui.available_width(), body_height + HEADER_HEIGHT),
     )), |ui| draw_table(ui, cache, &syntax, editable, edit, view, &mut actions)).inner;
 
-    egui::Frame::NONE.fill(foundation_block_bar())
-        .corner_radius(egui::CornerRadius { nw: 0, ne: 0,
-            sw: (FOUNDATION_CONTAINER_RADIUS - 1.0) as u8,
-            se: (FOUNDATION_CONTAINER_RADIUS - 1.0) as u8 })
+    let footer_background = ui.painter().add(egui::Shape::Noop);
+    let footer = egui::Frame::NONE
         .inner_margin(6).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -445,6 +442,10 @@ fn draw_strings_frame(
                 });
             });
         });
+
+    paint_frame_band(ui, footer_background, footer.response.rect,
+        egui::CornerRadius::same(FOUNDATION_CONTAINER_RADIUS as u8),
+        Stroke::new(1.0, foundation_block_edge()), foundation_block_bar(), false);
 
     // Route row shortcuts to the active pane, regardless of pointer position.
     // A focused text field continues to own its standard text shortcuts.
@@ -1040,7 +1041,8 @@ fn id_cell(ui: &mut Ui, list: &StringList, index: usize, editable: bool, interac
     let wrap = edit.string_list_wrap_text;
     let mut layouter = |ui: &Ui, buffer: &dyn egui::TextBuffer, width: f32| {
         let mut job = egui::text::LayoutJob::default();
-        job.append(buffer.as_str(), 0.0, egui::TextFormat::simple(ui.style().text_styles[&TextStyle::Monospace].clone(), text_dark()));
+        let color = if id_problem(list, index, buffer.as_str()).is_some() { invalid_value_text() } else { text_dark() };
+        job.append(buffer.as_str(), 0.0, egui::TextFormat::simple(ui.style().text_styles[&TextStyle::Monospace].clone(), color));
         let mut job = string_find_job(ui, buffer.as_str(), job, &scope, &tag_key, FindTargetKind::StringId(index), &syntax);
         if wrap { job.wrap.max_width = width; }
         ui.fonts_mut(|fonts| fonts.layout_job(job))
@@ -1234,7 +1236,10 @@ fn text_cell(
     let mut layouter = |ui: &Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
         let analysis = strings::analyze(buffer.as_str(), syntax);
         let unpaired = unpaired_bindings(buffer.as_str(), &analysis, list, game);
-        let job = highlighted_job(buffer.as_str(), &analysis, &unpaired, &font_id, &colors);
+        let mut job = highlighted_job(buffer.as_str(), &analysis, &unpaired, &font_id, &colors);
+        if analysis.has_errors() || analysis.text.encode_utf16().count() > max_units {
+            for section in &mut job.sections { section.format.color = invalid_value_text(); }
+        }
         let mut job = string_find_job(ui, buffer.as_str(), job, &scope, &tag_key, FindTargetKind::StringText { index, language }, syntax);
         if wrap { job.wrap.max_width = wrap_width; }
         ui.fonts_mut(|fonts| fonts.layout_job(job))
@@ -1815,6 +1820,9 @@ fn cell_rect(rect: egui::Rect) -> egui::Rect {
 fn paint_cell_fill(ui: &Ui, background: egui::layers::ShapeIdx, rect: egui::Rect, fill: Option<Color32>) {
     let shape = egui::Shape::rect_filled(cell_rect(rect), ui.visuals().widgets.inactive.corner_radius, fill.unwrap_or(ui.visuals().text_edit_bg_color()));
     ui.painter().set(background, shape);
+    if fill == Some(invalid_value_fill()) {
+        ui.painter().rect_stroke(cell_rect(rect), ui.visuals().widgets.inactive.corner_radius, invalid_value_stroke(), egui::StrokeKind::Inside);
+    }
 }
 
 /// What a cell's contents return, for its box to draw focus around.

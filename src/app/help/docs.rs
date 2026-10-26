@@ -91,5 +91,8 @@ mod tests {
         let docs = load_help_docs_from(&root).expect("copied help docs must load all referenced files");
         let section = docs.tab("doc").unwrap().sections.iter().find(|section| section.title == STRING_EDITOR_HELP_SECTION).unwrap();
         assert!(matches!(&section.blocks[0], HelpDocBlock::Markdown { text, .. } if text.contains("## Reading string text")));
+        let section = docs.tab("doc").unwrap().sections.iter().find(|section| section.title == FIND_REPLACE_HELP_SECTION).unwrap();
+        assert!(matches!(&section.blocks[0], HelpDocBlock::Markdown { text, .. }
+            if text.contains("## Replacing matches") && text.contains("## Glyphs, Unicode, and invalid text")));
     }
 }

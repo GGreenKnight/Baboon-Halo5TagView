@@ -1548,7 +1548,7 @@ pub(in crate::app) fn draw_color_hex_rows(ui: &mut Ui, color: &mut MaterialColor
         draw_color_row_label(ui, "Hex:");
         let response = ui.add_sized(
             Vec2::new(COLOR_COMBINED_FIELD_WIDTH, COLOR_ROW_HEIGHT),
-            crate::app::ui_kit::singleline_text_edit(&mut color.hex_input)
+            singleline_text_edit_with_error(ui, &mut color.hex_input, color.hex_error.is_some())
                 .hint_text(placeholder_text("#RRGGBB"))
                 .vertical_align(egui::Align::Center)
                 .desired_width(COLOR_COMBINED_FIELD_WIDTH),
@@ -1592,7 +1592,7 @@ pub(in crate::app) fn draw_color_hex_rows(ui: &mut Ui, color: &mut MaterialColor
         response.on_hover_text(format!("{pc_hex}\nClick to copy PC Hex"));
     });
     if let Some(error) = color.hex_error.as_deref() {
-        ui.small(RichText::new(error).color(Color32::from_rgb(220, 80, 80)));
+        ui.small(RichText::new(error).color(invalid_value_text()));
     }
 }
 
