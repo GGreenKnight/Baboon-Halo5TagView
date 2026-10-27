@@ -74,6 +74,7 @@ impl Baboon {
         let syntax = list.storage.text_syntax(self.row_syntax(index));
         match command.request.action.clone() {
             RowAction::Copy { cut: cutting } => {
+                if cutting && list.storage == Storage::HudMessages && self.hud_message_usage(index, &command.document.key).locked(self.model.prefs.expert_mode) { return Err(super::super::hud_messages::EXPERT_REQUIRED.to_owned()); }
                 if cutting && self.model.editing_kit_is_read_only(index) { return Err("This tag is read-only.".to_owned()); }
                 let indices: BTreeSet<_> = command.request.selected.iter().copied().filter(|&index| index < list.entries.len()).collect();
                 if indices.is_empty() { return Ok(()); }
@@ -172,6 +173,7 @@ impl Baboon {
     }
 
     fn row_candidate(&self, index: usize, key: &str, list: &StringList, rows: Vec<StringEntry>, game: Option<GameId>) -> Result<TagFile, String> {
+        if list.storage == Storage::HudMessages { self.check_hud_rows(index, key, &list.entries, &rows)?; }
         let bytes = self.model.kits[index].parsed_tags[key].tag.write_to_bytes().map_err(|error| error.to_string())?;
         let mut candidate = self.row_parse(index, key, &bytes)?;
         let edits = replace_ops(list, rows, game).string_list_ops.into_iter().map(|op| op.edit).collect::<Vec<_>>();

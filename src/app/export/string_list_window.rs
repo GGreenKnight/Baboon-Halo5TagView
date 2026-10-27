@@ -403,6 +403,10 @@ impl Baboon {
                 &bytes, game, definitions, document.tag.group().tag,
             ).map_err(|error| error.to_string())?;
             strings::apply_string_list_edits(&mut candidate, game, &plan.edits)?;
+            if list.storage == Storage::HudMessages {
+                let after = strings::read_string_list(&candidate).ok_or("Could not read imported HUD messages")?;
+                self.check_hud_rows(index, key, &list.entries, &after.entries)?;
+            }
             candidate.write_to_bytes().map_err(|error| error.to_string())?;
             self.model.kits[index].parsed_tags.get_mut(key).unwrap().journal.end_edit_window();
             let ops = DeferredOps {

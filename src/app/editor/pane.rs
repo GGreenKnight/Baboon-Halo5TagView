@@ -153,6 +153,10 @@ pub(in crate::app) fn draw_tag_pane(
     }
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) { string_row_clipboard::dismiss(ctx); }
     let key = entry.key.clone();
+    let hud_message_usage = if entry.group_tag == blam_tags::string_list::HUD_GROUP {
+        let kit = &cx.model.kits[kit_index];
+        kit.source.as_ref().map_or(hud_messages::HudMessageUsage::Unknown, |source| hud_messages::usage(source, &key, &kit.parsed_tags))
+    } else { hud_messages::HudMessageUsage::Unknown };
     let kit_read_only = cx.model.editing_kit_is_read_only(kit_index);
     draw_responsive_tag_header(cx, ui, kit_index, entry, show_keyword_bar);
     if kit_read_only {
@@ -433,6 +437,7 @@ pub(in crate::app) fn draw_tag_pane(
         expand_all,
         nested_default: cx.model.prefs.nested_default,
         row_heights: Some(row_heights),
+        hud_message_usage,
         string_editor_tag: source.map(|source| crate::app::editor::fields::string_editors::EditedTag {
             tag: &doc.tag,
             entry,

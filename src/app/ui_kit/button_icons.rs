@@ -44,6 +44,7 @@ pub(in crate::app) enum ButtonIcon {
     Down,
     Duplicate,
     Errors,
+    Warning,
     Favourite,
     FavouriteFilled,
     FileExplorer,
@@ -136,6 +137,7 @@ pub(in crate::app) fn button_icon_svg(icon: ButtonIcon) -> &'static str {
         ButtonIcon::Down => include_root_str!("assets/Button Icons/Down.svg"),
         ButtonIcon::Duplicate => include_root_str!("assets/Button Icons/Duplicate.svg"),
         ButtonIcon::Errors => include_root_str!("assets/icons/errors.svg"),
+        ButtonIcon::Warning => include_root_str!("assets/icons/warning.svg"),
         ButtonIcon::Favourite => include_root_str!("assets/Button Icons/Favourite.svg"),
         ButtonIcon::FavouriteFilled => {
             include_root_str!("assets/Button Icons/Favourite Filled.svg")

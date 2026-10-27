@@ -249,6 +249,11 @@ impl Baboon {
             if self.model.editing_kit_is_read_only(kit_index) {
                 return Err("This editing kit is read-only".to_owned());
             }
+            if matches!(table.request.path.as_str(), "messages" | "message elements")
+                && self.hud_message_usage(kit_index, &table.tag_key).locked(self.model.prefs.expert_mode)
+                && table.has_changes() {
+                return Err(super::hud_messages::EXPERT_REQUIRED.to_owned());
+            }
             let doc = self.model.kits[kit_index]
                 .parsed_tags
                 .get_mut(&table.tag_key)
