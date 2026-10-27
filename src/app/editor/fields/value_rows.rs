@@ -122,6 +122,10 @@ pub(in crate::app) fn draw_foundation_value_row(
         );
         return;
     }
+    let raw_string_id = match value {
+        TagFieldData::StringId(id) | TagFieldData::OldStringId(id) => Some(id.string.as_str()),
+        _ => None,
+    };
     if matches!(
         value,
         TagFieldData::StringId(_) | TagFieldData::OldStringId(_) | TagFieldData::String(_) | TagFieldData::LongString(_)
@@ -130,7 +134,7 @@ pub(in crate::app) fn draw_foundation_value_row(
         string_editors::draw_string_editor_row(
             ui,
             meta,
-            &formatted,
+            raw_string_id.unwrap_or(&formatted),
             field_suffix(meta, type_name).as_str(),
             depth,
             path,
@@ -138,6 +142,20 @@ pub(in crate::app) fn draw_foundation_value_row(
             &editors,
             &editor,
         );
+        return;
+    }
+    if let Some(value) = raw_string_id {
+        let enabled = edit.can_edit(meta);
+        let buffer_key = format!("{}|{}", edit.tag_key, path);
+        let id = edit.widget_id(("text", &buffer_key));
+        let draft = edit.buffers.draft_mut(&buffer_key, value);
+        draw_foundation_labelled_cell_row(ui, meta, &field_suffix(meta, type_name), depth, |ui, available_width| {
+            let width = foundation_value_width(&draft.text, available_width);
+            let response = foundation_string_id_value_cell(ui, &mut draft.text, width, id, enabled, false);
+            draft.note_response(&response);
+            if enabled && draft.should_commit(ui, &response) { edit.pending.extend(field_edit_ops(path, &draft.text).pending); }
+            draft.keep_commit(|| single_field_commit(edit.tag_key, &buffer_key, path));
+        });
         return;
     }
     if edit.can_edit(meta) && is_text_editable_value(value) {

@@ -3,6 +3,31 @@
 
 use super::*;
 
+/// Paint the shared browser/picker disclosure chevron.
+pub(in crate::app) fn paint_disclosure_chevron(
+    ui: &Ui,
+    center: egui::Pos2,
+    openness: f32,
+) {
+    let half = 3.5;
+    let stroke = Stroke::new(1.5_f32, ui.visuals().text_color());
+    let points = if openness > 0.5 {
+        [
+            egui::pos2(center.x - half, center.y - half * 0.5),
+            egui::pos2(center.x, center.y + half * 0.5),
+            egui::pos2(center.x + half, center.y - half * 0.5),
+        ]
+    } else {
+        [
+            egui::pos2(center.x - half * 0.5, center.y - half),
+            egui::pos2(center.x + half * 0.5, center.y),
+            egui::pos2(center.x - half * 0.5, center.y + half),
+        ]
+    };
+    ui.painter().add(egui::Shape::line(points.to_vec(), stroke));
+}
+
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::app) enum ButtonIcon {
@@ -646,6 +671,29 @@ pub(in crate::app) fn icon_menu_button<R>(
         egui::Rect::from_center_size(menu.response.rect.center(), Vec2::splat(BUTTON_ICON_SIZE));
     paint_button_icon_at(ui, icon, icon_rect, text_dark());
     menu.response.on_hover_text(tooltip)
+}
+
+/// Picker trigger with an optional leading image and the standard dropdown chevron.
+pub(in crate::app) fn text_dropdown_button<R>(
+    ui: &mut Ui,
+    label: &str,
+    image: Option<egui::Image<'_>>,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let button = match image {
+        Some(image) => egui::Button::image_and_text(image, label),
+        None => egui::Button::new(label),
+    }.right_text("    ")
+        .min_size(Vec2::new(0.0, BUTTON_HEIGHT));
+    let (response, inner) = egui::containers::menu::MenuButton::from_button(button)
+        .config(menu_config())
+        .ui(ui, add_contents);
+    let chevron = egui::Rect::from_center_size(
+        egui::pos2(response.rect.right() - 12.0, response.rect.center().y),
+        Vec2::splat(BUTTON_ICON_SIZE),
+    );
+    paint_button_icon_at(ui, ButtonIcon::Down, chevron, text_dark());
+    egui::InnerResponse::new(inner.map(|inner| inner.inner), response)
 }
 
 pub(in crate::app) fn icon_text_dropdown_button<R>(

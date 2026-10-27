@@ -3307,22 +3307,7 @@ pub(in crate::app) fn folder_chevron_icon(ui: &mut Ui, openness: f32, response: 
     {
         cutouts.push(slot);
     }
-    let half = 3.5;
-    let stroke = Stroke::new(1.5_f32, ui.visuals().text_color());
-    let points = if openness > 0.5 {
-        [
-            egui::pos2(center.x - half, center.y - half * 0.5),
-            egui::pos2(center.x, center.y + half * 0.5),
-            egui::pos2(center.x + half, center.y - half * 0.5),
-        ]
-    } else {
-        [
-            egui::pos2(center.x - half * 0.5, center.y - half),
-            egui::pos2(center.x + half * 0.5, center.y),
-            egui::pos2(center.x - half * 0.5, center.y + half),
-        ]
-    };
-    ui.painter().add(egui::Shape::line(points.to_vec(), stroke));
+    crate::app::ui_kit::button_icons::paint_disclosure_chevron(ui, center, openness);
 }
 
 pub(in crate::app) fn disclosure_triangle_icon(

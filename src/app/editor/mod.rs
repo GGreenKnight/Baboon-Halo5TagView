@@ -38,6 +38,8 @@ pub(super) use bitmap::*;
 mod model;
 pub(super) use model::*;
 pub(in crate::app) mod string_list;
+pub(in crate::app) mod string_groups;
+mod string_picker;
 pub(in crate::app) mod string_row_clipboard;
 use string_list::draw_string_list_tag;
 mod layout_diff;

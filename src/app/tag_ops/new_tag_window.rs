@@ -86,6 +86,7 @@ fn group_picker(ui: &mut Ui, dialog: &mut NewTagDialog, width: f32) {
                             .fit_to_exact_size(Vec2::splat(16.0)),
                         label.clone(),
                     ).selected(index == dialog.selected_group)
+                        .right_text("")
                         .frame_when_inactive(index == dialog.selected_group)
                         .frame(true)
                         .truncate()).on_hover_text(label);
