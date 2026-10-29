@@ -932,7 +932,7 @@ mod tests {
     fn hud_find_replace_validates_percent_tokens_and_undoes() {
         let fixture=LooseKit::new("hud-replace","haloce_mcc");
         let mut tag=TagFile::new_classic(crate::core::bundled::locate_definitions_root().join("haloce_mcc/hud_message_text.json"),blam_tags::classic::ClassicEngine::HaloCe).unwrap();
-        strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&[strings::StringListEdit::Insert {at:0,entries:vec![strings::StringEntry {id:Some("pickup".into()),texts:vec![Some("Hold %action %custom-1".into())]}]}]).unwrap();
+        strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&[strings::StringListEdit::Insert {at:0,entries:vec![strings::StringEntry {id:Some("pickup".into()),texts:vec![Some("Hold %{18} %{32}".into())]}]}]).unwrap();
         std::fs::write(fixture.path("messages.hud_message_text"),tag.write_to_bytes().unwrap()).unwrap();
         let mut app=Baboon::for_test(); fixture.install(&mut app); let key=fixture.open(&mut app,"messages.hud_message_text"); let ctx=egui::Context::default();
         app.search.find.string_context=Some(StringFindContext {selected:Default::default(),kit:app.model.active_kit_id(),tag_key:key.clone(),scope:"hud-test".into(),game:Some(GameId::HaloCe),definitions_root:None,language:0,languages:vec!["Text".into()],has_ids:true,editor_active:true});
@@ -940,7 +940,7 @@ mod tests {
         app.open_find(); app.set_find_mode(true,&ctx);
         let before=app.model.kits[0].parsed_tags[&key].tag.write_to_bytes().unwrap();
         app.run_replace_find(&ctx); assert_eq!(app.search.find.occurrences.len(),1); app.replace_find_matches(true,&ctx);
-        assert_eq!(strings::read_string_list(&app.model.kits[0].parsed_tags[&key].tag).unwrap().entries[0].texts[0].as_deref(),Some("Hold %jump %custom-1"));
+        assert_eq!(strings::read_string_list(&app.model.kits[0].parsed_tags[&key].tag).unwrap().entries[0].texts[0].as_deref(),Some("Hold %{22} %{32}"));
         app.undo_current_tag(); assert_eq!(app.model.kits[0].parsed_tags[&key].tag.write_to_bytes().unwrap(),before);
         app.search.find.replacement="%bogus".into(); app.run_replace_find(&ctx); app.replace_find_matches(true,&ctx);
         assert_eq!(app.model.kits[0].parsed_tags[&key].tag.write_to_bytes().unwrap(),before);

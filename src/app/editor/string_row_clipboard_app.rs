@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn hud_cross_tag_cut_preserves_tokens_names_and_linked_undo() {
         let kit=crate::app::loose_fixture::LooseKit::new("hud-cut", "haloce_mcc");
-        for (file,name,text) in [("a","pickup","Hold %action %custom-1"),("b","exit","%back")] {
+        for (file,name,text) in [("a","pickup","Hold %{18} %{32}"),("b","exit","%{29}")] {
             let mut tag=TagFile::new_classic(crate::core::bundled::locate_definitions_root().join("haloce_mcc/hud_message_text.json"),blam_tags::classic::ClassicEngine::HaloCe).unwrap();
             strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&[StringListEdit::Insert {at:0,entries:vec![StringEntry {id:Some(name.into()),texts:vec![Some(text.into())]}]}]).unwrap();
             std::fs::write(kit.path(&format!("{file}.hud_message_text")),tag.write_to_bytes().unwrap()).unwrap();
@@ -300,7 +300,7 @@ mod tests {
         let a=kit.open(&mut app,"a.hud_message_text"); let b=kit.open(&mut app,"b.hud_message_text"); let ctx=egui::Context::default();
         let before_a=app.model.kits[0].parsed_tags[&a].tag.write_to_bytes().unwrap(); let before_b=app.model.kits[0].parsed_tags[&b].tag.write_to_bytes().unwrap();
         copy(&mut app,&ctx,&a,&[0],true); paste(&mut app,&ctx,&b,&[0],PasteMode::Below);
-        assert!(list(&app,&a).entries.is_empty()); assert_eq!(list(&app,&b).entries[1].texts[0].as_deref(),Some("Hold %action %custom-1"));
+        assert!(list(&app,&a).entries.is_empty()); assert_eq!(list(&app,&b).entries[1].texts[0].as_deref(),Some("Hold %{18} %{32}"));
         assert_eq!(list(&app,&b).entries[1].id.as_deref(),Some("pickup"));
         app.undo_current_tag();
         assert_eq!(app.model.kits[0].parsed_tags[&a].tag.write_to_bytes().unwrap(),before_a); assert_eq!(app.model.kits[0].parsed_tags[&b].tag.write_to_bytes().unwrap(),before_b);

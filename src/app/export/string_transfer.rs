@@ -1,6 +1,6 @@
 //! Spreadsheet/text codecs and one import policy shared by both formats.
 use super::*;
-use super::string_lists::{self, StringImportPlan};
+use super::string_lists::{self, StringImportPlan, StringStoragePresentation};
 use blam_tags::string_list::{self as strings, Storage, StringEntry, StringList, StringListEdit, TextSyntax};
 use std::collections::{BTreeSet, HashMap};
 
@@ -212,7 +212,7 @@ pub(in crate::app) fn plan_text_import(list: &StringList, paths: &[(usize, PathB
             }
         } else {
             let mut seen = BTreeSet::new();
-            let parsed = if list.storage == Storage::HudMessages { strings::parse_hud_messages_file(&text)? } else { strings::parse_strings_file(&text, syntax)? };
+            let parsed = if list.storage == Storage::HudMessages { strings::parse_hud_messages_file(&text, syntax)? } else { strings::parse_strings_file(&text, syntax)? };
             for (id, text) in parsed {
                 if !seen.insert(id.clone()) { return Err(format!("Duplicate String ID in {}: {id}", path.display())); }
                 if text.encode_utf16().count() > list.max_text_units() { return Err("An imported string exceeds this engine's length limit".to_owned()); }
@@ -385,7 +385,7 @@ mod tests {
     fn hud_csv_and_hmt_share_named_amend_replace_and_lossless_exports() {
         let root=crate::core::bundled::locate_definitions_root();
         let mut tag=TagFile::new(root.join("haloce_mcc/hud_message_text.json")).unwrap();
-        let entries=vec![StringEntry {id:Some("one".into()),texts:vec![Some("First %action".into())]},StringEntry {id:Some("two".into()),texts:vec![Some("Second %custom-1".into())]}];
+        let entries=vec![StringEntry {id:Some("one".into()),texts:vec![Some("First %{18}".into())]},StringEntry {id:Some("two".into()),texts:vec![Some("Second %{32}".into())]}];
         strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&[StringListEdit::Insert {at:0,entries}]).unwrap();
         let list=strings::read_string_list(&tag).unwrap();
         let syntax=list.storage.text_syntax(TextSyntax::load(root.join("haloce_mcc")).unwrap());
@@ -396,7 +396,7 @@ mod tests {
         strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&amend.edits).unwrap();
         let amended=strings::read_string_list(&tag).unwrap();
         assert_eq!(amended.entries[0],list.entries[0]); assert_eq!(amended.entries.len(),3);
-        assert_eq!(amended.entries[1].texts[0].as_deref(),Some("Changed %jump"));
+        assert_eq!(amended.entries[1].texts[0].as_deref(),Some("Changed %{22}"));
         let native=super::string_lists::export_text(&amended,0,&syntax).unwrap();
         let folder=std::env::temp_dir().join(format!("baboon-hud-{}",uuid::Uuid::new_v4())); fs::create_dir_all(&folder).unwrap();
         let source=folder.join("messages.hmt"); fs::write(&source,super::string_lists::encode_text(&native)).unwrap();

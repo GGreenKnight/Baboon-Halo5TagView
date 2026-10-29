@@ -96,7 +96,7 @@ mod tests {
                     StringTransferOptions { format, mode: Some(ImportMode::Replace), destination: StringDestination::Custom }).unwrap();
                 assert!(result.contains("updated 1"), "{profile} {format:?}: {result}");
                 let doc = &app.model.kits[0].parsed_tags[&key];
-                assert_eq!(strings::read_string_list(&doc.tag).unwrap().entries[0].texts[0].as_deref(), Some(if group == "hud_message_text" { "Edited 日本語 %action" } else { "Edited 日本語" }));
+                assert_eq!(strings::read_string_list(&doc.tag).unwrap().entries[0].texts[0].as_deref(), Some(if group == "hud_message_text" { "Edited 日本語 %{18}" } else { "Edited 日本語" }));
                 assert!(ClassicHeader::parse(&doc.tag.write_to_bytes().unwrap()).is_some());
                 assert_eq!(fs::read(&path).unwrap(), before, "import leaves the on-disk tag untouched");
                 app.undo_current_tag();

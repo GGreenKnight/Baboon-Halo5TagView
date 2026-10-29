@@ -575,7 +575,7 @@ fn draw_foundation_data_row(
         ui.label(RichText::new(data_size_text(bytes.len())).color(text_dark()));
     });
     let Some(definition) = data_definitions(edit.definitions_root, edit.game)
-        .and_then(|definitions| definitions.of_field(&field))
+        .and_then(|definitions| definitions.of_field(edit.group_tag, &field))
         .filter(|definition| definition.is_text())
     else {
         return;
@@ -1230,6 +1230,7 @@ mod tests {
         let mut edits = Vec::new();
         with_test_edit_context(|edit| {
             edit.editable = editable;
+            edit.group_tag = tag.group().tag;
             let box_id = edit.widget_id(("text", &format!("{}|{}", edit.tag_key, case.path)));
             for events in frames {
                 if focus_box {
@@ -1473,6 +1474,7 @@ mod tests {
         let (mut edits, mut shapes) = (Vec::new(), Vec::new());
         with_test_edit_context(|edit| {
             edit.editable = editable;
+            edit.group_tag = tag.group().tag;
             let box_id = edit.widget_id(("data_text", &format!("{}|include file", edit.tag_key)));
             for (typing, events) in frames {
                 ctx.memory_mut(|memory| {

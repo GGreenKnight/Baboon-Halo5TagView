@@ -16,6 +16,7 @@ use blam_tags::string_list::{
 };
 
 use crate::core::document::ops::StringListOp;
+use crate::app::export::string_lists::StringStoragePresentation;
 use crate::app::search::{StringFindContext, FindOccurrence, FindMatchingCells, string_find_context_id, string_find_jump_id, string_find_ranges};
 
 use egui_extras::{Column, TableBuilder};
@@ -2174,7 +2175,7 @@ mod tests {
     fn hud_table_uses_native_names_and_rejects_unknown_runtime_tokens() {
         let mut panel = Panel::new(&[]);
         panel.tag = TagFile::new_classic(locate_definitions_root().join("haloce_mcc/hud_message_text.json"), blam_tags::classic::ClassicEngine::HaloCe).unwrap();
-        strings::apply_string_list_edits(&mut panel.tag, Some(GameId::HaloCe), &[StringListEdit::Insert { at: 0, entries: vec![StringEntry { id: Some("pickup".into()), texts: vec![Some("Hold %action|n%custom-1".into())] }] }]).unwrap();
+        strings::apply_string_list_edits(&mut panel.tag, Some(GameId::HaloCe), &[StringListEdit::Insert { at: 0, entries: vec![StringEntry { id: Some("pickup".into()), texts: vec![Some("Hold %{18}|n%{32}".into())] }] }]).unwrap();
         let frame = panel.frame(Vec::new());
         for label in ["Index", "Name", "Text", "pickup", "Hold %action|n%custom-1"] {
             assert!(frame.texts.iter().any(|text| text == label), "{label} missing: {:?}", frame.texts);
@@ -2192,7 +2193,7 @@ mod tests {
         use super::super::hud_messages::HudMessageUsage;
         let mut panel = Panel::new(&[]);
         panel.tag = TagFile::new_classic(locate_definitions_root().join("haloce_mcc/hud_message_text.json"), blam_tags::classic::ClassicEngine::HaloCe).unwrap();
-        strings::apply_string_list_edits(&mut panel.tag, Some(GameId::HaloCe), &[StringListEdit::Insert { at:0, entries:vec![StringEntry {id:Some("pickup".into()),texts:vec![Some("Hold %action".into())]}] }]).unwrap();
+        strings::apply_string_list_edits(&mut panel.tag, Some(GameId::HaloCe), &[StringListEdit::Insert { at:0, entries:vec![StringEntry {id:Some("pickup".into()),texts:vec![Some("Hold %{18}".into())]}] }]).unwrap();
         panel.hud_usage = HudMessageUsage::Global;
         let frame = panel.frame(Vec::new());
         assert!(frame.texts.iter().any(|s| s.contains("Global HUD prompts use fixed indexes")));
@@ -2201,7 +2202,7 @@ mod tests {
         panel.focus_first_text("Hold %action".len());
         panel.frame(vec![text(" to pick up")]);
         let frame = panel.frame(vec![key(egui::Key::Enter)]);
-        assert!(frame.edits.iter().any(|op| matches!(op,StringListEdit::SetText {text,..} if text == "Hold %action to pick up")));
+        assert!(frame.edits.iter().any(|op| matches!(op,StringListEdit::SetText {text,..} if text == "Hold %{18} to pick up")));
         panel.expert = true;
         let frame = panel.frame(Vec::new());
         assert!(!frame.grabber_dots.is_empty());

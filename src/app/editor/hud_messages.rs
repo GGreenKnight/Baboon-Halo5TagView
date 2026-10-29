@@ -286,7 +286,7 @@ mod tests {
             .into_iter()
             .map(|id| StringEntry {
                 id: Some(id.into()),
-                texts: vec![Some(format!("{id} %action %custom-1"))],
+                texts: vec![Some(format!("{id} %{{18}} %{{32}}"))],
             })
             .collect()
     }
@@ -388,7 +388,7 @@ mod tests {
                 edit: StringListEdit::SetText {
                     index: 1,
                     language: 0,
-                    text: "Edited %jump".into(),
+                    text: "Edited %{22}".into(),
                 },
             }],
             ..Default::default()
@@ -399,7 +399,7 @@ mod tests {
         );
         assert_eq!(
             rows(&app, &global)[1].texts[0].as_deref(),
-            Some("Edited %jump")
+            Some("Edited %{22}")
         );
         assert!(
             app.apply_doc_ops(0, &mission, "Reorder", reorder(), UndoStep::Own)
@@ -461,7 +461,7 @@ mod tests {
         );
         assert_eq!(
             rows(&app, &global)[1].texts[0].as_deref(),
-            Some("Swap %action"),
+            Some("Swap %{18}"),
             "{}",
             app.model.status
         );
