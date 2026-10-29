@@ -310,7 +310,7 @@ impl Baboon {
         let Some(entry) = self.model.entry_for_key(key).cloned() else {
             self.model.status = "That string list is no longer available".to_owned(); return;
         };
-        if !strings::is_string_list_group(entry.group_tag) {
+        if !crate::app::editor::string_list::supports_group(entry.group_tag) {
             self.model.status = "String import/export requires a supported string tag".to_owned(); return;
         }
         let kit = self.model.active;

@@ -25,6 +25,12 @@ use super::*;
 use super::string_list_layout::{self as display, Row as DisplayRow, Sort as StringSort};
 use super::string_row_clipboard::{self as row_clipboard, RowAction, RowRequest, RowData, PasteMode};
 
+/// Formats implemented by this editor. CE HUD messages retain their own
+/// storage-specific syntax, labels, and fixed-index structural protections.
+pub(in crate::app) fn supports_group(group: u32) -> bool {
+    matches!(group, strings::MULTILINGUAL_GROUP | strings::CLASSIC_GROUP | strings::HUD_GROUP)
+}
+
 /// Whether the tag pane shows the strings or the plain field tree.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(in crate::app) enum StringListTab {
@@ -708,7 +714,7 @@ fn draw_table_contents(
         else if view.collect_ungrouped { view.expanded.insert(String::new()); }
     }
     if let Some(rename) = &view.group_rename && rename.focus { view.scroll_group=Some(rename.prefix.clone()); }
-    let layout = table_layout(cache, view, editable);
+    let layout = table_layout(cache, view, structural);
     let visible = &layout.entries;
     let multilingual = list.storage.has_ids();
     let language = view.language;
@@ -1343,7 +1349,7 @@ fn draw_table_contents(
                 let mut taken = list.entries.iter().filter_map(|entry|entry.id.clone()).collect();
                 let copies = from.iter().map(|&index| {
                     let mut entry = list.entries[index].clone();
-                    entry.id = entry.id.map(|id|unused_copy_id(&id,&mut taken));
+                    entry.id = entry.id.map(|id|unused_copy_id(&id,&mut taken,list.storage));
                     entry
                 }).collect();
                 insert_entries(edit,view,before,copies);
@@ -3255,7 +3261,7 @@ mod tests {
             panel.checkboxes=true;
             set_display(&panel,true,StringSort::Index,descending,&[]);
             set_selection(&panel,&[4]);
-            let data=RowData {token:"group-cut".into(),classic:false,languages:vec!["English".into()],language:0,
+            let data=RowData {token:"group-cut".into(),classic:false,hud:false,languages:vec!["English".into()],language:0,
                 rows:vec![row_clipboard::Row {id:Some("cut_id".into()),texts:vec![Some("Copied text".into())]}]};
             row_clipboard::write(&panel.ctx,&data,&TextSyntax::unknown()).unwrap();
             row_clipboard::set_active(&panel.ctx,row_clipboard::ActiveRows {cutting:true,
@@ -3275,6 +3281,14 @@ mod tests {
             assert_eq!(menu.texts.iter().filter(|text|text.as_str()=="Add String").count(),1,"only the inline Add String row should remain");
             assert!(row_clipboard::cut(&panel.ctx).is_some());
         }
+    }
+
+    #[test]
+    fn strings_editor_supports_unicode_and_ce_hud_formats() {
+        assert!(supports_group(strings::MULTILINGUAL_GROUP));
+        assert!(supports_group(strings::CLASSIC_GROUP));
+        assert!(supports_group(strings::HUD_GROUP),"CE HUD editing and its safeguards are now integrated");
+        assert!(!supports_group(0));
     }
 
     #[test]

@@ -2955,7 +2955,7 @@ pub(in crate::app) fn draw_tag_context_menu_contents(
     if favorite_keys.is_some() || launch.supported && is_scenario_group(entry.group_tag) {
         context_menu_separator(ui);
     }
-    if blam_tags::string_list::is_string_list_group(entry.group_tag) {
+    if crate::app::editor::string_list::supports_group(entry.group_tag) {
         if context_menu_button(ui, "Export Strings...").clicked() {
             action = Some(BrowserAction::StringTransfer { key: entry.key.clone(), import: false });
             close_menu(ui);

@@ -97,7 +97,7 @@ pub(super) fn draw_tag(
         draw_material_effects_summary(ui, tag, edit);
     }
 
-    if blam_tags::string_list::is_string_list_group(entry.group_tag)
+    if crate::app::editor::string_list::supports_group(entry.group_tag)
         && draw_string_list_tag(ui, tag, document_revision, source_game, expert_mode, edit)
     {
         return;
