@@ -47,9 +47,10 @@ impl Dialog for StringTransferWindow {
         let definitions = source.and_then(|source| match &source.source {
             TagSource::LooseFolder { definitions_root, .. } => Some(definitions_root.as_path()), _ => None,
         });
-        let syntax = crate::app::editor::string_list::text_syntax(definitions, game);
+        let syntax = list.storage.text_syntax(crate::app::editor::string_list::text_syntax(definitions, game));
         let layout = cx.model.kit_layout_for(index);
-        let tool_command = tool_string_command(game, self.import, &self.relative);
+        let tool_command = if list.storage == Storage::HudMessages { Err("Use Baboon to import or export HUD messages.".to_owned()) } else { tool_string_command(game, self.import, &self.relative) };
+        let text_format = format!(".{}", list.storage.text_extension());
         let tool_error = tool_command.as_ref().err().cloned().or_else(|| {
             if layout.as_ref().is_none_or(|layout| !layout.root.join("tool.exe").is_file()) { Some("tool.exe was not found in this editing kit".to_owned()) }
             else if cx.model.editing_kit_is_read_only(index) { Some("tool.exe requires a writable editing kit".to_owned()) }
@@ -103,8 +104,8 @@ impl Dialog for StringTransferWindow {
                     ui.label("Format:");
                     ui.add_enabled_ui(baboon, |ui| {
                         egui::ComboBox::from_id_salt("strings format").width(field_width)
-                            .selected_text(if !baboon || self.format == StringFormat::Text { ".txt" } else { ".csv" }).show_ui(ui, |ui| {
-                                settings_changed |= described_option(ui, &mut self.format, StringFormat::Text, ".txt",
+                            .selected_text(if !baboon || self.format == StringFormat::Text { text_format.as_str() } else { ".csv" }).show_ui(ui, |ui| {
+                                settings_changed |= described_option(ui, &mut self.format, StringFormat::Text, &text_format,
                                     "Engine-style text, with a separate file for each language. Exports use UTF-16.").changed();
                                 settings_changed |= described_option(ui, &mut self.format, StringFormat::Csv, ".csv",
                                     "Spreadsheet format: one row per string, one column per language. Exports use UTF-8.").changed();
@@ -193,12 +194,12 @@ impl Dialog for StringTransferWindow {
                         if changed { self.clear_preview(); }
                     }
                     if self.destination == StringDestination::Custom {
-                        let folder = self.format == StringFormat::Text && self.language.is_none();
+                        let folder = self.format == StringFormat::Text && self.language.is_none() && list.languages.len() > 1;
                         if browse {
                             let mut dialog = rfd::FileDialog::new().set_title(title);
                             if let Some(directory) = &self.directory { dialog = dialog.set_directory(directory); }
                             let selected = if folder { dialog.pick_folder() } else {
-                                let extension = if self.format == StringFormat::Csv { "csv" } else { "txt" };
+                                let extension = if self.format == StringFormat::Csv { "csv" } else { list.storage.text_extension() };
                                 dialog = dialog.add_filter("Strings", &[extension]);
                                 if self.import { dialog.pick_file() } else {
                                     let name = if self.format == StringFormat::Csv { format!("{}.csv", self.stem) } else { string_file_name(&self.stem, &list, self.language.unwrap_or(0)) };

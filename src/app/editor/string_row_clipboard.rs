@@ -21,6 +21,8 @@ const MAX_CLIPBOARD: usize = 16 * 1024 * 1024;
 pub(in crate::app) struct RowData {
     pub token: String,
     pub classic: bool,
+    #[serde(default)]
+    pub hud: bool,
     pub languages: Vec<String>,
     pub language: usize,
     pub rows: Vec<Row>,
@@ -261,8 +263,8 @@ pub(in crate::app) fn clipboard(ctx: &egui::Context, list: &StringList, language
         // External apps can preserve HTML while changing plain text. Do not use
         // stale hidden rows when their visible counterpart no longer matches.
         if active(ctx).is_some_and(|active| active.data != data) { cancel_mode(ctx); }
-        if cut(ctx).is_some_and(|active| active.token == data.token) && data.classic != (list.storage == Storage::Classic) { return None; }
-        if !data.classic && list.storage == Storage::Multilingual && data.languages.iter().all(|name| !list.languages.iter().any(|language| language_key(name) == language_key(&language.name))) { return None; }
+        if cut(ctx).is_some_and(|active| active.token == data.token) && (data.classic != (list.storage == Storage::Classic) || data.hud != (list.storage == Storage::HudMessages)) { return None; }
+        if !data.classic && !data.hud && list.storage == Storage::Multilingual && data.languages.iter().all(|name| !list.languages.iter().any(|language| language_key(name) == language_key(&language.name))) { return None; }
         return Some(data);
     }
     if active(ctx).is_some() { cancel_mode(ctx); }
@@ -280,7 +282,7 @@ pub(in crate::app) fn external(text: &str, list: &StringList, language: usize, s
         if id.as_deref().is_some_and(|id| !id.is_empty() && (id.trim() != id || id.contains(['\r', '\n']))) { return Err("A String ID cannot contain line breaks or surrounding whitespace.".to_owned()); }
         Ok(Row { id, texts: vec![Some(text)] })
     }).collect::<Result<Vec<_>, String>>()?;
-    Ok(RowData { token: uuid::Uuid::new_v4().to_string(), classic: expected == 1,
+    Ok(RowData { hud: list.storage == Storage::HudMessages, token: uuid::Uuid::new_v4().to_string(), classic: expected == 1,
         languages: vec![list.languages[language].name.clone()], language: 0, rows })
 }
 
@@ -289,18 +291,20 @@ fn language_key(name: &str) -> String {
 }
 
 pub(in crate::app) fn language_difference(data: &RowData, list: &StringList) -> (Vec<String>, Vec<String>) {
-    if data.classic || list.storage == Storage::Classic { return (Vec::new(), Vec::new()); }
+    if data.classic || data.hud || list.storage != Storage::Multilingual { return (Vec::new(), Vec::new()); }
     let missing = data.languages.iter().filter(|name| !list.languages.iter().any(|language| language_key(&language.name) == language_key(name))).cloned().collect();
     let extra = list.languages.iter().filter(|language| !data.languages.iter().any(|name| language_key(name) == language_key(&language.name))).map(|language| language.name.clone()).collect();
     (missing, extra)
 }
 
-fn numbered_id(id: &str, taken: &mut BTreeSet<String>) -> String {
+fn numbered_id(id: &str, taken: &mut BTreeSet<String>, storage: Storage) -> String {
     let id = if id.is_empty() { "new_string" } else { id };
     if taken.insert(id.to_owned()) { return id.to_owned(); }
     let base = id.rsplit_once(" (").filter(|(_, suffix)| suffix.strip_suffix(')').is_some_and(|number| number.parse::<usize>().is_ok())).map_or(id, |(base, _)| base);
     for number in 1.. {
-        let candidate = format!("{base} ({number})");
+        let suffix = format!(" ({number})");
+        let base = if storage == Storage::HudMessages { base.chars().take(31 - suffix.len()).collect::<String>() } else { base.to_owned() };
+        let candidate = format!("{base}{suffix}");
         if taken.insert(candidate.clone()) { return candidate; }
     }
     unreachable!()
@@ -321,10 +325,10 @@ pub(in crate::app) fn plan(list: &StringList, data: &RowData, language: usize, s
     for (offset, row) in data.rows.iter().enumerate() {
         let at = start + offset;
         let mut entry = if mode == PasteMode::Overwrite { list.entries.get(at).cloned().unwrap_or_else(|| list.new_entry()) } else { list.new_entry() };
-        entry.id = (list.storage == Storage::Multilingual).then(|| row.id.clone().unwrap_or_default());
-        if list.storage == Storage::Classic {
+        entry.id = list.storage.has_ids().then(|| row.id.clone().unwrap_or_default());
+        if list.storage != Storage::Multilingual {
             entry.texts = vec![row.texts.get(if data.classic { 0 } else { data.language }).cloned().flatten()];
-        } else if data.classic {
+        } else if data.classic || data.hud {
             entry.texts[language] = row.texts.first().cloned().flatten();
         } else {
             let mut matched = false;
@@ -346,7 +350,7 @@ pub(in crate::app) fn plan(list: &StringList, data: &RowData, language: usize, s
     for (index, (_, row, pasted)) in rows.iter_mut().enumerate() {
         if *pasted {
             selected.insert(index);
-            if let Some(id) = &mut row.id { *id = numbered_id(id, &mut taken); }
+            if let Some(id) = &mut row.id { *id = numbered_id(id, &mut taken, list.storage); }
         }
     }
     Ok(PastePlan { rows: rows.into_iter().map(|(_, row, _)| row).collect(), selected })
@@ -377,7 +381,7 @@ mod tests {
     }
 
     fn data(list: &StringList, indices: &[usize]) -> RowData {
-        RowData { token: "test-token".to_owned(), classic: list.storage == Storage::Classic,
+        RowData { hud: list.storage == Storage::HudMessages, token: "test-token".to_owned(), classic: list.storage == Storage::Classic,
             languages: list.languages.iter().map(|language| language.name.clone()).collect(), language: 0,
             rows: indices.iter().map(|&index| Row { id: list.entries[index].id.clone(), texts: list.entries[index].texts.clone() }).collect() }
     }

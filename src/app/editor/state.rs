@@ -532,6 +532,7 @@ pub(in crate::app) struct FieldEditContext<'a> {
     /// Expert mode: fields the definitions mark read-only can be edited too.
     pub(in crate::app) expert_mode: bool,
     pub(in crate::app) show_block_sizes: bool,
+    pub(in crate::app) hud_message_usage: super::hud_messages::HudMessageUsage,
     pub(in crate::app) string_list_checkboxes: bool,
     pub(in crate::app) string_list_wrap_text: bool,
     pub(in crate::app) string_list_help_requested: bool,
@@ -778,6 +779,7 @@ impl<'a> FieldEditContext<'a> {
             editable: false,
             expert_mode: false,
             show_block_sizes: false,
+            hud_message_usage: Default::default(),
             string_list_checkboxes: false,
             string_list_wrap_text: false,
             string_list_help_requested: false,

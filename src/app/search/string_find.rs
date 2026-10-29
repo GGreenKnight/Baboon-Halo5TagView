@@ -122,7 +122,7 @@ fn edited_row_mapping(before: &[strings::StringEntry], after: &[strings::StringE
         }
     }
     for op in &ops.block_ops {
-        if !matches!(op.path.as_str(), "string references" | "strings") { continue; }
+        if !matches!(op.path.as_str(), "string references" | "strings" | "messages") { continue; }
         match &op.kind {
             BlockOpKind::Reorder { order } => {
                 if order.len() != projected.len() || order.iter().collect::<std::collections::BTreeSet<_>>().len() != order.len() { return None; }
@@ -215,7 +215,7 @@ impl Baboon {
             }).collect());
             if let Some(filter) = &mut find.filter_run { filter.cells = capture.matching_cells.clone(); }
         }
-        let syntax = crate::app::editor::string_list::text_syntax(run.context.definitions_root.as_deref(), run.context.game);
+        let syntax = crate::app::editor::string_list::tag_text_syntax(run.context.definitions_root.as_deref(), run.context.game, &run.context.tag_key);
         find.occurrences.retain_mut(|hit| {
             let Some(index) = hit.kind.string_row().and_then(|old| mapping.get(old).copied().flatten()) else { return false; };
             let Some(row) = rows.get(index) else { return false; };
@@ -270,7 +270,7 @@ impl Baboon {
         let syntax = crate::app::editor::string_list::text_syntax(
             context.definitions_root.as_deref(),
             context.game,
-        );
+        ).with_hud_messages(list.storage == strings::Storage::HudMessages);
         self.search.find.occurrences = collect_string_find_occurrences(
             &list,
             context,

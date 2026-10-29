@@ -517,7 +517,7 @@ impl Baboon {
                                 if context.kit != self.model.kits[index].id || context.tag_key != *key { return Err("The string context changed. Run Find again.".to_owned()); }
                                 let list = string_list.as_ref().ok_or("The string list is unavailable.")?;
                                 let entry = list.entries.get(row).ok_or("The string row has changed.")?;
-                                let syntax = crate::app::editor::string_list::text_syntax(context.definitions_root.as_deref(), context.game);
+                                let syntax = crate::app::editor::string_list::tag_text_syntax(context.definitions_root.as_deref(), context.game, &context.tag_key);
                                 let current = match hit.kind {
                                     FindTargetKind::StringId(_) => entry.id.clone().ok_or("This list has no string IDs.")?,
                                     FindTargetKind::StringText { language, .. } => strings::format_shown(entry.texts.get(language).and_then(Option::as_deref).unwrap_or_default(), &syntax),
@@ -563,7 +563,7 @@ impl Baboon {
         for (key, candidate) in &candidates {
             let context = self.search.find.string_context.as_ref();
             let list = context.and_then(|_| strings::read_string_list(candidate));
-            let syntax = context.map(|context| crate::app::editor::string_list::text_syntax(context.definitions_root.as_deref(), context.game));
+            let syntax = context.map(|context| crate::app::editor::string_list::tag_text_syntax(context.definitions_root.as_deref(), context.game, &context.tag_key));
             for group in groups.iter().filter(|group| group[0].tag_key == *key) {
                 let hit = &group[0];
                 let text = match hit.kind {
@@ -926,6 +926,25 @@ mod tests {
             assert_eq!(app.model.status, "Replaced 1 occurrence.");
             assert_eq!(strings::read_string_list(&app.model.kits[0].parsed_tags[&key].tag).unwrap().entries[0].texts[0].as_deref(), Some(format!("Hold this: {expected}").as_str()));
         }
+    }
+
+    #[test]
+    fn hud_find_replace_validates_percent_tokens_and_undoes() {
+        let fixture=LooseKit::new("hud-replace","haloce_mcc");
+        let mut tag=TagFile::new_classic(crate::core::bundled::locate_definitions_root().join("haloce_mcc/hud_message_text.json"),blam_tags::classic::ClassicEngine::HaloCe).unwrap();
+        strings::apply_string_list_edits(&mut tag,Some(GameId::HaloCe),&[strings::StringListEdit::Insert {at:0,entries:vec![strings::StringEntry {id:Some("pickup".into()),texts:vec![Some("Hold %{18} %{32}".into())]}]}]).unwrap();
+        std::fs::write(fixture.path("messages.hud_message_text"),tag.write_to_bytes().unwrap()).unwrap();
+        let mut app=Baboon::for_test(); fixture.install(&mut app); let key=fixture.open(&mut app,"messages.hud_message_text"); let ctx=egui::Context::default();
+        app.search.find.string_context=Some(StringFindContext {selected:Default::default(),kit:app.model.active_kit_id(),tag_key:key.clone(),scope:"hud-test".into(),game:Some(GameId::HaloCe),definitions_root:None,language:0,languages:vec!["Text".into()],has_ids:true,editor_active:true});
+        app.search.find.strings=Some(StringFindOptions {ids:false,..Default::default()}); app.search.find.query="%action".into(); app.search.find.replacement="%jump".into();
+        app.open_find(); app.set_find_mode(true,&ctx);
+        let before=app.model.kits[0].parsed_tags[&key].tag.write_to_bytes().unwrap();
+        app.run_replace_find(&ctx); assert_eq!(app.search.find.occurrences.len(),1); app.replace_find_matches(true,&ctx);
+        assert_eq!(strings::read_string_list(&app.model.kits[0].parsed_tags[&key].tag).unwrap().entries[0].texts[0].as_deref(),Some("Hold %{22} %{32}"));
+        app.undo_current_tag(); assert_eq!(app.model.kits[0].parsed_tags[&key].tag.write_to_bytes().unwrap(),before);
+        app.search.find.replacement="%bogus".into(); app.run_replace_find(&ctx); app.replace_find_matches(true,&ctx);
+        assert_eq!(app.model.kits[0].parsed_tags[&key].tag.write_to_bytes().unwrap(),before);
+        assert!(app.views[app.model.active_kit_id()].edit_buffers.has_changed_prefix(&format!("{key}|")));
     }
 
     #[test]

@@ -27,6 +27,7 @@ use crate::app::browser::{
 mod sound;
 pub(super) use sound::*;
 mod apply_doc;
+pub(in crate::app) mod hud_messages;
 pub(in crate::app) mod actions;
 mod field_meta;
 pub(super) use crate::core::document::apply::*;

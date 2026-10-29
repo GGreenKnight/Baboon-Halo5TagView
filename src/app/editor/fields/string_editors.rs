@@ -425,3 +425,8 @@ mod tests {
         assert!(!draw(&kit, &model).1, "case is ignored");
     }
 }
+
+/// Reuse the string-menu tag cache for HUD usage classification.
+pub(in crate::app) fn hud_reference_tag(source: &LoadedSourceData, group: u32, path: &str) -> Option<Arc<blam_tags::TagFile>> {
+    blam_tags::string_editor::TagSource::tag(&KitTags { source }, group, path)
+}

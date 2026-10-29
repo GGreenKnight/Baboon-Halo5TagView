@@ -9,7 +9,21 @@ use std::collections::BTreeSet;
 #[cfg(test)]
 use std::collections::HashMap;
 
+/// Labels and file choices are application presentation, not engine storage rules.
+pub(in crate::app) trait StringStoragePresentation {
+    fn identity_label(self) -> &'static str;
+    fn text_label(self) -> &'static str;
+    fn text_extension(self) -> &'static str;
+}
+
+impl StringStoragePresentation for Storage {
+    fn identity_label(self) -> &'static str {if self==Self::HudMessages {"Name"}else{"String ID"}}
+    fn text_label(self) -> &'static str {if self==Self::HudMessages {"Text"}else{"String Text"}}
+    fn text_extension(self) -> &'static str {if self==Self::HudMessages {"hmt"}else{"txt"}}
+}
+
 pub(in crate::app) fn string_file_name(stem: &str, list: &StringList, language: usize) -> String {
+    if list.storage == Storage::HudMessages { return format!("{stem}.hmt"); }
     if list.storage == Storage::Classic { return format!("{stem}.txt"); }
     let language = list.languages[language].name.to_ascii_lowercase().replace(' ', "_");
     format!("{stem}.{language}.txt")
@@ -164,6 +178,7 @@ mod tests {
 }
 
 pub(super) fn export_text(list: &StringList, language: usize, syntax: &TextSyntax) -> Result<String, String> {
+    if list.storage == Storage::HudMessages { return strings::hud_messages_file(&list.entries, syntax); }
     if language >= list.languages.len() { return Err("That language is no longer available".to_owned()); }
     if list.storage == Storage::Classic {
         if list.entries.iter().any(|entry| entry.texts[0].as_deref().is_some_and(|text| text.contains("###END-STRING###"))) {

@@ -1390,7 +1390,7 @@ mod tests {
             Case {
                 action: |kit| A::StringTransfer { key: kit.key(MODEL), import: false },
                 setup: no_setup,
-                check: |app, _, _| status_is(app, "String import/export requires a Unicode string list tag"),
+                check: |app, _, _| status_is(app, "String import/export requires a supported string tag"),
             },
             // 48: on a loose kit there is no pending folder to remove, and the
             // arm reports a removal anyway (QUIRK; the menu never offers it here).

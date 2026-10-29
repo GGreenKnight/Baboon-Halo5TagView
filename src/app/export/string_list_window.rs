@@ -68,13 +68,14 @@ mod tests {
         use blam_tags::classic::{ClassicEngine, ClassicHeader};
         for (profile, game, engine, group) in [
             ("haloce_mcc", GameId::HaloCe, ClassicEngine::HaloCe, "unicode_string_list"),
+            ("haloce_mcc", GameId::HaloCe, ClassicEngine::HaloCe, "hud_message_text"),
             ("halo2_mcc", GameId::Halo2, ClassicEngine::Halo2V4, "multilingual_unicode_string_list"),
         ] {
             for format in [StringFormat::Csv, StringFormat::Text] {
                 let kit = LooseKit::new("native-string-transfer", profile);
                 let mut tag = TagFile::new_classic(crate::core::bundled::locate_definitions_root().join(profile).join(format!("{group}.json")), engine).unwrap();
                 let mut row = strings::read_string_list(&tag).unwrap().new_entry();
-                row.id = (game != GameId::HaloCe).then(|| "s0".to_owned());
+                row.id = (group != "unicode_string_list").then(|| "s0".to_owned());
                 row.texts[0] = Some("Original".to_owned());
                 strings::apply_string_list_edits(&mut tag, Some(game), &[StringListEdit::Insert { at: 0, entries: vec![row] }]).unwrap();
                 let path = kit.path(&format!("messages.{group}"));
@@ -87,15 +88,15 @@ mod tests {
                 let key = kit.open(&mut app, &format!("messages.{group}"));
                 let file = kit.base.join(if format == StringFormat::Csv { "import.csv" } else { "import.txt" });
                 let contents = if format == StringFormat::Csv {
-                    if game == GameId::HaloCe { "Index,String Text\n0,Edited 日本語" } else { "String ID,English Text\ns0,Edited 日本語" }
-                } else if game == GameId::HaloCe { "Edited 日本語\n###END-STRING###\n" }
+                    if group == "hud_message_text" { "Name,Text\ns0,Edited 日本語 %action" } else if game == GameId::HaloCe { "Index,String Text\n0,Edited 日本語" } else { "String ID,English Text\ns0,Edited 日本語" }
+                } else if group == "hud_message_text" { "s0=Edited 日本語 %action\n" } else if game == GameId::HaloCe { "Edited 日本語\n###END-STRING###\n" }
                 else { "[Strings]\ns0 = \"Edited 日本語\"\n" };
                 fs::write(&file, contents).unwrap();
                 let result = app.run_string_transfer_options(app.model.kit_stamp(), &key, true, Some(0), &file,
                     StringTransferOptions { format, mode: Some(ImportMode::Replace), destination: StringDestination::Custom }).unwrap();
                 assert!(result.contains("updated 1"), "{profile} {format:?}: {result}");
                 let doc = &app.model.kits[0].parsed_tags[&key];
-                assert_eq!(strings::read_string_list(&doc.tag).unwrap().entries[0].texts[0].as_deref(), Some("Edited 日本語"));
+                assert_eq!(strings::read_string_list(&doc.tag).unwrap().entries[0].texts[0].as_deref(), Some(if group == "hud_message_text" { "Edited 日本語 %{18}" } else { "Edited 日本語" }));
                 assert!(ClassicHeader::parse(&doc.tag.write_to_bytes().unwrap()).is_some());
                 assert_eq!(fs::read(&path).unwrap(), before, "import leaves the on-disk tag untouched");
                 app.undo_current_tag();
@@ -310,7 +311,7 @@ impl Baboon {
             self.model.status = "That string list is no longer available".to_owned(); return;
         };
         if !strings::is_string_list_group(entry.group_tag) {
-            self.model.status = "String import/export requires a Unicode string list tag".to_owned(); return;
+            self.model.status = "String import/export requires a supported string tag".to_owned(); return;
         }
         let kit = self.model.active;
         if !self.model.kits[kit].parsed_tags.contains_key(key) {
@@ -368,13 +369,13 @@ impl Baboon {
         let entry = self.model.kits[index].source.as_ref().and_then(|source| source.full_entry_set().iter().find(|entry| entry.key == key))
             .cloned().ok_or("That string list is no longer in the source")?;
         let document = self.model.kits[index].parsed_tags.get(key).ok_or("The string list is no longer open")?;
-        let list = strings::read_string_list(&document.tag).ok_or("The tag is not a Unicode string list")?;
+        let list = strings::read_string_list(&document.tag).ok_or("The tag is not a supported string tag")?;
         let source = self.model.kits[index].source.as_ref();
         let game = source.and_then(|source| source.game);
         let definitions = source.and_then(|source| match &source.source {
             TagSource::LooseFolder { definitions_root, .. } => Some(definitions_root.as_path()), _ => None,
         });
-        let syntax = crate::app::editor::string_list::text_syntax(definitions, game);
+        let syntax = list.storage.text_syntax(crate::app::editor::string_list::text_syntax(definitions, game));
         let stem = tag_file_stem(&entry);
         let relative = PathBuf::from(entry.display_path.replace('\\', "/")).with_extension("");
         let layout = self.model.kit_layout_for(index);
@@ -402,6 +403,10 @@ impl Baboon {
                 &bytes, game, definitions, document.tag.group().tag,
             ).map_err(|error| error.to_string())?;
             strings::apply_string_list_edits(&mut candidate, game, &plan.edits)?;
+            if list.storage == Storage::HudMessages {
+                let after = strings::read_string_list(&candidate).ok_or("Could not read imported HUD messages")?;
+                self.check_hud_rows(index, key, &list.entries, &after.entries)?;
+            }
             candidate.write_to_bytes().map_err(|error| error.to_string())?;
             self.model.kits[index].parsed_tags.get_mut(key).unwrap().journal.end_edit_window();
             let ops = DeferredOps {
@@ -431,6 +436,7 @@ impl Baboon {
             if !layout.root.join("tool.exe").is_file() { return Err("tool.exe was not found in this editing kit".to_owned()); }
             let source = kit.source.as_ref().ok_or("Source no longer available")?;
             let entry = source.full_entry_set().iter().find(|entry| entry.key == key).ok_or("Tag no longer available")?;
+            if entry.group_tag == strings::HUD_GROUP { return Err("Use Baboon to import or export HUD messages.".to_owned()); }
             let relative = PathBuf::from(entry.display_path.replace('\\', "/")).with_extension("");
             let command = tool_string_command(source.game, import, &relative)?;
             let documents = if import {

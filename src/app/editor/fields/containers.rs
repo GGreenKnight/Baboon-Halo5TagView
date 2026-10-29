@@ -4265,6 +4265,7 @@ mod tests {
             with_test_edit_context(|edit| {
                 edit.definitions_root = Some(root);
                 edit.game = Some(GameId::HaloReach);
+                edit.group_tag = self.tag.group().tag;
                 // Rows are keyed by positional field path: `notes` is field 3.
                 let grip_id = edit
                     .widget_id(("data_text", &format!("{}|notes#3", edit.tag_key)))

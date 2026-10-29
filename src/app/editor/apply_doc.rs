@@ -49,6 +49,10 @@ impl Baboon {
             }
             return None;
         }
+        if !ops.is_empty() && let Err(error) = self.check_hud_ops(kit_index, tag_key, &ops) {
+            self.model.status = error;
+            return None;
+        }
         // Only retain operation data when an explicit string search needs its
         // captured rows rebased after this edit.
         let find_ops = self.search.find.selection_run.as_ref()

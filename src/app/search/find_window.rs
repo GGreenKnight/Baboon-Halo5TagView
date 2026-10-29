@@ -183,10 +183,11 @@ impl Dialog for FindWindow {
                                     .string_context
                                     .as_ref()
                                     .is_some_and(|context| context.has_ids);
+                            let hud = find.string_context.as_ref().is_some_and(|context| context.tag_key.ends_with(".hud_message_text"));
                             let label = match (has_ids && options.ids, options.text) {
-                                (true, true) => "String IDs + String Text",
-                                (true, false) => "String IDs",
-                                (false, true) => "String Text",
+                                (true, true) => if hud { "Names + Text" } else { "String IDs + String Text" },
+                                (true, false) => if hud { "Names" } else { "String IDs" },
+                                (false, true) => if hud { "Text" } else { "String Text" },
                                 (false, false) => "Nothing",
                             };
                             egui::ComboBox::from_id_salt("find_string_look_in")
@@ -196,13 +197,13 @@ impl Dialog for FindWindow {
                                 changed |= ui
                                     .add_enabled(
                                         has_ids,
-                                        egui::Checkbox::new(&mut options.ids, "String IDs"),
+                                        egui::Checkbox::new(&mut options.ids, if hud { "Names" } else { "String IDs" }),
                                     )
                                     .on_disabled_hover_text(
                                         "Halo CE string lists have no string IDs",
                                     )
                                     .changed();
-                                changed |= ui.checkbox(&mut options.text, "String Text").changed();
+                                changed |= ui.checkbox(&mut options.text, if hud { "Text" } else { "String Text" }).changed();
                             });
                         } else {
                             if replace_mode {
