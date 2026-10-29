@@ -38,6 +38,10 @@ pub(super) use bitmap::*;
 mod model;
 pub(super) use model::*;
 pub(in crate::app) mod string_list;
+pub(in crate::app) mod string_groups;
+mod string_picker;
+mod string_list_layout;
+mod string_group_edit;
 pub(in crate::app) mod string_row_clipboard;
 use string_list::draw_string_list_tag;
 mod layout_diff;
@@ -93,7 +97,7 @@ pub(super) fn draw_tag(
         draw_material_effects_summary(ui, tag, edit);
     }
 
-    if blam_tags::string_list::is_string_list_group(entry.group_tag)
+    if crate::app::editor::string_list::supports_group(entry.group_tag)
         && draw_string_list_tag(ui, tag, document_revision, source_game, expert_mode, edit)
     {
         return;

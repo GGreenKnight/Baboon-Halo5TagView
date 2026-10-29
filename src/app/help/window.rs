@@ -602,7 +602,7 @@ fn draw_about_tab(ui: &mut Ui) {
         );
     });
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Icons by").color(text_dark()));
+        ui.label(RichText::new("Additional development & UI/UX by").color(text_dark()));
         ui.label(RichText::new("Paddy Tee").color(foundation_blue()).strong());
     });
     ui.add_space(10.0);

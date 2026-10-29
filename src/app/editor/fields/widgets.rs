@@ -278,6 +278,21 @@ pub(in crate::app) fn foundation_value_cell_with_error(
     }
 }
 
+/// An unset String ID is an empty buffer with a visual NONE placeholder.
+pub(in crate::app) fn foundation_string_id_value_cell(
+    ui: &mut Ui, text: &mut String, width: f32, id: egui::Id, editable: bool, invalid: bool,
+) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, BUTTON_HEIGHT), Sense::hover());
+    let invalid = invalid && !text.is_empty();
+    let color = if invalid { invalid_value_text() } else { text_dark() };
+    let fill = invalid.then(invalid_value_fill);
+    if editable {
+        foundation_value_text_filled_with_placeholder(ui, rect, text, Some(id), color, VALUE_PADDING, fill, None, true)
+    } else {
+        foundation_value_text_filled_with_placeholder(ui, rect, &mut text.as_str(), Some(id), color, VALUE_PADDING, fill, None, true)
+    }
+}
+
 /// Space between a value box's left edge and its text.
 const VALUE_PADDING: f32 = 4.0;
 
@@ -306,6 +321,20 @@ fn foundation_value_text_filled(
     fill: Option<Color32>,
     status: Option<&str>,
 ) -> egui::Response {
+    foundation_value_text_filled_with_placeholder(ui, rect, text, id, color, left_padding, fill, status, false)
+}
+
+fn foundation_value_text_filled_with_placeholder(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    text: &mut dyn egui::TextBuffer,
+    id: Option<egui::Id>,
+    color: Color32,
+    left_padding: f32,
+    fill: Option<Color32>,
+    status: Option<&str>,
+    string_id_placeholder: bool,
+) -> egui::Response {
     // A box whose text can't change is greyed, as Foundation greys a
     // read-only field's: a dimmer fill and dimmer text (a missing reference
     // keeps its red). It still takes focus, so its text can be copied.
@@ -322,6 +351,7 @@ fn foundation_value_text_filled(
     };
     // A frame of our own, so egui doesn't draw a different one for a buffer
     // it can't change; egui ignores `.margin()` once a frame is given.
+    let showing_placeholder = string_id_placeholder && text.as_str().is_empty();
     let mut edit = crate::app::ui_kit::singleline_text_edit(text)
         .frame(egui::Frame::NONE.inner_margin(egui::Margin {
             left: left_padding as i8,
@@ -334,10 +364,16 @@ fn foundation_value_text_filled(
         .vertical_align(egui::Align::Center)
         .clip_text(true)
         .layouter(&mut layouter);
+    if string_id_placeholder { edit = edit.hint_text(placeholder_text("NONE")); }
     if let Some(id) = id {
         edit = edit.id(id);
     }
+    // egui forces hint text to the UI's weak-text colour, so scope that colour
+    // to this input to keep NONE at exactly half the normal text opacity.
+    let previous_weak = ui.visuals().weak_text_color;
+    if showing_placeholder { ui.visuals_mut().weak_text_color = Some(text_dark().gamma_multiply(0.5)); }
     let response = ui.put(rect, edit);
+    if showing_placeholder { ui.visuals_mut().weak_text_color = previous_weak; }
     let stroke = if invalid {
         invalid_value_stroke()
     } else if response.has_focus() {

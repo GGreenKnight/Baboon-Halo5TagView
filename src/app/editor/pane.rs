@@ -503,7 +503,7 @@ pub(in crate::app) fn draw_tag_pane(
             cx.model.prefs.expert_mode,
             &mut edit_context,
         );
-        if blam_tags::string_list::is_string_list_group(entry.group_tag) {
+        if crate::app::editor::string_list::supports_group(entry.group_tag) {
             if edit_context.string_list_help_requested {
                 cx.send(crate::app::help::HelpCommand::ShowDocSection(crate::app::help::STRING_EDITOR_HELP_SECTION));
             }

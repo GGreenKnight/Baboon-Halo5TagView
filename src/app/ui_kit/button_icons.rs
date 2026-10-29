@@ -3,6 +3,31 @@
 
 use super::*;
 
+/// Paint the shared browser/picker disclosure chevron.
+pub(in crate::app) fn paint_disclosure_chevron(
+    ui: &Ui,
+    center: egui::Pos2,
+    openness: f32,
+) {
+    let half = 3.5;
+    let stroke = Stroke::new(1.5_f32, ui.visuals().text_color());
+    let points = if openness > 0.5 {
+        [
+            egui::pos2(center.x - half, center.y - half * 0.5),
+            egui::pos2(center.x, center.y + half * 0.5),
+            egui::pos2(center.x + half, center.y - half * 0.5),
+        ]
+    } else {
+        [
+            egui::pos2(center.x - half * 0.5, center.y - half),
+            egui::pos2(center.x + half * 0.5, center.y),
+            egui::pos2(center.x - half * 0.5, center.y + half),
+        ]
+    };
+    ui.painter().add(egui::Shape::line(points.to_vec(), stroke));
+}
+
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::app) enum ButtonIcon {
@@ -453,39 +478,28 @@ fn button_icon_uri(ctx: &egui::Context, icon: ButtonIcon, color: Color32, size: 
     button_icon_uri_for_pixels_per_point_and_size(icon, color, ctx.pixels_per_point(), size)
 }
 
+/// The same selectable style as egui's text-only sort options, with an
+/// optional leading icon. Parent layout controls whether the row fills width.
+pub(in crate::app) fn selectable_option_button(
+    ui: &mut Ui,
+    icon: Option<ButtonIcon>,
+    label: impl Into<egui::WidgetText>,
+    selected: bool,
+) -> egui::Response {
+    let image = icon.map(|icon| button_icon_image(ui, icon, text_dark(), BUTTON_ICON_SIZE));
+    ui.add(egui::Button::opt_image_and_text(image, Some(label.into()))
+        .selected(selected).frame_when_inactive(selected).frame(true)
+        .right_text("").wrap_mode(egui::TextWrapMode::Extend)
+        .min_size(Vec2::new(0.0, BUTTON_HEIGHT)))
+}
+
 pub(in crate::app) fn selectable_icon_text_button(
     ui: &mut Ui,
     icon: ButtonIcon,
     label: impl Into<egui::WidgetText>,
     selected: bool,
 ) -> egui::Response {
-    ui.scope(|ui| {
-        if selected {
-            let selection = ui.visuals().selection;
-            let hover_color = if is_dark_mode() {
-                Color32::WHITE
-            } else {
-                Color32::BLACK
-            };
-            let widgets = &mut ui.visuals_mut().widgets;
-
-            // egui's built-in `Button::selected` paints with square corners.
-            // Apply the selected palette through the normal button states so
-            // toggles retain their usual rounding and hover expansion.
-            widgets.inactive.weak_bg_fill = selection.bg_fill;
-            widgets.inactive.bg_stroke = selection.stroke;
-            widgets.hovered.weak_bg_fill = selection.bg_fill;
-            widgets.hovered.bg_stroke = Stroke::new(selection.stroke.width, hover_color);
-            widgets.hovered.expansion = widgets.hovered.expansion.max(1.0);
-            widgets.active.weak_bg_fill = selection.bg_fill;
-            widgets.active.bg_stroke = Stroke::new(selection.stroke.width, hover_color);
-            widgets.active.expansion = widgets.active.expansion.max(1.0);
-        }
-
-        let image = button_icon_image(ui, icon, text_dark(), BUTTON_ICON_SIZE);
-        ui.add(egui::Button::image_and_text(image, label).min_size(Vec2::new(0.0, BUTTON_HEIGHT)))
-    })
-    .inner
+    selectable_option_button(ui, Some(icon), label, selected)
 }
 
 pub(in crate::app) fn selectable_icon_button(
@@ -514,28 +528,7 @@ pub(in crate::app) fn selectable_text_button(
     label: impl Into<egui::WidgetText>,
     selected: bool,
 ) -> egui::Response {
-    // Add directly to the wrapping parent. A scope is measured after its
-    // contents, too late for the parent to move a whole button to the next row.
-    let response = ui.add(
-        egui::Button::new(label)
-            .selected(selected)
-            .wrap_mode(egui::TextWrapMode::Extend)
-            .min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
-    );
-    if selected && response.hovered() {
-        let hover_color = if is_dark_mode() {
-            Color32::WHITE
-        } else {
-            Color32::BLACK
-        };
-        ui.painter().rect_stroke(
-            response.rect.expand(1.0),
-            ui.visuals().widgets.hovered.corner_radius,
-            Stroke::new(ui.visuals().selection.stroke.width, hover_color),
-            egui::StrokeKind::Middle,
-        );
-    }
-    response
+    selectable_option_button(ui, None, label, selected)
 }
 
 /// egui offsets a popup frame to align its first row with the trigger. Shift
@@ -648,6 +641,29 @@ pub(in crate::app) fn icon_menu_button<R>(
     menu.response.on_hover_text(tooltip)
 }
 
+/// Picker trigger with an optional leading image and the standard dropdown chevron.
+pub(in crate::app) fn text_dropdown_button<R>(
+    ui: &mut Ui,
+    label: &str,
+    image: Option<egui::Image<'_>>,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let button = match image {
+        Some(image) => egui::Button::image_and_text(image, label),
+        None => egui::Button::new(label),
+    }.right_text("    ")
+        .min_size(Vec2::new(0.0, BUTTON_HEIGHT));
+    let (response, inner) = egui::containers::menu::MenuButton::from_button(button)
+        .config(menu_config())
+        .ui(ui, add_contents);
+    let chevron = egui::Rect::from_center_size(
+        egui::pos2(response.rect.right() - 12.0, response.rect.center().y),
+        Vec2::splat(BUTTON_ICON_SIZE),
+    );
+    paint_button_icon_at(ui, ButtonIcon::Down, chevron, text_dark());
+    egui::InnerResponse::new(inner.map(|inner| inner.inner), response)
+}
+
 pub(in crate::app) fn icon_text_dropdown_button<R>(
     ui: &mut Ui,
     icon: ButtonIcon,
@@ -701,8 +717,9 @@ fn icon_text_dropdown_button_sized<R>(
                     .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
             )
             .show(|ui| {
-                ui.set_width(content_width);
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                // The trigger stays fixed; the menu can grow for longer labels.
+                ui.set_min_width(content_width);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 add_contents(ui)
             });
         egui::InnerResponse::new(inner.map(|inner| inner.inner), response)
@@ -1086,6 +1103,46 @@ mod tests {
     /// A menu opened from a button of its own stays open when an item in it
     /// is clicked, as every Baboon menu does, so several can be picked in one
     /// opening. With egui 0.36's default it closed on any click inside.
+    #[test]
+    fn fixed_language_trigger_has_a_content_sized_popup_with_trigger_width_as_minimum() {
+        for longest in ["French","Chinese (Traditional)"] {
+            let ctx=egui::Context::default();
+            crate::app::Baboon::configure_context(&ctx);
+            let mut trigger=egui::Rect::NOTHING;
+            let mut popup_width=0.0_f32;
+            let mut needed_width=0.0_f32;
+            let mut time=0.0;
+            let mut frame=|events:Vec<egui::Event>| {
+                time+=0.1;
+                crate::app::run_ui_test(&ctx,egui::RawInput {
+                    screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,Vec2::new(800.0,600.0))),
+                    events,time:Some(time),..Default::default()
+                },|ui| {
+                    trigger=fixed_width_icon_text_dropdown_button(ui,ButtonIcon::Localization,"English",120.0,|ui| {
+                        let font=TextStyle::Button.resolve(ui.style());
+                        needed_width=ui.painter().layout_no_wrap(longest.into(),font,text_dark()).size().x
+                            +2.0*ui.spacing().button_padding.x;
+                        let _ = ui.selectable_label(false,"English");
+                        let _ = ui.selectable_label(false,longest);
+                        popup_width=ui.min_rect().width()+Frame::menu(ui.style()).total_margin().sum().x;
+                        assert!(ui.min_rect().width()>=needed_width,"menu must fit the full language name");
+                    }).response.rect;
+                });
+                trigger
+            };
+            frame(vec![]);
+            let at=frame(vec![]).center();
+            frame(vec![egui::Event::PointerMoved(at)]);
+            for pressed in [true,false] {frame(vec![egui::Event::PointerButton {
+                pos:at,button:egui::PointerButton::Primary,pressed,modifiers:Default::default(),
+            }]);}
+            for _ in 0..3 {frame(vec![]);}
+            assert!((trigger.width()-120.0).abs()<0.1,"long entries must not resize the trigger");
+            assert!(popup_width>=120.0,"short entries keep the trigger-width minimum");
+            if longest.contains("Traditional") {assert!(popup_width>120.0,"long languages expand the popup");}
+        }
+    }
+
     #[test]
     fn a_standalone_menu_stays_open_after_a_pick() {
         let ctx = egui::Context::default();

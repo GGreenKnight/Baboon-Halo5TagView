@@ -389,6 +389,16 @@ mod tests {
     fn ids(rows: &[StringEntry]) -> Vec<&str> { rows.iter().map(|row| row.id.as_deref().unwrap()).collect() }
 
     #[test]
+    fn insertion_at_a_destination_row_preserves_local_cut_ids_and_all_languages() {
+        let list=list(false,&["A_one","B_one","A_two","plain"]);
+        let source=data(&list,&[3]);
+        let moved=plan(&list,&source,0,&BTreeSet::from([1]),PasteMode::Above,&BTreeSet::from([3])).unwrap();
+        assert_eq!(ids(&moved.rows),vec!["A_one","plain","B_one","A_two"]);
+        assert_eq!(moved.rows[1].texts,list.entries[3].texts);
+        assert_eq!(moved.selected,BTreeSet::from([1]));
+    }
+
+    #[test]
     fn overwrite_inserts_append_and_noncontiguous_copies_use_numbered_names() {
         let list = list(false, &["A", "B", "C", "D", "E", "F"]);
         let source = data(&list, &[1, 3, 5]);

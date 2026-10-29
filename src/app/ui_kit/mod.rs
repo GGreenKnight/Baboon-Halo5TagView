@@ -11,3 +11,6 @@ pub(in crate::app) mod tag_icons;
 pub(in crate::app) use tag_icons::*;
 pub(in crate::app) mod game_assets;
 pub(in crate::app) use game_assets::*;
+
+pub(in crate::app) mod checkbox;
+pub(in crate::app) use checkbox::*;

@@ -1,18 +1,21 @@
 //! The kit tools' string editors: a menu of the values a `string_id` field
 //! expects, on a button beside its box, and the shared error style while its value
 //! isn't one of them. Drawn as Foundation's `TagFieldElementWithMenuPanel`
-//! draws them: the box, the units, then the button. blam-tags'
+//! draws them, with buttons beside the box and the type label after them. blam-tags'
 //! `string_editor` builds the menus; this opens the other tags they read
 //! (the globals tag, a referenced object, the scenario a resource tag belongs
 //! to) and caches what it built.
 
 use super::*;
+#[path = "string_references.rs"]
+mod string_references;
 use crate::core::source::{LoadedSourceData, TagEntry, TagEntryLocation};
-use blam_tags::string_editor::{Context as EditorContext, Menu, MenuItem, StringEditors};
+use blam_tags::string_editor::{Context as EditorContext, Menu, StringEditors};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use crate::app::editor::string_picker;
 
 /// The tag a pane draws, as string editors need it.
 #[derive(Clone, Copy)]
@@ -31,7 +34,9 @@ pub(in crate::app) fn string_editors(definitions_root: Option<&Path>, game: Opti
     use std::sync::{Mutex, OnceLock};
     type Editors = Option<Arc<StringEditors>>;
     static CACHE: OnceLock<Mutex<HashMap<(PathBuf, GameId), Editors>>> = OnceLock::new();
-    let (root, game) = (definitions_root?, game?);
+    let game = game?;
+    let bundled = crate::core::bundled::locate_definitions_root();
+    let root = definitions_root.unwrap_or(&bundled);
     let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     cache
         .entry((root.to_path_buf(), game))
@@ -43,6 +48,10 @@ pub(in crate::app) fn string_editors(definitions_root: Option<&Path>, game: Opti
             }
         })
         .clone()
+}
+
+pub(in crate::app) fn is_hud_message_list(edit: &FieldEditContext<'_>) -> bool {
+    string_references::is_hud_message_list(edit)
 }
 
 /// The string editor of the field at `path`, with the game's editors.
@@ -190,8 +199,17 @@ pub(in crate::app) fn draw_string_editor_row(
     editors: &StringEditors,
     editor: &str,
 ) {
+    if editors.is_string_reference(editor) {
+        string_references::draw_row(ui, meta, value, suffix, depth, path, edit, editors, editor);
+        return;
+    }
     let menu = menu_for(edit, editors, editor, path, false);
-    let caption = editors.caption(editor).to_owned();
+    let caption = string_picker::caption(editor, editors.caption(editor));
+    let search_hint = match editor {
+        "object_function" | "object_function_no_own" | "object_function_panel" => "Search Functions".to_owned(),
+        _ if caption == "Select String" => "Search Strings".to_owned(),
+        _ => format!("Search {caption}"),
+    };
     let enabled = edit.can_edit(meta);
     let buffer_key = format!("{}|{}", edit.tag_key, path);
     let id = edit.widget_id(("text", &buffer_key));
@@ -200,61 +218,63 @@ pub(in crate::app) fn draw_string_editor_row(
     let valid = menu.accepts(&draft.text);
     let mut picked = None;
     let mut opened = false;
+    let mut popup_drawn = false;
+    let filter_id = menu_id.with("filter");
+    let was_open_id = menu_id.with("was open");
+    let mut filter = ui.data(|data| data.get_temp::<String>(filter_id)).unwrap_or_default();
     draw_foundation_labelled_cell_row(ui, meta, "", depth, |ui, available_width| {
         let width = foundation_value_width(&draft.text, available_width).clamp(150.0, 300.0);
-        let response = foundation_value_cell_with_error(ui, &mut draft.text, width, id, enabled, !valid);
+        let response = foundation_string_id_value_cell(ui, &mut draft.text, width, id, enabled, !valid);
         draft.note_response(&response);
         if enabled && draft.should_commit(ui, &response) {
             edit.pending.extend(field_edit_ops(path, &draft.text).pending);
         }
         draft.keep_commit(|| single_field_commit(edit.tag_key, &buffer_key, path));
-        if !suffix.is_empty() {
-            ui.label(RichText::new(suffix).color(subtle_dark()).small());
-        }
-        ui.push_id(menu_id, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().id(menu_id), |ui| {
             ui.add_enabled_ui(enabled, |ui| {
-                let (response, _) = egui::containers::menu::MenuButton::new(caption.as_str())
-                    .config(crate::app::ui_kit::button_icons::menu_config())
-                    .ui(ui, |ui| {
-                        // Foundation's "No object functions available.": a
-                        // disabled entry in place of an empty menu.
-                        if let (true, Some(note)) = (menu.items.is_empty(), &menu.note) {
-                            ui.add_enabled(false, egui::Button::new(note.as_str()));
+                let image = string_picker::image(ui, editor);
+                crate::app::ui_kit::button_icons::text_dropdown_button(ui, &caption, image, |ui| {
+                    popup_drawn = true;
+                    let just_opened = !ui.data(|data| data.get_temp::<bool>(was_open_id)).unwrap_or(false);
+                    if just_opened {
+                        filter.clear();
+                        opened = true;
+                    }
+                    let width = string_picker::menu_popup_width(ui, &menu.items, &filter);
+                    string_picker::search(ui, &mut filter, filter_id, just_opened, width, &search_hint);
+                    ui.separator();
+                    string_picker::scroll(ui, menu_id.with("choices")).show(ui, |ui| {
+                        if menu.items.is_empty() {
+                            ui.add_enabled(false, egui::Label::new(menu.note.as_deref().unwrap_or("No values are available.")));
+                        } else if !string_picker::menu_has_matches(&menu.items, &filter) {
+                            ui.label("No matching strings.");
+                        } else {
+                            string_picker::menu_items(ui, &menu.items, &filter, menu_id, &mut picked);
                         }
-                        menu_items(ui, &menu.items, &mut picked)
                     });
-                opened = response.clicked();
+                });
             });
         });
+        if !suffix.is_empty() { ui.label(RichText::new(suffix).color(subtle_dark()).small()); }
     });
     if let Some(text) = picked {
         draft.text = text.clone();
         edit.pending.extend(field_edit_ops(path, &text).pending);
     }
+    ui.data_mut(|data| {
+        data.insert_temp(filter_id, filter);
+        data.insert_temp(was_open_id, popup_drawn);
+    });
     if opened {
         menu_for(edit, editors, editor, path, true);
+        ui.ctx().request_repaint();
     }
-}
-
-/// One level of a menu: items to pick, submenus to open. A long level
-/// scrolls, as Foundation's virtualized menus do.
-fn menu_items(ui: &mut Ui, items: &[MenuItem], picked: &mut Option<String>) {
-    let max_height = (ui.ctx().content_rect().height() * 0.7).max(200.0);
-    egui::ScrollArea::vertical().max_height(max_height).auto_shrink([true, true]).show(ui, |ui| {
-        for item in items {
-            if item.is_submenu() {
-                ui.menu_button(item.text.as_str(), |ui| menu_items(ui, &item.children, picked));
-            } else if ui.button(item.text.as_str()).clicked() {
-                *picked = Some(item.text.clone());
-                crate::app::ui_kit::button_icons::close_menu(ui);
-            }
-        }
-    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blam_tags::string_editor::MenuItem;
     use crate::app::loose_fixture::LooseKit;
     use blam_tags::{StringIdData, TagFile};
 
@@ -315,9 +335,17 @@ mod tests {
                 _ => String::new(),
             };
             let meta = field_display_meta(path.rsplit('/').next().unwrap());
-            draw_string_editor_row(ui, &meta, &value, "", 0, path, &mut edit, &editors, &editor);
+            draw_string_editor_row(ui, &meta, &value, "string id", 0, path, &mut edit, &editors, &editor);
             menu = Some(menu_for(&edit, &editors, &editor, path, false));
         });
+        // Type labels follow picker controls, like tag-reference rows.
+        let rendered: Vec<_> = output.shapes.iter().filter_map(|clipped| {
+            if let egui::Shape::Text(text) = &clipped.shape { Some((text.galley.text(), text.pos.x, text.galley.size().x)) } else { None }
+        }).collect();
+        let type_x = rendered.iter().find(|(text, _, _)| *text == "string id").unwrap().1;
+        if let Some((_, x, width)) = rendered.iter().find(|(text, _, _)| *text == "Materials") {
+            assert!(*x + *width <= type_x, "picker must precede type label");
+        }
         let mut texts = Vec::new();
         let mut pink = false;
         for clipped in &output.shapes {
@@ -405,15 +433,135 @@ mod tests {
     }
 
     /// The material editor lists globals' materials as a tree, with a parent
-    /// first in its own submenu, and its button says what Foundation's says.
+    /// first in its own submenu, and its button uses the shared descriptive caption.
     #[test]
     fn material_menu_comes_from_globals() {
         let (kit, model) = material_kit("metal_thin");
         let (texts, pink, menu) = draw(&kit, &model);
-        assert!(texts.iter().any(|text| text == "Choose Material"), "{texts:?}");
+        assert!(texts.iter().any(|text| text == "Materials"), "{texts:?}");
         assert!(!pink, "metal_thin is a material");
         let menu = menu.unwrap();
         assert_eq!(menu.items, vec![MenuItem::submenu("metal", vec![MenuItem::item("metal"), MenuItem::item("metal_thin")])]);
+    }
+
+    #[test]
+    fn string_picker_material_search_expands_hierarchy_and_selects_parent_values() {
+        use std::cell::Cell;
+        let long_name = "metal_thin_reinforced";
+        let (kit, model) = material_kit(long_name);
+        kit.write_mcc("globals/globals", "globals", |tag| {
+            add_names(tag, "materials", "name", Some("parent name"), &[("metal", ""), (long_name, "metal")]);
+        });
+        let defs = locate_definitions_root();
+        let tag = crate::core::source::read_tag_at_path(
+            &model, Some(GameId::Halo3), Some(&defs), u32::from_be_bytes(*b"hlmt"),
+        ).unwrap();
+        let source = kit.source();
+        let key = kit.key("objects/thing/thing.model");
+        let entry = source.entry_for_key(&key).unwrap();
+        let ctx = egui::Context::default();
+        Baboon::configure_context(&ctx);
+        let mut sinks = EditSinks::default();
+        let mut time = 0.0;
+        let filter_id = Cell::new(None);
+        let path = "materials[0]/global material name";
+        let mut frame = |events| {
+            time += 0.2;
+            let mut pending = Vec::new();
+            let output = crate::app::run_ui_test(&ctx, crate::app::loose_fixture::screen(events, time), |ui| {
+                let mut edit = FieldEditContext::read_only(&mut sinks, "material-search", &key);
+                edit.root = Some(tag.root());
+                edit.game = Some(GameId::Halo3);
+                edit.definitions_root = Some(&defs);
+                edit.editable = true;
+                edit.string_editor_tag = Some(EditedTag { tag: &tag, entry, stamp: (1, 0), source: &source });
+                filter_id.set(Some(edit.widget_id(("string editor", format!("{key}|{path}"))).with("filter")));
+                let field = tag.root().field_path(path).unwrap();
+                draw_foundation_value_row(ui, field, &field_display_meta("global material name"),
+                    "string id", &field.value().unwrap(), &source.names, 0, path, &mut edit, None, 300.0);
+                pending = std::mem::take(edit.pending);
+            });
+            (output, pending)
+        };
+        let rect = |output: &egui::FullOutput, text: &str| {
+            output.shapes.iter().rev().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == text => Some(egui::Rect::from_min_size(t.pos, t.galley.size())),
+                _ => None,
+            })
+        };
+        let click = |pos| vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+        ];
+        let (output, _) = frame(vec![]);
+        frame(click(rect(&output, "Materials").unwrap().center()));
+        frame(vec![]);
+        let (output, _) = frame(vec![]);
+        assert!(rect(&output, "Search Materials").is_some());
+        assert!(rect(&output, "Search String IDs or Text").is_none());
+        assert!(rect(&output, "metal (2)").is_some());
+        assert!(rect(&output, "metal").is_none(), "browse leaves stay inside their submenu");
+        let id = filter_id.get().unwrap();
+        let search = ctx.read_response(id).unwrap().rect;
+        assert!((search.height() - BUTTON_HEIGHT).abs() < 1.0);
+        assert!((search.width() - string_picker::POPUP_MIN_WIDTH).abs() < 1.0);
+        let popup_size = || ctx.memory(|memory| memory.areas().visible_layer_ids().into_iter()
+            .filter(|layer| layer.order == egui::Order::Foreground)
+            .find_map(|layer| memory.area_rect(layer.id).map(|rect| rect.size())).unwrap());
+        let original_size = popup_size();
+        ctx.memory_mut(|memory| memory.request_focus(id));
+        frame(vec![egui::Event::Text("METAL_THIN".into())]);
+        let (output, _) = frame(vec![]);
+        let narrow_size = popup_size();
+        assert!((narrow_size.x - original_size.x).abs() < 2.0);
+        assert!(narrow_size.y > original_size.y,
+            "searching exposes the matching group and its entry inline");
+        assert!(rect(&output, "metal (1)").is_some());
+        assert!(rect(&output, long_name).is_some());
+        assert!(rect(&output, "metal").is_none());
+        let mut state = egui::TextEdit::load_state(&ctx, id).unwrap();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0), egui::text::CCursor::new(10),
+        )));
+        state.store(&ctx, id);
+        frame(vec![egui::Event::Text("metal".into())]);
+        let (output, _) = frame(vec![]);
+        assert!(popup_size().y > narrow_size.y,
+            "broadening a search grows to fit the additional matching entry");
+        assert!(rect(&output, "metal (2)").is_some());
+        let mut state = egui::TextEdit::load_state(&ctx, id).unwrap();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0), egui::text::CCursor::new(5),
+        )));
+        state.store(&ctx, id);
+        frame(vec![egui::Event::Key { key: egui::Key::Backspace, physical_key: None,
+            pressed: true, repeat: false, modifiers: Default::default() }]);
+        let (output, _) = frame(vec![]);
+        assert!((popup_size() - original_size).length() < 2.0,
+            "clearing search restores the original browsing size");
+        frame(click(rect(&output, "metal (2)").unwrap().center()));
+        frame(vec![]);
+        let (output, _) = frame(vec![]);
+        let widths = ctx.memory(|memory| memory.areas().visible_layer_ids().into_iter()
+            .filter(|layer| layer.order == egui::Order::Foreground)
+            .filter_map(|layer| memory.area_rect(layer.id).map(|rect| rect.width())).collect::<Vec<_>>());
+        assert!(widths.len() >= 2 && widths.iter().any(|width| *width < 180.0),
+            "short material names should produce a compact submenu: {widths:?}");
+        for label in ["metal", long_name] {
+            let painted = output.shapes.iter().rev().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => Some((text, shape.clip_rect)),
+                _ => None,
+            }).unwrap();
+            let text_rect = egui::Rect::from_min_size(painted.0.pos, painted.0.galley.size());
+            assert!(!painted.0.galley.elided && painted.1.contains_rect(text_rect),
+                "submenu must fit {label}: elided={}, text={text_rect:?}, clip={:?}, widths={widths:?}",
+                painted.0.galley.elided, painted.1);
+        }
+        let parent_rect = rect(&output, "metal").unwrap();
+        let (_, pending) = frame(click(parent_rect.center()));
+        assert!(pending.iter().any(|edit| edit.path == path && edit.input == "metal"),
+            "a hierarchical parent remains selectable as its own leaf");
     }
 
     /// A name globals doesn't have turns the box pink; case doesn't count.

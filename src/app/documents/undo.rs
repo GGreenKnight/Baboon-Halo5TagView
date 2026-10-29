@@ -91,6 +91,7 @@ impl Baboon {
                             doc.dirty.touch();
                             doc.note_layout_change();
                             doc.settle_after_step();
+                            crate::app::editor::string_list::clear_selection_after_history(&self.egui_ctx,doc.id);
                         }
                         let active = self.model.active;
                         self.invalidate_tag_caches_in(active, key);
