@@ -112,7 +112,7 @@ pub(in crate::app) fn validate_leaf_characters(
     if name == "." || name == ".." {
         return Err(format!("{noun} cannot be . or .."));
     }
-    if name.contains(['/', '\\']) {
+    if tag_path::from_input(name).contains(tag_path::SEPARATOR) {
         return Err("Enter a leaf name only; the parent folder is fixed".to_owned());
     }
     if name.contains('.') {
@@ -131,7 +131,7 @@ pub(in crate::app) fn validate_leaf_characters(
 }
 
 fn normalized_display_path(path: &str) -> String {
-    path.replace('\\', "/").to_ascii_lowercase()
+    path.to_ascii_lowercase()
 }
 
 fn duplicate_display_path(source_display: &str, leaf: &str) -> String {
@@ -139,20 +139,13 @@ fn duplicate_display_path(source_display: &str, leaf: &str) -> String {
         Some((stem, extension)) => (stem, extension),
         None => (source_display, ""),
     };
-    let parent = stem
-        .rsplit_once('/')
-        .map(|(parent, _)| parent)
-        .unwrap_or("");
+    let parent = tag_path::parent(stem).unwrap_or("");
     let file = if extension.is_empty() {
         leaf.to_owned()
     } else {
         format!("{leaf}.{extension}")
     };
-    if parent.is_empty() {
-        file
-    } else {
-        format!("{parent}/{file}")
-    }
+    tag_path::join(parent, &file)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,11 +175,8 @@ pub(in crate::app) fn duplicate_dialog_parts(display: &str) -> DuplicateDialogPa
         Some((stem, extension)) => (stem, extension.to_owned()),
         None => (display, String::new()),
     };
-    let leaf = stem.rsplit(['/', '\\']).next().unwrap_or(stem);
-    let fixed_parent = stem
-        .rsplit_once('/')
-        .map(|(parent, _)| parent.to_owned())
-        .unwrap_or_default();
+    let leaf = tag_path::name(stem);
+    let fixed_parent = tag_path::parent(stem).unwrap_or_default().to_owned();
     DuplicateDialogParts {
         prefill: format!("{leaf}_copy"),
         fixed_parent,
@@ -450,15 +440,8 @@ fn container_logical_path(rel_path: &str) -> Option<String> {
         .or_else(|| strip_prefix_case_insensitive(rel_path, "Meteorite/Content/"))?;
     let source_file = after.rsplit('/').next()?;
     let (tag_name, _group_longname) = parse_ublock_stem(source_file)?;
-    let directory = after.rsplit_once('/').map(|(directory, _)| directory);
-    Some(match directory {
-        Some(directory) if !directory.is_empty() => format!(
-            "{}/{}",
-            directory.to_ascii_lowercase(),
-            tag_name.to_ascii_lowercase()
-        ),
-        _ => tag_name.to_ascii_lowercase(),
-    })
+    let directory = after.rsplit_once('/').map_or("", |(directory, _)| directory);
+    Some(tag_path::join(&tag_path::from_unreal(directory), tag_name).to_ascii_lowercase())
 }
 
 pub(in crate::app) fn container_duplicate_index_key(group_tag: u32, rel_path: &str) -> Option<String> {
@@ -859,7 +842,7 @@ impl Baboon {
                     destination_leaf: new_leaf,
                 });
             }
-            TagEntryLocation::Halo5 {..} | TagEntryLocation::Monolithic { .. } | TagEntryLocation::NewContainer { .. } => {
+            TagEntryLocation::Monolithic { .. } | TagEntryLocation::NewContainer { .. } => {
                 self.model.status =
                     "Only loose-file and Campaign Evolved container tags can be duplicated"
                         .to_owned();
@@ -1549,7 +1532,7 @@ mod tests {
         // copy lands in a folder the container does not have.
         let paths = container_duplicate_paths(
             MARINE_UBULK,
-            "objects/characters/marine/marine.biped",
+            "objects\\characters\\marine\\marine.biped",
             "marine_copy",
         )
         .expect("built");
@@ -1565,7 +1548,7 @@ mod tests {
             paths.package,
             "/Game/Tags/objects/characters/Marine/marine_copy-biped"
         );
-        assert_eq!(paths.display, "objects/characters/marine/marine_copy.biped");
+        assert_eq!(paths.display, "objects\\characters\\marine\\marine_copy.biped");
     }
 
     #[test]
@@ -1586,7 +1569,7 @@ mod tests {
     #[test]
     fn the_diagnostic_names_every_path_a_report_would_need() {
         let diagnostics = DuplicateDiagnostics {
-            display_path: "objects/characters/marine/marine.biped".to_owned(),
+            display_path: "objects\\characters\\marine\\marine.biped".to_owned(),
             source_container: 3,
             source_container_label: "pakchunk0-WinGDK".to_owned(),
             source_utoc: PathBuf::from("D:/Game/Paks/pakchunk0-WinGDK.utoc"),
@@ -1603,7 +1586,7 @@ mod tests {
         };
         let text = diagnostics.to_string();
         for expected in [
-            "objects/characters/marine/marine.biped",
+            "objects\\characters\\marine\\marine.biped",
             "pakchunk0-WinGDK",
             "pakchunk0-WinGDK.utoc",
             MARINE_UBULK,
@@ -1676,18 +1659,18 @@ mod tests {
 
     #[test]
     fn duplicate_name_validation_rejects_invalid_and_reserved_leaves() {
-        let existing = vec!["objects/source.model".to_owned()];
+        let existing = vec!["objects\\source.model".to_owned()];
         for invalid in [
             "", " ", ".", "..", "foo.bar", r"foo\bar", "foo/bar", "foo<bar", "foo*bar", "foo ",
             "foo\t", "CON", "com1", "LPT9",
         ] {
             assert!(
-                validate_duplicate_leaf_name(invalid, "objects/new.model", &existing).is_err(),
+                validate_duplicate_leaf_name(invalid, "objects\\new.model", &existing).is_err(),
                 "{invalid:?} should be rejected"
             );
         }
         assert_eq!(
-            validate_duplicate_leaf_name(" new", "objects/new.model", &existing).unwrap(),
+            validate_duplicate_leaf_name(" new", "objects\\new.model", &existing).unwrap(),
             "new"
         );
     }
@@ -1695,19 +1678,19 @@ mod tests {
     #[test]
     fn duplicate_name_validation_is_case_insensitive_and_includes_source() {
         let existing = vec![
-            "Objects/Source.model".to_owned(),
-            "objects/existing.model".to_owned(),
+            "Objects\\Source.model".to_owned(),
+            "objects\\existing.model".to_owned(),
         ];
         assert!(
-            validate_duplicate_leaf_name("existing", "OBJECTS/EXISTING.model", &existing).is_err()
+            validate_duplicate_leaf_name("existing", "OBJECTS\\EXISTING.model", &existing).is_err()
         );
-        assert!(validate_duplicate_leaf_name("Source", "objects/Source.model", &existing).is_err());
+        assert!(validate_duplicate_leaf_name("Source", "objects\\Source.model", &existing).is_err());
     }
 
     #[test]
     fn duplicate_dialog_prefills_copy_and_keeps_parent_and_extension_fixed() {
         assert_eq!(
-            duplicate_dialog_parts("Objects/Old-Biped.BIPED"),
+            duplicate_dialog_parts("Objects\\Old-Biped.BIPED"),
             DuplicateDialogParts {
                 prefill: "Old-Biped_copy".to_owned(),
                 fixed_parent: "Objects".to_owned(),
@@ -1807,7 +1790,7 @@ mod tests {
     fn container_duplicate_paths_preserve_parent_and_group_suffix() {
         let paths = container_duplicate_paths(
             "Meteorite/Content/Tags/Objects/old-biped.ubulk",
-            "objects/old.model",
+            "objects\\old.model",
             "new_copy",
         )
         .unwrap();
@@ -1820,7 +1803,7 @@ mod tests {
             "Meteorite/Content/Tags/Objects/new_copy-biped.ubulk"
         );
         assert_eq!(paths.package, "/Game/Tags/Objects/new_copy-biped");
-        assert_eq!(paths.display, "objects/new_copy.model");
+        assert_eq!(paths.display, "objects\\new_copy.model");
     }
 
     #[test]
@@ -1828,21 +1811,21 @@ mod tests {
         let rel_path = "Meteorite/Content/Tags/Objects/new_copy-biped.ubulk";
         let group_tag = u32::from_be_bytes(*b"bipd");
         let logical = container_logical_path(rel_path).unwrap();
-        assert_eq!(logical, "objects/new_copy");
-        assert_ne!(logical, "objects/new_copy-biped");
+        assert_eq!(logical, "objects\\new_copy");
+        assert_ne!(logical, "objects\\new_copy-biped");
 
         let mut index = crate::core::source::ContainerTagIndex::default();
         let key = container_duplicate_index_key(group_tag, rel_path).unwrap();
         index.insert(key, 7, rel_path.to_owned());
         assert_eq!(
-            index.lookup(group_tag, "objects/new_copy"),
+            index.lookup(group_tag, "objects\\new_copy"),
             Some((7, rel_path))
         );
         assert_eq!(
             index.lookup(group_tag, "OBJECTS\\NEW_COPY"),
             Some((7, rel_path))
         );
-        assert_eq!(index.lookup(group_tag, "objects/new_copy-biped"), None);
+        assert_eq!(index.lookup(group_tag, "objects\\new_copy-biped"), None);
     }
 
     #[test]
@@ -1889,8 +1872,8 @@ mod tests {
     #[test]
     fn duplicate_completion_failure_and_closed_kit_paths_clear_guard_without_phantom_state() {
         let group_tag = test_tag().header.group_tag;
-        let source_entry = test_entry("source", "objects/source.model", group_tag);
-        let destination_entry = test_entry("destination", "objects/new_copy.model", group_tag);
+        let source_entry = test_entry("source", "objects\\source.model", group_tag);
+        let destination_entry = test_entry("destination", "objects\\new_copy.model", group_tag);
 
         for (succeeded, current) in [(false, true), (true, false)] {
             let mut running = HashSet::from([KitId(41)]);
@@ -1928,7 +1911,7 @@ mod tests {
             let TagSource::IoStoreContainerSet { index, .. } = &source.source else {
                 panic!("test source must be a container source");
             };
-            assert!(index.lookup(group_tag, "objects/new_copy").is_none());
+            assert!(index.lookup(group_tag, "objects\\new_copy").is_none());
             assert!(!kit.parsed_tags.contains_key(&destination_entry.key));
             assert!(!kit.open_tabs.contains(&destination_entry.key));
         }
@@ -1937,8 +1920,8 @@ mod tests {
     #[test]
     fn duplicate_completion_success_adds_clean_destination_and_preserves_dirty_source() {
         let group_tag = test_tag().header.group_tag;
-        let source_entry = test_entry("source", "objects/source.model", group_tag);
-        let destination_entry = test_entry("destination", "objects/new_copy.model", group_tag);
+        let source_entry = test_entry("source", "objects\\source.model", group_tag);
+        let destination_entry = test_entry("destination", "objects\\new_copy.model", group_tag);
         let mut source = container_source(vec![source_entry.clone()]);
         let mut kit = Kit::empty(KitId(41), TagNameIndex::default());
         let source_tag = test_tag();
@@ -1974,7 +1957,7 @@ mod tests {
             panic!("test source must be a container source");
         };
         assert_eq!(
-            index.lookup(group_tag, "objects/new_copy"),
+            index.lookup(group_tag, "objects\\new_copy"),
             Some((0, "Meteorite/Content/Tags/Objects/new_copy-model.ubulk"))
         );
         let source_document = kit.parsed_tags.get(&source_entry.key).unwrap();
@@ -1997,11 +1980,11 @@ mod tests {
         // which is what made a successful duplicate look like it never landed.
         let group_tag = test_tag().header.group_tag;
         let mut source = container_source(vec![
-            test_entry("alpha", "objects/alpha.model", group_tag),
-            test_entry("source", "objects/source.model", group_tag),
-            test_entry("zulu", "objects/zulu.model", group_tag),
+            test_entry("alpha", "objects\\alpha.model", group_tag),
+            test_entry("source", "objects\\source.model", group_tag),
+            test_entry("zulu", "objects\\zulu.model", group_tag),
         ]);
-        let destination_entry = test_entry("destination", "objects/source_copy.model", group_tag);
+        let destination_entry = test_entry("destination", "objects\\source_copy.model", group_tag);
 
         apply_container_duplicate_source_state(
             &mut source,
@@ -2025,10 +2008,10 @@ mod tests {
         assert_eq!(
             order,
             [
-                "objects/alpha.model",
-                "objects/source.model",
-                "objects/source_copy.model",
-                "objects/zulu.model",
+                "objects\\alpha.model",
+                "objects\\source.model",
+                "objects\\source_copy.model",
+                "objects\\zulu.model",
             ]
         );
     }

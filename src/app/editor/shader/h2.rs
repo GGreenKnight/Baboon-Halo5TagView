@@ -125,7 +125,7 @@ fn template_stamp(source: &TagSource, reference: &str) -> Option<(u64, std::time
         TagSource::LooseFolder { root, .. } => root.clone(),
         TagSource::SingleFile { path } => blam_tags::paths::derive_tags_root(path)
             .or_else(|| path.parent().map(Path::to_path_buf))?,
-        TagSource::Halo5 { .. } | TagSource::MonolithicCache { .. } | TagSource::IoStoreContainerSet { .. } => return None,
+        TagSource::MonolithicCache { .. } | TagSource::IoStoreContainerSet { .. } => return None,
     };
     let metadata = std::fs::metadata(resolve_tag_path(&root, reference, "shader_template")).ok()?;
     Some((metadata.len(), metadata.modified().ok()?))
@@ -370,12 +370,12 @@ fn h2_fallback_parameter_section_title(root: TagStruct<'_>, names: &TagNameIndex
         return "PARAMETERS".to_owned();
     };
     let formatted = trim_formatted_value(&format_value(names, &value, false));
-    let normalized = formatted.replace('\\', "/").to_ascii_lowercase();
-    let Some(pos) = normalized.find("shader_templates/") else {
+    let normalized = formatted.to_ascii_lowercase();
+    let Some(pos) = normalized.find(r"shader_templates\") else {
         return "PARAMETERS".to_owned();
     };
-    let rest = &normalized[pos + "shader_templates/".len()..];
-    let Some((folder, _)) = rest.split_once('/') else {
+    let rest = &normalized[pos + r"shader_templates\".len()..];
+    let Some((folder, _)) = rest.split_once(tag_path::SEPARATOR) else {
         return "PARAMETERS".to_owned();
     };
     if folder.is_empty() {
@@ -848,6 +848,37 @@ fn h2_template_parameter_display_rows(
     names: &TagNameIndex,
 ) -> Vec<ShaderGridRow> {
     let mut rows = Vec::new();
+    if matches!(h2_template_parameter_type_index(template_param), 1 | 3)
+        && h2_template_flags(template_param) & 1 != 0
+    {
+        // Scalar animation data is the effective parameter value. Keep that
+        // row's backing and value, presented under the template parameter name.
+        return vec![h2_template_value_animation_row(template_param, instance, postprocess, template_index)];
+    }
+    if h2_template_parameter_type_index(template_param) == 2
+        && h2_template_flags(template_param) & 1 != 0
+    {
+        // A color parameter's tint is its animated value, not an additional
+        // parameter. Present one canonical row, keeping live function backing.
+        let mut row = h2_template_value_animation_row(template_param, instance, postprocess, template_index);
+        if row.function.is_none() && row.constant_function_view.is_none() {
+            if let Some(mut base) = h2_template_base_parameter_row(template_param, instance, postprocess, template_index, names)
+                && base.edit.as_ref().is_some_and(|edit| matches!(edit.kind, ShaderRowEditKind::ColorField { .. }))
+            {
+                let rgba = base.edit.as_ref().and_then(|edit| parse_shader_rgba(&edit.current))
+                    .or_else(|| h2_template_default_color(template_param)).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                base.create_anim_op = Some(ShaderContextAction::H2ParameterOp(H2ShaderParamOp::EnsureAnimationProperty {
+                    parameters_block_path: "parameters".to_owned(),
+                    parameter_name: h2_template_parameter_name(template_param),
+                    parameter_type_index: 2,
+                    animation_type_index: 12,
+                    initial_function_data: h2_constant_color_function_data(rgba[0], rgba[1], rgba[2], rgba[3], None),
+                }));
+                row = base;
+            }
+        }
+        return vec![row];
+    }
     if let Some(row) =
         h2_template_base_parameter_row(template_param, instance, postprocess, template_index, names)
     {
@@ -1124,14 +1155,13 @@ fn h2_template_value_animation_row(
     template_index: usize,
 ) -> ShaderGridRow {
     let is_color = h2_template_parameter_type_index(template_param) == 2;
-    let suffix = if is_color { "tint" } else { "value" };
     h2_template_animation_row(
         template_param,
         instance,
         postprocess,
         template_index,
         if is_color { 12 } else { 11 },
-        suffix,
+        "",
     )
 }
 
@@ -1144,7 +1174,7 @@ fn h2_template_animation_row(
     suffix: &str,
 ) -> ShaderGridRow {
     let base = h2_template_parameter_name(template_param);
-    let label = format!("{base}_{suffix}");
+    let label = if suffix.is_empty() { base.clone() } else { format!("{base}_{suffix}") };
     let function = postprocess
         .function(template_index, animation_type)
         .or_else(|| {
@@ -2004,7 +2034,13 @@ fn classic_halo2_function_view_from_struct(
 pub(in crate::app) fn halo2_function_bytes_from_struct(
     tag_struct: TagStruct<'_>,
 ) -> Option<Vec<u8>> {
-    tag_struct.halo2_function_bytes()
+    let block = tag_struct.field("data")?.as_block()?;
+    let mut bytes = Vec::with_capacity(block.len());
+    for element in block.iter() {
+        let value = element.read_int_any("Value")?;
+        bytes.push(value as i8 as u8);
+    }
+    Some(bytes)
 }
 
 #[cfg(test)]
@@ -2285,10 +2321,7 @@ fn classic_shader_row_edit(
                     let current = if name.is_empty() {
                         "NONE".to_owned()
                     } else {
-                        format!(
-                            "{}.shader_template",
-                            h2_normalize_shader_template_reference(name).replace('\\', "/")
-                        )
+                        format!("{}.shader_template", h2_normalize_shader_template_reference(name))
                     };
                     return Some(ShaderRowEdit {
                         path: path.to_owned(),
@@ -2305,7 +2338,7 @@ fn classic_shader_row_edit(
             let current = if name.is_empty() {
                 "NONE".to_owned()
             } else {
-                format!("{}.bitmap", name.replace('\\', "/"))
+                format!("{name}.bitmap")
             };
             Some(ShaderRowEdit {
                 path: path.to_owned(),
@@ -3217,7 +3250,7 @@ mod tests {
     }
 
     #[test]
-    fn h2ek_shader_color_tint_rows_use_color_animation_type() {
+    fn h2ek_shader_color_parameters_use_one_row_with_color_animation_type() {
         let shader = h2_classic_shader_tag();
         let mut template =
             TagFile::new(test_definition_path("halo2_mcc/shader_template.json")).unwrap();
@@ -3254,16 +3287,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            h2_template_row_edit_kind_for_test(&shader, &template, "color_wide_tint"),
+            h2_template_row_edit_kind_for_test(&shader, &template, "color_wide"),
             Some("h2_create_function_color")
         );
         assert_eq!(
-            h2_template_row_value_color_for_test(&shader, &template, "color_wide_tint"),
+            h2_template_row_value_color_for_test(&shader, &template, "color_wide"),
             Some((255, 255, 255, 255))
         );
         let rows =
             h2_template_parameter_rows(shader.root(), template.root(), &TagNameIndex::default());
-        for label in ["color_wide", "color_wide_tint"] {
+        assert_eq!(rows.iter().filter(|row| row.label == "color_wide").count(), 1);
+        assert!(!rows.iter().any(|row| row.label == "color_wide_tint"));
+        for label in ["color_wide"] {
             let row = rows.iter().find(|row| row.label == label).unwrap();
             let color = row
                 .default_cell
@@ -3273,6 +3308,42 @@ mod tests {
                 .as_ref()
                 .expect("Halo 2 color defaults include a preview");
             assert_eq!(color.color32(), Color32::WHITE);
+        }
+    }
+
+    #[test]
+    fn h2ek_shader_scalar_parameters_use_one_row_with_the_effective_value() {
+        for parameter_type in [1, 3] {
+            let mut shader = h2_classic_shader_tag();
+            apply_one_h2_shader_param_op(&mut shader, &H2ShaderParamOp::EnsureAnimationProperty {
+                parameters_block_path: "parameters".to_owned(),
+                parameter_name: "example".to_owned(),
+                parameter_type_index: parameter_type,
+                animation_type_index: 11,
+                initial_function_data: h2_constant_scalar_function_data(2.5, None),
+            }).unwrap();
+            apply_one_h2_shader_param_op(&mut shader, &H2ShaderParamOp::EditTemplateBackedValue {
+                parameters_block_path: "parameters".to_owned(),
+                parameter_name: "example".to_owned(),
+                parameter_type_index: parameter_type,
+                field: "const value".to_owned(), input: "7".to_owned(),
+            }).unwrap();
+            let mut template = TagFile::new(test_definition_path("halo2_mcc/shader_template.json")).unwrap();
+            for path in ["categories", "categories[0]/parameters"] {
+                apply_one_block_op(&mut template, &BlockOp { path: path.to_owned(), kind: BlockOpKind::Add }).unwrap();
+            }
+            for (field, value) in [("name", "example"), ("type", if parameter_type == 1 { "1" } else { "3" }), ("flags", "1"), ("default const value", "0.35")] {
+                apply_field_edit(&mut template, &format!("categories[0]/parameters[0]/{field}"), value).unwrap();
+            }
+            let rows = h2_template_parameter_rows(shader.root(), template.root(), &TagNameIndex::default());
+            assert_eq!(rows.iter().filter(|row| row.label == "example").count(), 1);
+            assert!(!rows.iter().any(|row| row.label == "example_value"));
+            let row = rows.iter().find(|row| row.label == "example").unwrap();
+            let edit = row.edit.as_ref().unwrap();
+            assert_eq!(edit.current, "2.5", "prefer the animation value over the base constant");
+            assert!(matches!(edit.kind, ShaderRowEditKind::H2FunctionScalar { .. }));
+            assert!(edit.path.contains("animation properties") && edit.path.ends_with("/function/data"));
+            assert!(row.constant_function_view.is_some());
         }
     }
 
@@ -3319,14 +3390,32 @@ mod tests {
         apply_field_edit(&mut template, "categories[0]/parameters[0]/flags", "1").unwrap();
 
         assert_eq!(
-            h2_template_row_edit_kind_for_test(&shader, &template, "color_sharp_tint"),
+            h2_template_row_edit_kind_for_test(&shader, &template, "color_sharp"),
             Some("h2_function_color")
         );
         assert_eq!(
-            h2_template_row_value_color_for_test(&shader, &template, "color_sharp_tint"),
+            h2_template_row_value_color_for_test(&shader, &template, "color_sharp"),
             Some((255, 0, 0, 255))
         );
         assert_h2_write_atomic_verifies(&shader, "h2_color_function_existing");
+        let rows = h2_template_parameter_rows(shader.root(), template.root(), &TagNameIndex::default());
+        assert_eq!(rows.iter().filter(|row| row.label == "color_sharp").count(), 1);
+        assert!(!rows.iter().any(|row| row.label == "color_sharp_tint"));
+        let function = rows.iter().find(|row| row.label == "color_sharp").unwrap()
+            .constant_function_view.as_ref().unwrap();
+        let Some(FunctionDataStorage::Halo2ByteBlock(path)) = function.edit.as_ref().map(|edit| &edit.data) else {
+            panic!("the canonical color row retains its Halo 2 write target");
+        };
+        let mut editor = TagFunctionEditor::from_function(function.function.clone());
+        editor.set_function_type(FunctionType::Periodic).unwrap();
+        apply_one_h2_shader_param_op(&mut shader, &H2ShaderParamOp::EditFunctionData {
+            block_path: path.clone(), data: editor.to_bytes(),
+        }).unwrap();
+        let rows = h2_template_parameter_rows(shader.root(), template.root(), &TagNameIndex::default());
+        let color = rows.iter().find(|row| row.label == "color_sharp").unwrap();
+        assert!(color.function.is_some(), "the single color row retains an active graph");
+        assert_eq!(rows.iter().filter(|row| row.label == "color_sharp").count(), 1);
+        assert!(!rows.iter().any(|row| row.label == "color_sharp_tint"));
     }
 
     #[test]
@@ -3388,7 +3477,7 @@ mod tests {
         )
         .unwrap();
         apply_field_edit(&mut template, "categories[0]/name", "transparent").unwrap();
-        for (index, (name, ty, flags)) in [("noyze0", "0", "1"), ("color_sharp", "2", "0")]
+        for (index, (name, ty, flags)) in [("noyze0", "0", "1"), ("color_sharp", "2", "1")]
             .into_iter()
             .enumerate()
         {
@@ -3426,6 +3515,15 @@ mod tests {
             h2_template_row_value_color_for_test(&shader, &template, "color_sharp"),
             Some((255, 0, 0, 255))
         );
+        let rows = h2_template_parameter_rows(shader.root(), template.root(), &TagNameIndex::default());
+        let color = rows.iter().find(|row| row.label == "color_sharp").unwrap();
+        assert_eq!(color.edit.as_ref().unwrap().path, "postprocess definition[0]/color properties[1]/color");
+        let Some(ShaderContextAction::H2ParameterOp(H2ShaderParamOp::EnsureAnimationProperty {
+            animation_type_index, initial_function_data, ..
+        })) = color.create_anim_op.as_ref() else { panic!("the color row can still add an animation"); };
+        assert_eq!(*animation_type_index, 12);
+        assert_eq!(extract_constant_color(&h2_tag_function(initial_function_data).unwrap()), Some([1.0, 0.0, 0.0, 1.0]));
+        assert!(!rows.iter().any(|row| row.label == "color_sharp_tint"));
         assert_eq!(
             h2_template_row_edit_kind_for_test(&shader, &template, "color_sharp"),
             Some("color")
@@ -3695,11 +3793,11 @@ mod tests {
         apply_field_edit(&mut template, "categories[0]/parameters[0]/flags", "1").unwrap();
 
         assert_eq!(
-            h2_template_row_edit_kind_for_test(&shader, &template, "center_line_tint"),
+            h2_template_row_edit_kind_for_test(&shader, &template, "center_line"),
             Some("h2_function_color")
         );
         assert_eq!(
-            h2_template_row_value_color_for_test(&shader, &template, "center_line_tint"),
+            h2_template_row_value_color_for_test(&shader, &template, "center_line"),
             Some((255, 255, 0, 255))
         );
 

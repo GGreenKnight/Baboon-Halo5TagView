@@ -40,10 +40,6 @@ pub(crate) fn definitions_missing_message(path: &Path) -> String {
     )
 }
 
-pub(crate) fn locate_halo5_definitions() -> PathBuf {
-    locate_definitions_root().join("halo5_guardians/xml")
-}
-
 /// Locate the runtime help docs root. Release builds copy `docs/` next to
 /// `Baboon.exe`, matching the editable-on-disk contract used by `definitions/`.
 pub(crate) fn locate_help_docs_root() -> PathBuf {

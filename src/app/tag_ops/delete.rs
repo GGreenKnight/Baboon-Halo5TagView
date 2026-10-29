@@ -30,20 +30,22 @@ fn loose_trash_destination(
     display_path: &str,
     now_unix_secs: u64,
 ) -> Result<PathBuf, String> {
-    let relative = display_path.replace('\\', "/");
-    let relative = relative.trim_start_matches('/');
-    if relative.is_empty() {
+    let relative = tag_path::to_relative(display_path);
+    if relative.as_os_str().is_empty() {
         return Err("This tag has no path to delete".to_owned());
     }
-    if relative.split('/').any(|part| part == "..") {
+    // Judged on the path it becomes, so no spelling of `..` or of a root,
+    // whatever separator it uses, can lead the move out of the trash folder.
+    if !relative
+        .components()
+        .all(|part| matches!(part, std::path::Component::Normal(_)))
+    {
         return Err("This tag's path is not safe to move".to_owned());
     }
     let mut destination = crate::core::storage::data_path(DELETED_TAGS_DIR);
     destination.push(game.unwrap_or("unknown-game"));
     destination.push(now_unix_secs.to_string());
-    for part in relative.split('/') {
-        destination.push(part);
-    }
+    destination.push(relative);
     Ok(destination)
 }
 
@@ -230,7 +232,6 @@ pub(in crate::app) fn delete_eligibility(
     ledger: &CreatedTagLedger,
 ) -> Result<(), String> {
     match &entry.location {
-        TagEntryLocation::Halo5 {..}=>Err("Halo 5 tag deletion is not implemented".into()),
         TagEntryLocation::LooseFile(path) => {
             if path.exists() {
                 Ok(())
@@ -1025,7 +1026,10 @@ mod tests {
                 "haloce_evolved".to_owned(),
             ]
         );
+        assert!(loose_trash_destination(None, r"..\..\escape.weapon", 1).is_err());
         assert!(loose_trash_destination(None, "../../escape.weapon", 1).is_err());
+        assert!(loose_trash_destination(None, r"objects\..\..\escape.weapon", 1).is_err());
+        assert!(loose_trash_destination(None, "/etc/escape.weapon", 1).is_err());
         assert!(loose_trash_destination(None, "", 1).is_err());
     }
 

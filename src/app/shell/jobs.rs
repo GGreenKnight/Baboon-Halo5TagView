@@ -16,7 +16,6 @@ impl Baboon {
     pub(in crate::app) fn apply_worker_message(&mut self, message: WorkerMessage, ctx: &egui::Context) {
         {
             let _stale = match message {
-                WorkerMessage::Halo5TagLoaded {stamp,key,result}=>self.handle_halo5_tag_loaded(stamp,key,result),
                 WorkerMessage::TerminalLine(line) => self.handle_terminal_line(line),
                 WorkerMessage::TerminalLogError(error) => self.handle_terminal_log_error(error),
                 WorkerMessage::TerminalDone { run_id } => self.handle_terminal_done(run_id),

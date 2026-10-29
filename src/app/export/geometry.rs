@@ -413,7 +413,7 @@ fn entry_reference_path(source: &TagSource, entry: &TagEntry) -> Option<String> 
         let reference = path
             .strip_suffix(&format!(".{extension}"))
             .unwrap_or_else(|| path.rsplit_once('.').map_or(path, |(stem, _)| stem));
-        (!reference.is_empty()).then(|| reference.replace('/', "\\"))
+        (!reference.is_empty()).then(|| reference.to_owned())
     };
     match &entry.location {
         TagEntryLocation::Monolithic { name, .. } if !name.is_empty() => Some(name.clone()),
@@ -423,7 +423,7 @@ fn entry_reference_path(source: &TagSource, entry: &TagEntry) -> Option<String> 
                 TagSource::SingleFile { path } => derive_tags_root(path),
                 _ => None,
             }?;
-            strip(&path.strip_prefix(&root).ok()?.to_string_lossy())
+            strip(&tag_path::relative_tag_path(path.strip_prefix(&root).ok()?))
         }
         _ => strip(&entry.display_path),
     }
@@ -938,12 +938,11 @@ pub(in crate::app) fn load_referenced_tag_from_source(
 ) -> anyhow::Result<TagFile> {
     let group_tag = u32::from_be_bytes(*group_tag);
     match source {
-        TagSource::Halo5 {..}=>anyhow::bail!("Halo 5 geometry extraction is not implemented"),
         TagSource::LooseFolder { root, .. } => {
             let path = resolve_tag_path(root, reference, extension);
             let entry = TagEntry {
                 key: file_entry_key(&path),
-                display_path: format!("{}.{}", reference.replace('\\', "/"), extension),
+                display_path: format!("{reference}.{extension}"),
                 group_tag,
                 group_name: Some(extension.to_owned()),
                 location: TagEntryLocation::LooseFile(path.clone()),
@@ -1645,10 +1644,7 @@ mod tests {
                 .chain(loaded.entries.iter())
                 .find(|e| {
                     e.group_tag == want
-                        && e.display_path
-                            .replace('\\', "/")
-                            .to_ascii_lowercase()
-                            .contains(suffix)
+                        && e.display_path.to_ascii_lowercase().contains(&tag_path::from_input(suffix))
                 })
                 .cloned()
         };

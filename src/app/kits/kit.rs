@@ -55,12 +55,6 @@ pub(in crate::app) struct Kit {
     // --- Open documents ---
     /// Parsed documents keyed by the stable [`TagEntry::key`] identity.
     pub(in crate::app) parsed_tags: HashMap<String, TagDocument>,
-    /// Original payloads and field-byte bindings used only by storage saves.
-    /// Presentation, drafts, dirty state and undo all live in `parsed_tags`.
-    /// Original ucsh bytes and storage bindings for the shared parsed tags.
-    pub(in crate::app) halo5_documents: HashMap<String, crate::core::source::Halo5Backing>,
-    /// Copy destinations survive discarding and reloading a parsed document.
-    pub(in crate::app) halo5_save_paths: HashMap<String,PathBuf>,
     /// Keys with an outstanding background load, preventing duplicate jobs.
     pub(in crate::app) loading_tags: HashSet<String>,
     /// Active document key. Selection may temporarily precede parsing while a
@@ -134,8 +128,6 @@ impl Kit {
             source: None,
             names,
             parsed_tags: HashMap::new(),
-            halo5_documents: HashMap::new(),
-            halo5_save_paths: HashMap::new(),
             loading_tags: HashSet::new(),
             selected_key: None,
             current_pane: None,
@@ -466,8 +458,7 @@ fn requested_path_matches(kit: &Kit, path: &Path) -> bool {
 fn kit_has_dirty_documents(kit: &Kit) -> bool {
     kit.parsed_tags.iter().any(|(key, document)| {
         document.dirty.is_set() && document_edits_are_saveable(kit, key, document)
-    })
-        || kit.chimp.documents.values().any(|document| document.dirty)
+    }) || kit.chimp.documents.values().any(|document| document.dirty)
 }
 
 /// Whether this kit's edits to `key` could be written back at all.

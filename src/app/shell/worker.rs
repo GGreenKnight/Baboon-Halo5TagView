@@ -78,7 +78,6 @@ pub(in crate::app) struct ContainerDeleteResult {
 /// the result if the kit has closed or its source was replaced, while
 /// preserving receive order for current work.
 pub(in crate::app) enum WorkerMessage {
-    Halo5TagLoaded {stamp:KitStamp,key:String,result:Result<crate::core::source::LoadedHalo5Tag,String>},
     SourceLoaded {
         /// Which kit this load was started for.
         kit: KitId,

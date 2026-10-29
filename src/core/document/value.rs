@@ -7,6 +7,7 @@ use blam_tags::{
     parse_group_tag,
 };
 
+use crate::core::tag_path;
 use crate::core::source::{TagEntry, TagEntryLocation};
 
 /// Whether this document's fields and block controls are live.
@@ -25,7 +26,6 @@ use crate::core::source::{TagEntry, TagEntryLocation};
 pub(crate) fn is_editable_tag(entry: &TagEntry, _tag: &TagFile) -> bool {
     // Matched rather than defaulted so a new location has to state its answer.
     match entry.location {
-        TagEntryLocation::Halo5 {..}=>true,
         // Loose tags are edited in place; container (Campaign Evolved) tags are
         // edited in memory and written out as an override on Save/Save
         // As/Rename. A brand-new container tag (New Tag / Import of a new path)
@@ -83,7 +83,17 @@ pub(crate) fn append_field_path(prefix: &str, field_name: &str) -> String {
 /// block ops, function data). Canonical/display paths use the plain-name
 /// form and strip the ordinal via `strip_node_indices`.
 pub(crate) fn append_field_path_for(prefix: &str, field: &TagField<'_>) -> String {
-    prefix.parse::<blam_tags::TagFieldPath>().unwrap().with_field(field).to_string()
+    // Emit the CLEAN (markup-free) name so field-name markup — `:units`,
+    // `[range]`, `#help` — can't collide with the path grammar's own `type:`,
+    // `[index]`, and `#ordinal` tokens (the range-hint-as-index bug). The engine
+    // resolves the ordinal positionally; the clean name is the readable/fallback
+    // key. See `blam_tags::field_name` / `blam_tags::TagFieldPath`.
+    let segment = format!("{}#{}", field.clean_name(), field.ordinal());
+    if prefix.is_empty() {
+        segment
+    } else {
+        format!("{prefix}/{segment}")
+    }
 }
 
 /// A field name as a path segment the resolver will accept.
@@ -597,6 +607,7 @@ fn mask_bits(input: &str, bits: u32) -> Result<u64, String> {
     Ok(mask)
 }
 
+/// A tag reference as a person types it: `GROUP:path` or `path.group`.
 pub(crate) fn parse_tag_reference(input: &str) -> Result<TagReferenceData, String> {
     if input.eq_ignore_ascii_case("none") || input.is_empty() {
         return Ok(TagReferenceData {
@@ -607,7 +618,7 @@ pub(crate) fn parse_tag_reference(input: &str) -> Result<TagReferenceData, Strin
         let group_tag = parse_group_tag(group)
             .ok_or_else(|| "tag reference group must be 1..=4 ASCII chars".to_owned())?;
         return Ok(TagReferenceData {
-            group_tag_and_name: Some((group_tag, path.replace('/', "\\"))),
+            group_tag_and_name: Some((group_tag, tag_path::from_input(path))),
         });
     }
     let Some((path, extension)) = input.rsplit_once('.') else {
@@ -617,7 +628,7 @@ pub(crate) fn parse_tag_reference(input: &str) -> Result<TagReferenceData, Strin
         .or_else(|| parse_group_tag(extension))
         .ok_or_else(|| format!("unknown tag group {extension:?}"))?;
     Ok(TagReferenceData {
-        group_tag_and_name: Some((group_tag, path.replace('/', "\\"))),
+        group_tag_and_name: Some((group_tag, tag_path::from_input(path))),
     })
 }
 

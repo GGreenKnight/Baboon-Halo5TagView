@@ -91,30 +91,11 @@ pub(crate) fn apply_deferred_ops(
     label: &str,
 ) -> AppliedDeferredOps {
     let mut ops = ops;
-    // Writers can expose a shared field tree while restricting which fields
-    // and structural operations their on-disk format can safely persist.
-    if doc.access.fixed_blocks && (!ops.block_ops.is_empty()
-        || !ops.shader_ops.is_empty() || !ops.shader_param_ops.is_empty()
-        || !ops.h2_shader_param_ops.is_empty() || !ops.model_variant_ops.is_empty()
-        || !ops.function_data_ops.is_empty()) {
-        return AppliedDeferredOps { status:Some("This document supports fixed-size field edits only".into()),
-            outcomes:Vec::new(), model_variants_changed:false };
-    }
-    let mut rejected = Vec::new();
-    if let Some(writable) = &doc.access.writable_fields {
-        rejected.extend(ops.pending.extract_if(.., |edit| !writable.contains(&edit.path))
-            .map(|edit| FieldEditOutcome { path:edit.path, input:edit.input,
-                result:Err("Field is read-only in this storage format".into()) }));
-    }
-    if ops.is_empty() && !rejected.is_empty() {
-        return AppliedDeferredOps { status:Some("Field is read-only in this storage format".into()),
-            outcomes:rejected, model_variants_changed:false };
-    }
     // An edit that sets a field to the value it already holds changes
     // nothing: taken as an edit, it marked the tag modified, took an undo step
     // and cleared the redo history. It still reports as applied, so the box
     // it came from settles.
-    let mut unchanged: Vec<FieldEditOutcome> = ops
+    let unchanged: Vec<FieldEditOutcome> = ops
         .pending
         .extract_if(.., |edit| edit_changes_nothing(&doc.tag, edit))
         .map(|edit| FieldEditOutcome {
@@ -123,7 +104,6 @@ pub(crate) fn apply_deferred_ops(
             result: Ok(()),
         })
         .collect();
-    unchanged.extend(rejected);
     if ops.is_empty() && !unchanged.is_empty() {
         return AppliedDeferredOps {
             status: None,
@@ -908,8 +888,13 @@ fn collect_block_index_edits(
     };
 
     for field in tag_struct.fields_all() {
+        let definition = field.definition();
         let declared_state = (!is_new_element)
-            .then(|| field.definition().block_index_target())
+            .then(|| {
+                definition
+                    .block_index_target()
+                    .or_else(|| definition.block_flags_target())
+            })
             .flatten()
             .and_then(|target| {
                 *declared.entry(target.name().to_owned()).or_insert_with(|| {
@@ -926,7 +911,8 @@ fn collect_block_index_edits(
             });
         if declared_state == Some(true) {
             let field_path = append_field_path_for(struct_path, &field);
-            if let Some(old) = field.value().as_ref().and_then(block_index_value)
+            let value = field.value();
+            if let Some(old) = value.as_ref().and_then(block_index_value)
                 && let Some(mapped) = remap.map(old)
             {
                 let new = mapped.map(|index| index as i64).unwrap_or(-1);
@@ -934,6 +920,14 @@ fn collect_block_index_edits(
                     edits.push(BlockIndexEdit {
                         path: field_path,
                         value: new,
+                    });
+                }
+            } else if let Some((old, bits)) = value.as_ref().and_then(block_flags_value) {
+                let new = remap_block_flags(old, bits, remap);
+                if new != old {
+                    edits.push(BlockIndexEdit {
+                        path: field_path,
+                        value: new as i64,
                     });
                 }
             }
@@ -968,6 +962,32 @@ fn collect_block_index_edits(
             collect_block_index_edits(&nested, &field_path, root, target_path, remap, edits);
         }
     }
+}
+
+/// A block-flags value's mask and bit width.
+fn block_flags_value(value: &TagFieldData) -> Option<(u32, u32)> {
+    match value {
+        TagFieldData::ByteBlockFlags(v) => Some((*v as u32, 8)),
+        TagFieldData::WordBlockFlags(v) => Some((*v as u32, 16)),
+        TagFieldData::LongBlockFlags(v) => Some((*v as u32, 32)),
+        _ => None,
+    }
+}
+
+/// Bit `n` of a block-flags field stands for element `n`, so each set bit
+/// follows its element: it moves where the element moves and is cleared when
+/// the element is removed. A bit past the old block's end stands for no
+/// element and stays where it is; one carried past the field's width is lost,
+/// as there is no bit left to hold it.
+fn remap_block_flags(mask: u32, bits: u32, remap: &BlockElementRemap) -> u32 {
+    (0..bits)
+        .filter(|bit| mask & (1 << bit) != 0)
+        .filter_map(|bit| match remap.map(bit as i64) {
+            Some(Some(new)) => u32::try_from(new).ok().filter(|new| *new < bits),
+            Some(None) => None,
+            None => Some(bit),
+        })
+        .fold(0, |mask, bit| mask | (1 << bit))
 }
 
 fn path_is_within_target_element(
@@ -1466,6 +1486,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(test_indices(&tag), [0, -1, 1]);
+    }
+
+    fn set_test_flags(tag: &mut TagFile, mask: u32) {
+        for name in ["byte block flags", "word block flags", "dword block flags"] {
+            apply_field_edit(tag, name, &mask.to_string()).unwrap();
+        }
+    }
+
+    fn test_flags(tag: &TagFile) -> [i128; 3] {
+        let root = tag.root();
+        ["byte block flags", "word block flags", "dword block flags"]
+            .map(|name| root.read_int_any(name).unwrap())
+    }
+
+    /// Bit `n` of a block-flags field is element `n`, so the bits follow the
+    /// elements through every structural edit, as block indices do.
+    #[test]
+    fn block_flags_follow_their_elements() {
+        let mut tag = test_tag();
+        add_basic_elements(&mut tag, 4);
+        let op = |tag: &mut TagFile, kind| {
+            apply_one_block_op(tag, &BlockOp { path: "basic block".to_owned(), kind }).unwrap();
+        };
+
+        // Elements 0 and 2 set.
+        set_test_flags(&mut tag, 0b0101);
+        op(&mut tag, BlockOpKind::Insert(1));
+        assert_eq!(test_flags(&tag), [0b1001; 3], "an insert shifts the later bits up");
+        op(&mut tag, BlockOpKind::Delete(1));
+        assert_eq!(test_flags(&tag), [0b0101; 3], "deleting the new element restores them");
+        op(&mut tag, BlockOpKind::Delete(0));
+        assert_eq!(test_flags(&tag), [0b0010; 3], "a deleted element's bit is cleared, later bits shift down");
+        op(&mut tag, BlockOpKind::Duplicate(0));
+        assert_eq!(test_flags(&tag), [0b0100; 3], "a duplicate is not flagged, later bits shift up");
+        op(&mut tag, BlockOpKind::Reorder { order: vec![2, 0, 1, 3] });
+        assert_eq!(test_flags(&tag), [0b0001; 3], "a reorder carries each bit with its element");
+        op(&mut tag, BlockOpKind::DeleteAll);
+        assert_eq!(test_flags(&tag), [0; 3], "deleting every element clears every bit");
+    }
+
+    /// Bits past the block's end stand for no element: they stay put, and a
+    /// bit pushed past the field's width is dropped rather than wrapped.
+    #[test]
+    fn block_flags_past_the_block_or_the_width() {
+        let mut tag = test_tag();
+        add_basic_elements(&mut tag, 8);
+        // Element 7 set, plus (where the field is wide enough) bit 9, which no
+        // element has.
+        apply_field_edit(&mut tag, "byte block flags", &(1 << 7).to_string()).unwrap();
+        for name in ["word block flags", "dword block flags"] {
+            apply_field_edit(&mut tag, name, &((1 << 7) | (1 << 9)).to_string()).unwrap();
+        }
+        apply_one_block_op(
+            &mut tag,
+            &BlockOp { path: "basic block".to_owned(), kind: BlockOpKind::Insert(0) },
+        )
+        .unwrap();
+        let [byte, word, dword] = test_flags(&tag);
+        assert_eq!(byte, 0, "element 7 moved to bit 8, past an 8-bit field");
+        assert_eq!(word, (1 << 8) | (1 << 9));
+        assert_eq!(dword, (1 << 8) | (1 << 9));
     }
 
     #[test]
