@@ -7,7 +7,7 @@
 //! glyphs drawn as boxes. What is read and written, and how text is shown, is
 //! the engine's (`blam_tags::string_list`); this module is the table.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -22,6 +22,7 @@ use crate::app::search::{StringFindContext, FindOccurrence, FindMatchingCells, s
 use egui_extras::{Column, TableBuilder};
 
 use super::*;
+use super::string_list_layout::{self as display, Row as DisplayRow, Sort as StringSort};
 use super::string_row_clipboard::{self as row_clipboard, RowAction, RowRequest, RowData, PasteMode};
 
 /// Whether the tag pane shows the strings or the plain field tree.
@@ -37,6 +38,7 @@ pub(in crate::app) enum StringListTab {
 const COMPLETION_ROWS: usize = 12;
 const ROW_HEIGHT: f32 = 36.0;
 const HEADER_HEIGHT: f32 = 26.0;
+const GROUPED_ROWS_HELP: &str = "Choose Sheet in View to insert, cut, copy or paste whole strings. Text-field copy/paste remains available.";
 /// The gap the text leaves before a colour for its swatch.
 const SWATCH_SPACE: f32 = 16.0;
 const SWATCH_SIZE: f32 = 10.0;
@@ -52,11 +54,77 @@ struct StringListView {
     anchor: Option<usize>,
     /// Scroll this string into view on the next frame.
     scroll_to: Option<usize>,
+    /// Reveal a moved group header without changing its disclosure state.
+    scroll_group: Option<String>,
     can_scroll_up: bool,
     can_scroll_down: bool,
     focus_new: Option<usize>,
     completion: CompletionView,
     wrapped_rows: Option<Arc<WrappedRows>>,
+    document: Option<u64>,
+    history_epoch: u64,
+    grouped: Option<bool>,
+    collect_ungrouped: bool,
+    sort: StringSort,
+    descending: bool,
+    expanded: BTreeSet<String>,
+    scroll_edge: Option<bool>,
+    table_layout: Option<Arc<TableLayout>>,
+    /// Generated group additions stay below sorted members until renamed.
+    new_group_ids: Vec<String>,
+    group_rename: Option<GroupRename>,
+    id_column_width: f32,
+}
+
+#[derive(Clone)]
+struct GroupRename {
+    prefix: String,
+    text: String,
+    /// Only tag contents can invalidate the draft; index/render epochs cannot.
+    content_stamp: (u64, u64),
+    focus: bool,
+    error: Option<String>,
+    pending_merge: Option<String>,
+}
+
+#[derive(Clone)]
+struct GroupMenuTarget {
+    prefix: String,
+    indices: BTreeSet<usize>,
+    below: usize,
+    revision: (u64, u64, u64, u64),
+}
+
+struct TableLayout {
+    revision: (u64, u64, u64, u64),
+    visible: Arc<Vec<usize>>,
+    grouped: bool,
+    collect_ungrouped: bool,
+    sort: StringSort,
+    descending: bool,
+    expanded: BTreeSet<String>,
+    editable: bool,
+    new_group_ids: Vec<String>,
+    rows: Arc<display::Layout>,
+}
+
+fn table_layout(cache: &ListCache, view: &mut StringListView, editable: bool) -> Arc<display::Layout> {
+    let grouped = view.grouped == Some(true);
+    view.new_group_ids.retain(|id| cache.list.entries.iter().any(|entry| entry.id.as_ref() == Some(id)));
+    if let Some(layout) = &view.table_layout
+        && layout.revision == cache.revision && Arc::ptr_eq(&layout.visible, &cache.visible)
+        && layout.grouped == grouped && layout.collect_ungrouped == view.collect_ungrouped && layout.sort == view.sort && layout.descending == view.descending
+        && layout.expanded == view.expanded && layout.editable == editable
+        && layout.new_group_ids == view.new_group_ids {
+        return layout.rows.clone();
+    }
+    let mut rows = display::layout_with_ungrouped(&cache.list, &cache.visible, grouped, view.sort,
+        view.descending, &view.expanded, cache.filter_key.is_some(), editable, view.collect_ungrouped);
+    if view.sort == StringSort::StringId { rows.place_new_group_entries_last(&cache.list, &view.new_group_ids); }
+    let rows = Arc::new(rows);
+    view.table_layout = Some(Arc::new(TableLayout { revision: cache.revision, visible: cache.visible.clone(),
+        grouped, collect_ungrouped:view.collect_ungrouped, sort: view.sort, descending: view.descending, expanded: view.expanded.clone(), editable, new_group_ids: view.new_group_ids.clone(), rows: rows.clone() }));
+    rows
 }
 
 #[derive(Clone, PartialEq)]
@@ -74,10 +142,19 @@ struct WrappedRows {
     heights: Vec<f32>,
 }
 
+struct StringDrop {
+    indices: BTreeSet<usize>,
+    before: usize,
+    whole_group: bool,
+    copy: bool,
+    target_group: Option<usize>,
+}
+
 #[derive(Clone)]
 struct StringRowDrag {
     table: egui::Id,
     indices: BTreeSet<usize>,
+    whole_group: bool,
 }
 
 #[derive(Clone)]
@@ -94,6 +171,16 @@ pub(in crate::app) fn select_pasted_rows(ctx: &egui::Context, scope: &str, key: 
     view.scroll_to = view.anchor;
     view.completion.close();
     ctx.data_mut(|data| data.insert_temp(id, view));
+}
+
+/// Notify every pane showing this document that row indices were restored by
+/// history. Presentation choices remain pane-local and survive the step.
+pub(in crate::app) fn clear_selection_after_history(ctx: &egui::Context, document: u64) {
+    let id=egui::Id::new(("string list history epoch",document));
+    ctx.data_mut(|data| {
+        let epoch=data.get_temp::<u64>(id).unwrap_or_default().wrapping_add(1);
+        data.insert_temp(id,epoch);
+    });
 }
 
 #[derive(Clone)]
@@ -191,6 +278,29 @@ pub(super) fn draw_string_list_tag(
 ) -> bool {
     let view_id = edit.widget_id("string list view");
     let mut view: StringListView = ui.data_mut(|data| data.get_temp(view_id)).unwrap_or_default();
+    if view.document != Some(document_revision.0) {
+        // Reload/discard replaces the document, not its still-open pane.
+        // Keep presentation choices, but forget indices and drafts tied to
+        // the old contents. Closing/reopening gets a new tile scope instead.
+        view = StringListView {
+            tab: view.tab, language: view.language, document: Some(document_revision.0),
+            grouped: view.grouped, collect_ungrouped: view.collect_ungrouped,
+            sort: view.sort, descending: view.descending,
+            expanded: view.expanded, id_column_width: view.id_column_width,
+            ..Default::default()
+        };
+    }
+    let history_epoch=ui.data(|data|data.get_temp::<u64>(egui::Id::new((
+        "string list history epoch",document_revision.0)))).unwrap_or_default();
+    if view.history_epoch != history_epoch {
+        view.history_epoch=history_epoch;
+        view.selected.clear();
+        view.anchor=None;
+        view.scroll_to=None;
+        view.scroll_group=None;
+        view.focus_new=None;
+        view.completion.close();
+    }
     let jump_id = string_find_jump_id(edit.view_scope, edit.tag_key);
     let jump = ui.data_mut(|data| {
         let jump = data.get_temp::<FindOccurrence>(jump_id);
@@ -227,7 +337,12 @@ pub(super) fn draw_string_list_tag(
     let drew = view.tab == StringListTab::Strings;
     if drew {
         match cached_list(ui, edit, tag, document_revision, &mut view) {
-            Some(cache) => draw_strings(ui, &cache, game, expert_mode, edit, &mut view),
+            Some(cache) => {
+                if view.grouped.is_none() {
+                    view.grouped = Some(cache.list.storage == Storage::Multilingual && fields::string_editors::is_hud_message_list(edit));
+                }
+                draw_strings(ui, &cache, game, expert_mode, edit, &mut view);
+            },
             None => {
                 ui.label(RichText::new("This tag's strings could not be read.").color(subtle_dark()));
             }
@@ -302,6 +417,11 @@ fn string_find_snapshot(ui: &Ui, scope: &str, key: &str) -> Option<Arc<FindRende
 #[derive(Default)]
 struct ToolbarActions {
     add: bool,
+    group_add: Option<(String, usize)>,
+    group_duplicate: Option<(String, usize)>,
+    group_rename: Option<(String, String)>,
+    approve_group_merge: bool,
+    cancel_group_rename: bool,
     insert: bool,
     insert_below: bool,
     duplicate: bool,
@@ -359,6 +479,10 @@ fn draw_strings_frame(
     let structural = editable && !(list.storage == Storage::HudMessages && edit.hud_message_usage.locked(expert_mode));
     view.selected.retain(|&index| index < list.entries.len());
     let mut actions = ToolbarActions::default();
+    if view.group_rename.as_ref().is_some_and(|rename|rename.content_stamp != (cache.revision.0,cache.revision.1)) {
+        view.group_rename = None;
+        set_status(edit,"The string list changed. Open Rename Group again to use its current strings.".into());
+    }
 
     let header_background = ui.painter().add(egui::Shape::Noop);
     let header = egui::Frame::NONE
@@ -379,26 +503,67 @@ fn draw_strings_frame(
                 }).response.on_hover_text("Language");
             }
             icon_text_dropdown_button(ui, ButtonIcon::View, "View", |ui| {
-                ui.checkbox(&mut edit.string_list_checkboxes, "Show Selection Checkboxes");
-                ui.checkbox(&mut edit.string_list_wrap_text, "Wrap Text");
+                ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                    if ui.add_enabled_ui(view.group_rename.is_none(), |ui|
+                        selectable_icon_text_button(ui, ButtonIcon::TableView, "Sheet", view.grouped != Some(true)))
+                        .inner.on_disabled_hover_text("Finish or cancel the group rename before switching views.").clicked() {
+                        view.grouped = Some(false);
+                    }
+                    if ui.add_enabled_ui(list.storage == Storage::Multilingual, |ui|
+                        selectable_icon_text_button(ui, ButtonIcon::Group, "Group", view.grouped == Some(true)))
+                        .inner.on_disabled_hover_text("Group view requires a string list with String IDs.")
+                        .on_hover_text("Group strings by their shared prefix before the first underscore.").clicked() {
+                        view.grouped = Some(true);
+                    }
+                });
+                ui.separator();
+                ui.baboon_checkbox(&mut edit.string_list_checkboxes, "Show Selection Checkboxes");
+                ui.baboon_checkbox(&mut edit.string_list_wrap_text, "Wrap Text");
+                ui.add_enabled_ui(view.grouped == Some(true), |ui| {
+                    ui.baboon_checkbox(&mut view.collect_ungrouped,"Group Ungrouped Strings")
+                        .on_hover_text("Collect strings without a shared prefix in Ungrouped Strings. Their String IDs stay unchanged.");
+                });
+
+                if view.grouped == Some(true) {
+                    ui.separator();
+                    if ui.button("Expand All").clicked() {
+                        if view.collect_ungrouped {view.expanded.insert(String::new());}
+                        for group in super::string_groups::group_string_ids(list.entries.iter().map(|entry| entry.id.as_deref().unwrap_or_default())) {
+                            if let super::string_groups::StringIdGroup::Prefix { prefix, .. } = group { view.expanded.insert(prefix); }
+                        }
+                    }
+                    if ui.button("Collapse All").clicked() { view.expanded.clear(); }
+                }
+            });
+            icon_text_dropdown_button(ui, ButtonIcon::Sort, "Sort", |ui| {
+                ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                    ui.label("Sort by");
+                    if selectable_text_button(ui, "Index", view.sort == StringSort::Index).clicked() { view.sort = StringSort::Index; }
+                    if list.storage == Storage::Multilingual && selectable_text_button(ui, "String ID", view.sort == StringSort::StringId).clicked() {
+                        view.sort = StringSort::StringId;
+                    }
+                    ui.separator();
+                    if selectable_text_button(ui, "Ascending", !view.descending).clicked() { view.descending = false; }
+                    if selectable_text_button(ui, "Descending", view.descending).clicked() { view.descending = true; }
+                });
             });
             ui.add_space(12.0);
             let any = !view.selected.is_empty();
-            ui.add_enabled_ui(structural && any, |ui| {
+            ui.add_enabled_ui(structural && any && view.grouped != Some(true), |ui| {
                 icon_text_dropdown_button(ui, ButtonIcon::InsertRow, "Insert", |ui| {
                     let clipboard = row_clipboard::clipboard(ui.ctx(), list, view.language, &syntax);
                     insert_menu(ui, view.selected.len(), editable, clipboard.as_ref(), &mut actions);
                 });
-            });
+            }).response.on_hover_text(if view.grouped == Some(true) { GROUPED_ROWS_HELP } else { "Insert strings" });
             actions.duplicate =
                 icon_text_button(ui, ButtonIcon::Duplicate, "Duplicate", structural && any)
-                    .clicked();
+                    .on_disabled_hover_text("Select strings to duplicate.").clicked();
             actions.remove =
                 icon_text_button(ui, ButtonIcon::Garbage, "Delete", structural && any).clicked();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let any = !cache.visible.is_empty();
                 if icon_text_button(ui, ButtonIcon::JumpUp, "Scroll to Top", any && view.can_scroll_up).clicked() {
-                    view.scroll_to = cache.visible.first().copied();
+                    view.scroll_edge = Some(false);
                 }
             });
         });
@@ -458,7 +623,7 @@ fn draw_strings_frame(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     if icon_text_button(ui, ButtonIcon::JumpDown, "Scroll to Bottom", shown > 0 && view.can_scroll_down).clicked() {
-                        view.scroll_to = cache.visible.last().copied();
+                        view.scroll_edge = Some(true);
                     }
                 });
             });
@@ -480,7 +645,7 @@ fn draw_strings_frame(
         }
     }
     let active_table = edit.string_list_has_focus && ui.data(|data| data.get_temp::<StringTableFocus>(focus_id)).is_some_and(|focus| focus.pane == pane);
-    if active_table && ui.memory(|memory| memory.focused().is_none()) {
+    if active_table && view.group_rename.is_none() && ui.memory(|memory| memory.focused().is_none()) {
         if ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
             view.selected.extend(cache.visible.iter().copied());
             view.anchor = cache.visible.first().copied();
@@ -493,9 +658,9 @@ fn draw_strings_frame(
         let events = ui.input(|input| input.events.clone());
             for event in &events {
                 match event {
-                    egui::Event::Copy => actions.copy = !view.selected.is_empty(),
-                    egui::Event::Cut if structural => actions.cut = !view.selected.is_empty(),
-                    egui::Event::Paste(text) if editable => {
+                    egui::Event::Copy if view.grouped != Some(true) => actions.copy = !view.selected.is_empty(),
+                    egui::Event::Cut if structural && view.grouped != Some(true) => actions.cut = !view.selected.is_empty(),
+                    egui::Event::Paste(text) if editable && view.grouped != Some(true) => {
                         if let Some(data) = row_clipboard::clipboard(ui.ctx(), list, view.language, &syntax)
                             .or_else(|| row_clipboard::external(text, list, view.language, &syntax).ok()) {
                             actions.paste = Some((PasteMode::Overwrite, data));
@@ -508,7 +673,11 @@ fn draw_strings_frame(
                 }
             }
     }
+    draw_group_merge(ui, edit, view, &mut actions);
     apply_actions(ui, list, &syntax, expert_mode, edit, view, actions);
+    if view.scroll_group.is_none() && let Some(index) = edit.string_list_ops.iter().rev().find_map(|op| match op.edit {
+        StringListEdit::SetId { index, .. } => Some(index), _ => None,
+    }) { view.scroll_to = Some(index); }
 }
 
 /// Draw the table; returns the rect it took.
@@ -521,46 +690,77 @@ fn draw_table(
     view: &mut StringListView,
     actions: &mut ToolbarActions,
 ) -> egui::Rect {
+    if view.grouped == Some(true) {
+        return egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui|
+            draw_table_contents(ui, cache, syntax, editable, edit, view, actions)).inner;
+    }
+    draw_table_contents(ui, cache, syntax, editable, edit, view, actions)
+}
+
+fn draw_table_contents(
+    ui: &mut Ui, cache: &ListCache, syntax: &TextSyntax, editable: bool,
+    edit: &mut FieldEditContext<'_>, view: &mut StringListView, actions: &mut ToolbarActions,
+) -> egui::Rect {
     let list = &cache.list;
-    let visible = cache.visible.clone();
+    let structural = editable && !(list.storage == Storage::HudMessages && edit.hud_message_usage.locked(edit.expert_mode));
+    if let Some(index) = view.scroll_to {
+        if let Some(prefix) = display::prefix_for(list, index) { view.expanded.insert(prefix); }
+        else if view.collect_ungrouped { view.expanded.insert(String::new()); }
+    }
+    if let Some(rename) = &view.group_rename && rename.focus { view.scroll_group=Some(rename.prefix.clone()); }
+    let layout = table_layout(cache, view, editable);
+    let visible = &layout.entries;
     let multilingual = list.storage.has_ids();
     let language = view.language;
-    let scroll_to = view.scroll_to.take().and_then(|index| visible.iter().position(|&shown| shown == index));
+    let mut scroll_to = view.scroll_to.take().and_then(|index| layout.target_row(index));
+    if let Some(prefix) = view.scroll_group.take() {
+        scroll_to = layout.rows.iter().position(|row| match row {
+            DisplayRow::Group(group) => layout.groups[*group].prefix == prefix,
+            _ => false,
+        });
+    }
+    if let Some(bottom) = view.scroll_edge.take() {
+        scroll_to = if bottom { layout.rows.len().checked_sub(1) } else { Some(0) };
+    }
     let height = (ui.available_height() - HEADER_HEIGHT).max(0.0);
     let top = ui.cursor().min;
     let mut clicked: Option<(usize, egui::Modifiers)> = None;
     let table_id = edit.widget_id("string list table");
+    let grouped = view.grouped == Some(true);
+    let mut id_header_rect = None;
     let painter = ui.painter().clone();
     let ctx = ui.ctx().clone();
-    let drop_stroke = Stroke::new(2.0, ui.visuals().selection.stroke.color);
     let separator_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
     let column_spacing = ui.spacing().item_spacing.x;
     let mut controls_edge = None;
+    let mut checkbox_center_x = None;
     let mut add_row_rect = None;
     let mut header_bottom = top.y;
     let mut drop_move = None;
     let checkboxes = edit.string_list_checkboxes;
     let wrap = edit.string_list_wrap_text;
-    let structural = editable && !(list.storage == Storage::HudMessages && edit.hud_message_usage.locked(edit.expert_mode));
-    let reorder = structural && cache.filter_key.is_none();
+    let handles = view.sort == StringSort::Index;
+    let reorder = structural && cache.filter_key.is_none() && handles && view.group_rename.is_none();
     let index_label_width = ui.painter().layout_no_wrap("Index".to_owned(), TextStyle::Body.resolve(ui.style()), text_dark()).size().x;
     let index_value_width = ui.painter().layout_no_wrap(list.entries.len().saturating_sub(1).to_string(), TextStyle::Monospace.resolve(ui.style()), text_dark()).size().x;
     let index_width = index_label_width.max(index_value_width).ceil() + 16.0;
     let mut table = TableBuilder::new(ui)
         .id_salt(table_id)
         .striped(true)
-        .resizable(true)
+        .resizable(!grouped)
         .sense(Sense::click())
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .max_scroll_height(height)
-        .min_scrolled_height(0.0)
-        .column(Column::exact(28.0).resizable(false))
-        .column(Column::exact(index_width).resizable(false));
+        .min_scrolled_height(0.0);
+    if handles { table = table.column(Column::exact(28.0).resizable(false)); }
+    table = table.column(Column::exact(index_width).resizable(false));
     if checkboxes {
         table = table.column(Column::exact(38.0).resizable(false));
     }
     if multilingual {
-        table = table.column(Column::initial(260.0).at_least(100.0).clip(true));
+        table = table.column(if grouped {
+            Column::exact(if view.id_column_width > 0.0 { view.id_column_width } else { 260.0 }).clip(true)
+        } else { Column::initial(260.0).at_least(100.0).clip(true) });
     }
     table = table.column(Column::remainder().at_least(160.0).clip(true));
     if let Some(row) = scroll_to {
@@ -568,7 +768,7 @@ fn draw_table(
     }
     let scroll = table
         .header(HEADER_HEIGHT, |mut header| {
-            header.col(|_| {});
+            if handles { header.col(|_| {}); }
             header.col(|ui| {
                 controls_edge = Some(ui.max_rect().right() + column_spacing * 0.5);
                 padded_index_cell(ui, |ui| {
@@ -579,21 +779,24 @@ fn draw_table(
                 header.col(|ui| {
                 controls_edge = Some(ui.max_rect().right() + column_spacing * 0.5);
                 padded_table_cell(ui, |ui| {
-                let any = visible.iter().any(|index| view.selected.contains(index));
-                let mut all = !visible.is_empty() && visible.iter().all(|index| view.selected.contains(index));
+                let centre = ui.max_rect().center().x;
+                checkbox_center_x = Some(centre);
+                let any = cache.visible.iter().any(|index| view.selected.contains(index));
+                let mut all = !cache.visible.is_empty() && cache.visible.iter().all(|index| view.selected.contains(index));
                 let partial = any && !all;
-                if ui.add_enabled(!visible.is_empty(), egui::Checkbox::without_text(&mut all).indeterminate(partial))
+                if ui.add_enabled(!cache.visible.is_empty(), ThemedCheckbox::without_text(&mut all).indeterminate(partial).icon_center_x(centre))
                     .on_hover_text("Select or deselect all visible strings").changed() {
-                    if all { view.selected.extend(visible.iter().copied()); }
-                    else { view.selected.retain(|index| !visible.contains(index)); }
+                    if all { view.selected.extend(cache.visible.iter().copied()); }
+                    else { view.selected.retain(|index| !cache.visible.contains(index)); }
                 }
                 });
                 });
             }
             if multilingual {
-                header.col(|ui| padded_table_cell(ui, |ui| {
-                    ui.strong(list.storage.identity_label());
-                }));
+                header.col(|ui| {
+                    id_header_rect = Some(ui.max_rect());
+                    padded_table_cell(ui, |ui| { ui.strong(list.storage.identity_label()); });
+                });
             }
             header.col(|ui| padded_table_cell(ui, |ui| {
                 header_bottom = ui.max_rect().bottom() + column_spacing * 0.5;
@@ -605,19 +808,45 @@ fn draw_table(
             }));
         })
         .body(|mut body| {
+            // Group contents meet edge-to-edge. Table row spacing otherwise
+            // leaves a seam below the header and extends stripes beyond the
+            // group's bottom outline by half the spacing.
+            if view.grouped == Some(true) { body.ui_mut().spacing_mut().item_spacing.y = 0.0; }
             // Row overlays share the scrolling body's clip, so they cannot
             // cover the fixed header or footer as rows move past the edges.
+            let table_bounds = body.ui_mut().max_rect();
+            if view.grouped == Some(true) {
+                // Table stripes and selection expand into cell spacing. The
+                // grouped table's inset outline is their outer paint boundary.
+                let mut clip = body.ui_mut().clip_rect();
+                clip.min.x = clip.min.x.max(table_bounds.left());
+                clip.max.x = clip.max.x.min(table_bounds.right());
+                body.ui_mut().shrink_clip_rect(clip);
+            }
             let mut body_clip = body.ui_mut().clip_rect();
             body_clip.min.y = body_clip.min.y.max(header_bottom + 1.0);
             let row_painter = body.ui_mut().painter().with_clip_rect(body_clip);
+            let row_spacing = body.ui_mut().spacing().item_spacing.y;
+            let table_background = body.ui_mut().visuals().panel_fill;
+            let selection_fill = body.ui_mut().visuals().selection.bg_fill;
+            // egui paints this over the stripe. Only the row overlay is dimmed;
+            // string_table_column restores the full fill for editable controls.
+            body.ui_mut().visuals_mut().selection.bg_fill = selection_fill.gamma_multiply(0.5);
             let heights = if wrap {
                 let layout = WrapLayout {
                     revision: cache.revision, language, widths: body.widths().to_vec(),
                     font: TextStyle::Monospace.resolve(body.ui_mut().style()),
                     pixels_per_point: ctx.pixels_per_point(),
                 };
-                if view.wrapped_rows.as_ref().is_none_or(|rows| rows.layout != layout) {
-                    let first = 2 + usize::from(checkboxes);
+                // During a width drag, visible cells already report their
+                // current wrapped heights below. Avoid relaying out every
+                // off-screen string on every pointer event; finish once on release.
+                let defer_width_layout = ctx.input(|input|input.pointer.primary_down())
+                    && view.wrapped_rows.as_ref().is_some_and(|rows|
+                        rows.layout.revision == layout.revision && rows.layout.language == layout.language
+                        && rows.layout.font == layout.font && rows.layout.pixels_per_point == layout.pixels_per_point);
+                if view.wrapped_rows.as_ref().is_none_or(|rows| rows.layout != layout) && !defer_width_layout {
+                    let first = 1 + usize::from(handles) + usize::from(checkboxes);
                     let text_width = layout.widths[first + usize::from(multilingual)];
                     let ui = body.ui_mut();
                     let heights = list.entries.iter().map(|entry| {
@@ -636,52 +865,205 @@ fn draw_table(
                 }
                 Some(view.wrapped_rows.as_ref().unwrap().clone())
             } else { None };
+            // Space top-level sections apart, while keeping runs of ungrouped
+            // strings together and group contents flush with their header.
+            let row_insets: Vec<_> = layout.rows.iter().enumerate().map(|(index,row)| match row {
+                DisplayRow::Group(_) => 8.0,
+                DisplayRow::Entry {group:None,..} if grouped && (index==0 ||
+                    !matches!(layout.rows[index-1],DisplayRow::Entry {group:None,..})) => 8.0,
+                _ => 0.0,
+            }).collect();
+            let row_heights: Vec<_> = layout.rows.iter().zip(&row_insets).map(|(row,inset)| inset + match row {
+                DisplayRow::Group(_) => 40.0,
+                DisplayRow::Entry { index, .. } => heights.as_ref().map_or(ROW_HEIGHT, |rows| rows.heights[*index]),
+                _ => ROW_HEIGHT,
+            }).collect();
+            let mut row_offsets = vec![0.0];
+            for height in &row_heights { row_offsets.push(row_offsets.last().unwrap() + height + row_spacing); }
+            let mut rename_drawn = false;
             let mut height_changes = Vec::new();
+            let mut row_rects = BTreeMap::new();
+            let mut drop_indicator = None;
             let mut draw_row = |mut row: egui_extras::TableRow<'_, '_>| {
-                if row.index() == visible.len() {
-                    row.col(|_| {});
-                    row.col(|_| {});
-                    if checkboxes { row.col(|_| {}); }
-                    row.col(|ui| padded_table_cell(ui, |ui| {
-                        let width = if multilingual { ui.available_width() } else { ui.available_width().min(244.0) };
-                        let image = button_icon_image(ui, ButtonIcon::Add, text_dark(), BUTTON_ICON_SIZE);
-                        if ui.add_sized(Vec2::new(width, BUTTON_HEIGHT), egui::Button::image_and_text(image, "Add String")).clicked() {
-                            actions.add = true;
+                let display_index = row.index();
+                let shown = layout.rows[display_index];
+                if let DisplayRow::Group(group_index) = shown {
+                    let group = &layout.groups[group_index];
+                    let mut header_rect = egui::Rect::NOTHING;
+                    let selected = group.members.iter().all(|index| view.selected.contains(index));
+                    let header_fill = if selected { foundation_section_bar().blend(selection_fill.gamma_multiply(0.5)) } else { foundation_section_bar() };
+                    let header_text = foundation_block_text();
+                    let mut header_controls = Vec::new();
+                    let editing_group = view.group_rename.as_ref().is_some_and(|rename|rename.prefix == group.prefix);
+                    let mut title_clicked = false;
+                    let mut toggle_clicked = false;
+                    let mut selection_control_clicked = false;
+                    if handles {
+                        string_group_column(&mut row, &row_painter, &mut header_rect, header_fill, group.open, table_bounds, table_background, |ui| {
+                            if group.is_ungrouped() {return;}
+                            let handle = string_grabber(ui, reorder);
+                            header_controls.push(handle.clone());
+                            if reorder {
+                                if handle.drag_started() {
+                                    view.selected = layout.group_drag_indices(group_index,&view.selected);
+                                    view.anchor = group.members.first().copied();
+                                }
+                                handle.clone().on_hover_cursor(egui::CursorIcon::Grab)
+                                    .on_hover_text("Drag to reorder selected whole groups in every language; hold Ctrl to duplicate them")
+                                    .dnd_set_drag_payload(StringRowDrag { table: table_id,
+                                        indices: view.selected.clone(), whole_group: true });
+                            }
+                        });
+                    }
+                    string_group_column(&mut row, &row_painter, &mut header_rect, header_fill, group.open, table_bounds, table_background, |_| {});
+                    if checkboxes { string_group_column(&mut row, &row_painter, &mut header_rect, header_fill, group.open, table_bounds, table_background, |ui| padded_table_cell(ui, |ui| {
+                        let any = group.members.iter().any(|index| view.selected.contains(index));
+                        let mut all = group.members.iter().all(|index| view.selected.contains(index));
+                        let partial = any && !all;
+                        let checkbox = ui.add(ThemedCheckbox::without_text(&mut all).indeterminate(partial)
+                            .icon_center_x(checkbox_center_x.expect("selection header defines the column centre")));
+                        header_controls.push(checkbox.clone());
+                        selection_control_clicked=checkbox.clicked();
+                        if checkbox.changed() {
+                            if all { view.selected.extend(group.members.iter().copied()); }
+                            else { view.selected.retain(|index| !group.members.contains(index)); }
+                            view.anchor = group.members.first().copied();
+                        }
+                    })); }
+                    string_group_column(&mut row, &row_painter, &mut header_rect, header_fill, group.open, table_bounds, table_background, |ui| padded_table_cell(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let toggle = foundation_header_toggle_cell(ui, group.open, cache.filter_key.is_none());
+                        header_controls.push(toggle.clone());
+                        toggle_clicked = toggle.clicked();
+                        if cache.filter_key.is_none() && toggle_clicked {
+                            if !view.expanded.remove(&group.prefix) { view.expanded.insert(group.prefix.clone()); }
+                            ctx.request_repaint();
+                        }
+                        if editing_group {
+                            rename_drawn = true;
+                            let response = draw_group_rename(ui, group.indices.len(), edit,
+                                view.group_rename.as_mut().unwrap(), actions);
+                            header_controls.push(response);
+                        } else {
+                            let count = if cache.filter_key.is_some() { format!("{} / {}", group.members.len(), group.indices.len()) }
+                                else { group.indices.len().to_string() };
+                            let font = bold_font(12.5);
+                            let count_width = ui.painter().layout_no_wrap(count.clone(),font.clone(),header_text).size().x;
+                            // Match the count's inset inside the rename input.
+                            let count_x = ui.max_rect().right()-8.0;
+                            let label_width = (count_x-count_width-12.0-ui.cursor().left()).max(0.0);
+                            let label = ui.scope(|ui| {
+                                ui.set_max_width(label_width);
+                                ui.add(egui::Label::new(RichText::new(group.title())
+                                    .font(font.clone()).color(header_text)).truncate().sense(Sense::click()))
+                            }).inner;
+                            ui.painter().text(egui::pos2(count_x,label.rect.center().y),egui::Align2::RIGHT_CENTER,
+                                count,font,header_text.gamma_multiply(0.5));
+                            title_clicked = label.clicked();
+                            header_controls.push(label);
                         }
                     }));
-                    if multilingual { row.col(|_| {}); }
-                    add_row_rect = Some(row.response().rect);
-                    if row.response().clicked() { actions.add = true; }
-                    context_menu(&row.response(), |ui| {
+                    string_group_column(&mut row, &row_painter, &mut header_rect, header_fill, group.open, table_bounds, table_background, |ui| {
+                        if editing_group { padded_table_cell(ui, |ui| {
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.label(RichText::new("⚠").size(16.0).color(markup_warning_text()));
+                                ui.small("Changing String IDs does not update references in other tags.");
+                                if let Some(error) = view.group_rename.as_ref().and_then(|rename|rename.error.as_ref()) {
+                                    ui.colored_label(ui.visuals().error_fg_color,error);
+                                }
+                            });
+                        }); }
+                    });
+                    let mut response = row.response();
+                    for control in header_controls { response = response.union(control); }
+                    response.rect = header_rect;
+                    row_rects.insert(display_index, header_rect);
+                    let modifiers=ctx.input(|input|input.modifiers);
+                    if (!checkboxes || modifiers.ctrl || modifiers.command || modifiers.shift)
+                        && !toggle_clicked && !selection_control_clicked && (title_clicked || response.clicked()) {
+                        select_group(view,&layout,group_index,modifiers);
+                        ctx.request_repaint();
+                    }
+                    if response.secondary_clicked() && !editing_group && !group.is_ungrouped() {
+                        view.selected = group.indices.iter().copied().collect();
+                        view.anchor = group.indices.iter().min().copied();
+                        // Resolve boundaries against all sections, even during Find filtering.
+                        let full = display::layout(list,&(0..list.entries.len()).collect::<Vec<_>>(),true,
+                            view.sort,view.descending,&view.expanded,false,editable);
+                        let owner = full.groups.iter().position(|g|g.prefix==group.prefix).unwrap();
+                        ctx.data_mut(|data|data.insert_temp(response.id.with("group menu target"),GroupMenuTarget {
+                            prefix:group.prefix.clone(),indices:view.selected.clone(),
+                            below:full.drop_before(DisplayRow::Group(owner),true,view.descending,true,list.entries.len()),
+                            revision:cache.revision,
+                        }));
+                    }
+                    if !editing_group && !group.is_ungrouped() { context_menu(&response, |ui| {
+                        if let Some(target) = ui.data(|data|data.get_temp::<GroupMenuTarget>(response.id.with("group menu target"))) {
+                            draw_group_menu(ui,cache,&target,&syntax,editable,edit,view,actions);
+                        }
+                    }); }
+                    if reorder && let Some(drop) = string_drop_target(&ctx, &response,
+                        &layout, shown, view.descending, table_id, list.entries.len(), display_index, &mut drop_indicator) { drop_move = Some(drop); }
+                    return;
+                }
+                if matches!(shown, DisplayRow::Add | DisplayRow::AddGroup(_)) {
+                    row.set_hovered(false);
+                    let mut current_rect = egui::Rect::NOTHING;
+                    if handles { string_table_column(&mut row, &mut current_rect, selection_fill, |_| {}); }
+                    string_table_column(&mut row, &mut current_rect, selection_fill, |_| {});
+                    if checkboxes { string_table_column(&mut row, &mut current_rect, selection_fill, |_| {}); }
+                    let mut add = false;
+                    string_table_column(&mut row, &mut current_rect, selection_fill, |ui| padded_table_cell(ui, |ui| {
+                        let width = if multilingual { ui.available_width() } else { ui.available_width().min(244.0) };
+                        let image = button_icon_image(ui, ButtonIcon::Add, text_dark(), BUTTON_ICON_SIZE);
+                        add |= ui.add_sized(Vec2::new(width, BUTTON_HEIGHT), egui::Button::image_and_text(image, "Add String").right_text("")).clicked();
+                    }));
+                    if multilingual { string_table_column(&mut row, &mut current_rect, selection_fill, |_| {}); }
+                    let mut response = row.response();
+                    response.rect = current_rect;
+                    row_rects.insert(display_index, current_rect);
+                    if shown == DisplayRow::Add { add_row_rect = Some(response.rect); }
+                    if add {
+                        if let DisplayRow::AddGroup(group) = shown {
+                            let group = &layout.groups[group];
+                            actions.group_add = Some((group.prefix.clone(), display::insertion_index(group,
+                                view.sort, view.descending, list.entries.len())));
+                        } else { actions.add = true; }
+                    }
+                    if reorder && let Some(drop) = string_drop_target(&ctx, &response,
+                        &layout, shown, view.descending, table_id, list.entries.len(), display_index, &mut drop_indicator) { drop_move = Some(drop); }
+                    context_menu(&response, |ui| {
                         let clipboard = row_clipboard::clipboard(ui.ctx(), list, language, syntax);
-                        row_actions_menu(ui, view.selected.len(), editable, structural, false, clipboard.as_ref(), actions);
+                        row_actions_menu(ui, view.selected.len(), editable, structural, false, view.grouped == Some(true), clipboard.as_ref(), actions);
                     });
                     return;
                 }
-                let index = visible[row.index()];
+                let mut current_rect = egui::Rect::NOTHING;
+                let DisplayRow::Entry { index, group } = shown else { unreachable!() };
                 let entry = &list.entries[index];
                 let mut controls = Vec::new();
                 let row_reorder = reorder && (!checkboxes || view.selected.contains(&index));
                 row.set_selected(view.selected.contains(&index));
-                row.col(|ui| {
-                    let mut rect = ui.available_rect_before_wrap();
-                    rect.min.x += 8.0;
-                    rect.max.x -= 2.0;
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                    let (rect, handle) = ui.allocate_exact_size(Vec2::new(18.0, 30.0), if row_reorder { Sense::click_and_drag() } else { Sense::click() });
+                if handles { string_entry_column(&mut row, &mut current_rect, selection_fill, row_insets[display_index], &row_painter, table_background, |ui| {
+                    if list.storage == Storage::HudMessages && !structural {
+                        ui.allocate_exact_size(Vec2::new(18.0,30.0),Sense::hover()).1
+                            .on_hover_text(super::hud_messages::EXPERT_REQUIRED);
+                        return;
+                    }
+                    let handle = string_grabber(ui, row_reorder);
                     controls.push(handle.clone());
                     if !checkboxes && handle.clicked() { clicked = Some((index, ui.input(|input| input.modifiers))); }
                     if row_reorder {
-                        let handle = handle.on_hover_text("Drag to reorder string in every language").on_hover_cursor(egui::CursorIcon::Grab);
+                        let handle = handle.on_hover_text(if group.is_some() {
+                            "Drag to reorder or move into another prefix group; hold Ctrl to copy. Moving between groups changes String IDs."
+                        } else { "Drag to reorder string in every language; hold Ctrl to duplicate" }).on_hover_cursor(egui::CursorIcon::Grab);
                         if handle.drag_started() {
                             select_context_row(view, index);
+                            view.anchor = Some(index);
                         }
-                        handle.dnd_set_drag_payload(StringRowDrag { table: table_id, indices: view.selected.clone() });
+                        handle.dnd_set_drag_payload(StringRowDrag { table: table_id, indices: view.selected.clone(), whole_group: false });
                         if handle.dragged() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                            egui::Tooltip::for_widget(&handle).at_pointer().show(|ui| {
-                                ui.label(format!("Move {} strings", view.selected.len()));
-                            });
                         }
                     } else if list.storage == Storage::HudMessages && !structural {
                         handle.on_hover_text(super::hud_messages::EXPERT_REQUIRED);
@@ -690,25 +1072,18 @@ fn draw_table(
                     } else if cache.filter_key.is_some() {
                         handle.on_hover_text("Show the full list to reorder strings");
                     }
-                    if list.storage != Storage::HudMessages || structural {
-                    for x in [-2.5, 2.5] {
-                        for y in [-6.0, 0.0, 6.0] {
-                            ui.painter().circle_filled(rect.center() + Vec2::new(x, y), 1.2, subtle_dark());
-                        }
-                    }
-                    }
-                    });
-                });
-                row.col(|ui| padded_index_cell(ui, |ui| {
+                }); }
+                string_entry_column(&mut row, &mut current_rect, selection_fill, row_insets[display_index], &row_painter, table_background, |ui| padded_index_cell(ui, |ui| {
                     let response = ui.add(egui::Label::new(RichText::new(index.to_string()).monospace()).sense(Sense::click()));
                     controls.push(response.clone());
                     if !checkboxes && response.clicked() {
                         clicked = Some((index, ui.input(|input| input.modifiers)));
                     }
                 }));
-                if checkboxes { row.col(|ui| padded_table_cell(ui, |ui| {
+                if checkboxes { string_entry_column(&mut row, &mut current_rect, selection_fill, row_insets[display_index], &row_painter, table_background, |ui| padded_table_cell(ui, |ui| {
                     let mut selected = view.selected.contains(&index);
-                    let response = ui.checkbox(&mut selected, "");
+                    let response = ui.add(ThemedCheckbox::without_text(&mut selected)
+                        .icon_center_x(checkbox_center_x.expect("selection header defines the column centre")));
                     controls.push(response.clone());
                     if response.changed() {
                         if selected { view.selected.insert(index); }
@@ -718,14 +1093,14 @@ fn draw_table(
                 })); }
                 let mut text_cells = Vec::new();
                 if multilingual {
-                    row.col(|ui| padded_table_cell(ui, |ui| {
+                    string_entry_column(&mut row, &mut current_rect, selection_fill, row_insets[display_index], &row_painter, table_background, |ui| padded_table_cell(ui, |ui| {
                         let selecting = text_row_selection_gesture(ui, checkboxes);
                         let response = id_cell(ui, list, index, editable, !selecting, edit);
                         let response = if selecting { response.interact(Sense::click()) } else { response };
                         text_cells.push((response, "string id", format!("{}|strings|{index}|id", edit.tag_key), entry.id.clone().unwrap_or_default()));
                     }));
                 }
-                row.col(|ui| padded_table_cell(ui, |ui| {
+                string_entry_column(&mut row, &mut current_rect, selection_fill, row_insets[display_index], &row_painter, table_background, |ui| padded_table_cell(ui, |ui| {
                     let text = entry.texts.get(language).cloned().flatten().unwrap_or_default();
                     let shown = strings::format_shown(&text, syntax);
                     let target = TextTarget { index, language, max_units: list.max_text_units(), list };
@@ -734,7 +1109,12 @@ fn draw_table(
                     let response = if selecting { response.interact(Sense::click()) } else { response };
                     text_cells.push((response, "string text", format!("{}|strings|{index}|{language}", edit.tag_key), shown));
                 }));
-                let row_response = row.response();
+                let mut row_response = row.response();
+                row_response.rect = current_rect;
+                row_rects.insert(display_index, current_rect);
+                if !editable && group.is_some_and(|g| layout.groups[g].members.last() == Some(&index)) {
+                    row_painter.hline(current_rect.x_range(), current_rect.bottom(), Stroke::new(1.0, foundation_block_edge()));
+                }
                 if let Some(active) = row_clipboard::active(&ctx).filter(|active| edit.string_row_document.as_ref() == Some(&active.source) && active.revision == cache.revision.1 && active.indices.contains(&index)) {
                     // The sizing pass can offer effectively unbounded table
                     // cells. Bound the path before generating individual dashes.
@@ -788,24 +1168,90 @@ fn draw_table(
                         ui.separator();
                     }
                     let clipboard = row_clipboard::clipboard(ui.ctx(), list, language, syntax);
-                    row_actions_menu(ui, view.selected.len(), editable, structural, text_context, clipboard.as_ref(), actions);
+                    row_actions_menu(ui, view.selected.len(), editable, structural, text_context, view.grouped == Some(true), clipboard.as_ref(), actions);
                 });
-                if reorder && response.dnd_hover_payload::<StringRowDrag>().is_some_and(|source| source.table == table_id) {
-                    let below = ctx.pointer_hover_pos().is_some_and(|pos| pos.y > response.rect.center().y);
-                    row_painter.hline(response.rect.x_range(), if below { response.rect.bottom() } else { response.rect.top() },
-                        drop_stroke);
-                }
-                if reorder && let Some(source) = response.dnd_release_payload::<StringRowDrag>()
-                    && source.table == table_id {
-                    let below = ctx.pointer_hover_pos().is_some_and(|pos| pos.y > response.rect.center().y);
-                    drop_move = Some((source.indices.clone(), index + usize::from(below)));
-                }
+                if reorder && let Some(drop) = string_drop_target(&ctx, &response,
+                    &layout, shown, view.descending, table_id, list.entries.len(), display_index, &mut drop_indicator) { drop_move = Some(drop); }
             };
-            if let Some(heights) = &heights {
-                let row_heights = visible.iter().map(|&index| heights.heights[index]).chain(std::iter::repeat_n(ROW_HEIGHT, usize::from(structural)));
-                body.heterogeneous_rows(row_heights, &mut draw_row);
-            } else {
-                body.rows(ROW_HEIGHT, visible.len() + usize::from(structural), &mut draw_row);
+            body.heterogeneous_rows(row_heights.iter().copied(), &mut draw_row);
+            // Derive full group bounds from this pass's visible rows. This also
+            // keeps the outline steady when either end is virtualized away.
+            if let Some((&anchor, rect)) = row_rects.first_key_value() {
+                let anchor_inset = row_insets[anchor];
+                let origin = rect.top() - row_offsets[anchor] - anchor_inset;
+                for (start, shown) in layout.rows.iter().enumerate() {
+                    let DisplayRow::Group(group) = shown else { continue; };
+                    let end = if layout.groups[*group].open {
+                        (start + 1..layout.rows.len()).find(|&i| !matches!(layout.rows[i],
+                            DisplayRow::Entry { group:Some(g), .. } | DisplayRow::AddGroup(g) if g == *group)).unwrap_or(layout.rows.len())
+                    } else { start + 1 };
+                    let bounds = egui::Rect::from_min_max(
+                        egui::pos2(table_bounds.left(), origin + row_offsets[start] + 8.0),
+                        egui::pos2(table_bounds.right(), origin + row_offsets[end] - row_spacing));
+                    // Table backgrounds have rectangular clips. Clear the
+                    // rounded perimeter before outlining so footer stripes and
+                    // hover/selection fills cannot leave square corner pixels.
+                    row_painter.rect_stroke(bounds, 4.0, Stroke::new(2.0, table_background), egui::StrokeKind::Outside);
+                    row_painter.rect_stroke(bounds, 4.0, Stroke::new(1.0, foundation_block_edge()), egui::StrokeKind::Inside);
+                }
+            }
+            // A virtualized-away input has no response to report lost focus.
+            if !rename_drawn && let Some(rename)=&mut view.group_rename
+                && rename.pending_merge.is_none() && !rename.focus {
+                match super::string_group_edit::normalize_prefix(&rename.text) {
+                    Ok(target) => actions.group_rename=Some((rename.prefix.clone(),target)),
+                    Err(error) => {rename.error=Some(error);rename.focus=true;ctx.request_repaint();}
+                }
+            }
+            if let Some(source)=egui::DragAndDrop::payload::<StringRowDrag>(&ctx).filter(|source|source.table==table_id) {
+                if let Some((index,_))=drop_indicator {
+                    let target=layout.row_group(layout.rows[index]);
+                    let changing_prefix=!source.whole_group && target.is_some()
+                        && source.indices.iter().any(|index|layout.group_for(*index)!=target);
+                    egui::Tooltip::always_open(ctx.clone(),row_painter.layer_id(),table_id.with("drag feedback"),egui::PopupAnchor::Pointer)
+                        .gap(32.0).show(|ui| {
+                            let copy=ui.input(|input|input.modifiers.ctrl);
+                            let action=if copy {"Copy"}else{"Move"};
+                            let count=if source.whole_group {layout.groups.iter().filter(|group| !group.is_ungrouped()
+                                && group.indices.iter().all(|index|source.indices.contains(index))).count()}else{source.indices.len()};
+                            let kind=if source.whole_group {"group"}else{"string"};
+                            let mut lines=vec![format!("{action} {count} {kind}{}",if count==1 {""}else{"s"})];
+                            if changing_prefix {
+                                let prefix=&layout.groups[target.unwrap()].prefix;
+                                lines.push(format!("Prefix will be changed to {prefix}_"));
+                                if !copy {lines.push("References in other tags are not updated.".into());}
+                            }
+                            let font=TextStyle::Body.resolve(ui.style());
+                            let width=lines.iter().map(|line|ui.painter().layout_no_wrap(line.clone(),font.clone(),text_dark()).size().x)
+                                .fold(0.0,f32::max);
+                            ui.set_width(width.min((ctx.content_rect().width()-32.0).max(1.0)));
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min),|ui| {
+                                for line in lines {ui.add(egui::Label::new(line).wrap());}
+                            });
+                        });
+                }
+                ctx.set_cursor_icon(if drop_indicator.is_some() {
+                    if ctx.input(|input|input.modifiers.ctrl) {
+                        paint_string_copy_badge(&ctx,table_id);
+                        egui::CursorIcon::Copy
+                    } else {egui::CursorIcon::Grabbing}
+                } else {egui::CursorIcon::NotAllowed});
+            }
+            // A gap has one identity regardless of which adjacent row was hovered.
+            // Resolve it from this frame's two row bounds, then paint last so a
+            // following row's gapless background cannot hide half of the stroke.
+            if let Some((index, below)) = drop_indicator {
+                let gap = index + usize::from(below);
+                let above = gap.checked_sub(1).and_then(|index| row_rects.get(&index));
+                let below = row_rects.get(&gap);
+                let y = match (above, below) {
+                    (Some(a), Some(b)) => (a.bottom() + b.top()) * 0.5,
+                    (Some(a), None) => a.bottom() + row_spacing * 0.5,
+                    (None, Some(b)) => b.top() - row_spacing * 0.5,
+                    (None, None) => unreachable!("hovered row has recorded bounds"),
+                };
+                row_painter.hline(above.or(below).unwrap().x_range(), y,
+                    Stroke::new(2.0, ctx.global_style().visuals.selection.stroke.color));
             }
             if !height_changes.is_empty() {
                 let rows = Arc::make_mut(view.wrapped_rows.as_mut().unwrap());
@@ -813,6 +1259,24 @@ fn draw_table(
                 ctx.request_repaint();
             }
         });
+    if let Some(rect) = id_header_rect {
+        if grouped {
+            let x = rect.right()+column_spacing*0.5;
+            let line = egui::Rect::from_min_max(egui::pos2(x,top.y),egui::pos2(x,header_bottom));
+            let response = ui.interact(line.expand2(Vec2::new(ui.style().interaction.resize_grab_radius_side,0.0)),
+                table_id.with("header column resize"),Sense::click_and_drag());
+            if response.dragged() && let Some(pointer)=ctx.pointer_latest_pos() {
+                let maximum = (scroll.inner_rect.right()-rect.left()-160.0-column_spacing).max(100.0);
+                view.id_column_width = (rect.width()+pointer.x-x).clamp(100.0,maximum);
+                ctx.request_repaint();
+            }
+            if response.hovered() || response.dragged() {ctx.set_cursor_icon(egui::CursorIcon::ResizeColumn);}
+            painter.vline(x,top.y..=header_bottom,if response.dragged() {ui.visuals().widgets.active.bg_stroke}
+                else if response.hovered() {ui.visuals().widgets.hovered.bg_stroke} else {separator_stroke});
+        } else {
+            view.id_column_width = rect.width();
+        }
+    }
     painter.hline(top.x..=scroll.inner_rect.right(), header_bottom, Stroke::new(2.0, foundation_block_edge()));
     let max_offset = (scroll.content_size.y - scroll.inner_rect.height()).max(0.0);
     let can_scroll_up = scroll.state.offset.y > 0.5;
@@ -824,22 +1288,92 @@ fn draw_table(
     }
     // The fixed row controls form one group; only its outer edge needs a
     // divider, without creating a resize handle for those columns.
-    if let Some(x) = controls_edge {
+    if let Some(x) = controls_edge.filter(|_| view.grouped != Some(true)) {
         painter.vline(x, top.y..=add_row_rect.map_or(ui.min_rect().bottom(), |rect| rect.top()), separator_stroke);
     }
     if let Some((index, modifiers)) = clicked {
         select(view, &visible, index, modifiers);
     }
-    if let Some((from, before)) = drop_move {
+    if let Some(StringDrop {indices:from,before,whole_group,copy,target_group}) = drop_move {
         if edit.buffers.has_changed_prefix(&format!("{}|strings|", edit.tag_key)) {
             set_status(edit, "Finish or cancel the current string edit before reordering.".to_owned());
             return egui::Rect::from_min_max(top, ui.min_rect().max.max(top));
         }
-        let order = move_string_rows(list.entries.len(), &from, before);
+        if !whole_group && let Some(target)=target_group
+            && (copy || from.iter().any(|index|layout.group_for(*index) != Some(target))) {
+            let prefix=&layout.groups[target].prefix;
+            let mut ordered=layout.selected_in_display_order(&from);
+            // Physical insertion is ascending; reverse for descending display.
+            if view.descending {ordered.reverse();}
+            match super::string_group_edit::transfer(list,&ordered,before,prefix,copy) {
+                Ok(plan) => {
+                    edit.string_list_ops.extend(plan.edits.into_iter().map(|edit_op|StringListOp {game:edit.game,edit:edit_op}));
+                    view.selected=(plan.at..plan.at+plan.count).collect();
+                    view.anchor=Some(plan.at);
+                    view.scroll_to=Some(plan.at);
+                    view.scroll_group=None;
+                    view.expanded.insert(prefix.clone());
+                    view.completion.close();
+                }
+                Err(error) => set_status(edit,error),
+            }
+            return egui::Rect::from_min_max(top, ui.min_rect().max.max(top));
+        }
+        if copy {
+            if whole_group {
+                let mut groups: Vec<_>=layout.groups.iter().filter(|group| !group.is_ungrouped()
+                    && group.indices.iter().all(|index|from.contains(index))).collect();
+                if view.descending {groups.reverse();}
+                let prefixes:Vec<_>=groups.iter().map(|group|group.prefix.as_str()).collect();
+                match super::string_group_edit::duplicate_many(list,&prefixes) {
+                    Ok(copies) => {
+                        let scroll=copies.get(if view.descending {copies.len().saturating_sub(1)}else{0}).map(|(prefix,_)|prefix.clone());
+                        let mut entries=Vec::new();
+                        for (source,(target,mut members)) in groups.iter().zip(copies) {
+                            if source.open {view.expanded.insert(target);}
+                            entries.append(&mut members);
+                        }
+                        insert_entries(edit,view,before,entries);
+                        view.scroll_to=None;
+                        view.scroll_group=scroll;
+                    }
+                    Err(error)=>set_status(edit,error),
+                }
+            } else {
+                let mut taken = list.entries.iter().filter_map(|entry|entry.id.clone()).collect();
+                let copies = from.iter().map(|&index| {
+                    let mut entry = list.entries[index].clone();
+                    entry.id = entry.id.map(|id|unused_copy_id(&id,&mut taken));
+                    entry
+                }).collect();
+                insert_entries(edit,view,before,copies);
+            }
+            return egui::Rect::from_min_max(top, ui.min_rect().max.max(top));
+        }
+        let mut order = if whole_group {
+            let mut ordered=layout.selected_in_display_order(&from);
+            if view.descending {ordered.reverse();}
+            move_ordered_string_rows(list.entries.len(),&ordered,before)
+        } else {move_string_rows(list.entries.len(), &from, before)};
+        if !whole_group && let Some(group) = from.first().and_then(|index| layout.group_for(*index)) {
+            // Group members can be interleaved in storage. Reorder only their
+            // existing slots so other groups retain every stored index.
+            let members = &layout.groups[group].indices;
+            let moved: Vec<_> = order.iter().copied().filter(|index| members.contains(index)).collect();
+            order = (0..list.entries.len()).collect();
+            for (&slot, index) in members.iter().zip(moved) { order[slot] = index; }
+        }
         if order.iter().enumerate().any(|(new, &old)| new != old) {
             view.selected = order.iter().enumerate().filter_map(|(new, old)| view.selected.contains(old).then_some(new)).collect();
             view.anchor = view.anchor.and_then(|old| order.iter().position(|&index| index == old));
-            view.scroll_to = order.iter().position(|index| from.contains(index));
+            if whole_group {
+                view.scroll_to = None;
+                view.scroll_group = layout.groups.iter().find(|group| !group.is_ungrouped()
+                    && group.indices.iter().all(|index|from.contains(index))).map(|group|group.prefix.clone());
+            } else {
+                view.scroll_group = None;
+                view.scroll_to = order.iter().position(|index| from.contains(index));
+            }
             view.completion.close();
             edit.block_ops.push(crate::core::document::ops::BlockOp {
                 path: list.storage.rows_block().to_owned(),
@@ -848,6 +1382,105 @@ fn draw_table(
         }
     }
     egui::Rect::from_min_max(top, ui.min_rect().max.max(top))
+}
+
+/// Windows' windowing backend maps the native Copy cursor to an arrow.
+/// Paint the missing plus badge without replacing the user's cursor theme.
+fn paint_string_copy_badge(ctx: &egui::Context, table: egui::Id) {
+    let Some(pointer)=ctx.pointer_hover_pos() else {return;};
+    let rect=egui::Rect::from_min_size(pointer+Vec2::new(14.0,16.0),Vec2::splat(14.0));
+    let painter=ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip,table.with("copy badge")));
+    painter.rect(rect,2.0,Color32::WHITE,Stroke::new(1.0,Color32::BLACK),egui::StrokeKind::Inside);
+    painter.hline(rect.center().x-3.0..=rect.center().x+3.0,rect.center().y,Stroke::new(1.5,Color32::BLACK));
+    painter.vline(rect.center().x,rect.center().y-3.0..=rect.center().y+3.0,Stroke::new(1.5,Color32::BLACK));
+}
+
+fn string_table_column(
+    row: &mut egui_extras::TableRow<'_, '_>, bounds: &mut egui::Rect,
+    selection_fill: Color32, contents: impl FnOnce(&mut Ui),
+) {
+    row.col(|ui| {
+        *bounds = bounds.union(ui.max_rect());
+        ui.visuals_mut().selection.bg_fill = selection_fill;
+        contents(ui);
+    });
+}
+
+/// An ungrouped run has its own top gutter, independent of row striping.
+fn string_entry_column(
+    row: &mut egui_extras::TableRow<'_, '_>, bounds: &mut egui::Rect,
+    selection_fill: Color32, inset: f32, painter: &egui::Painter, background: Color32,
+    contents: impl FnOnce(&mut Ui),
+) {
+    if inset == 0.0 {return string_table_column(row,bounds,selection_fill,contents);}
+    row.col(|ui| {
+        let cell=ui.max_rect();
+        let content=egui::Rect::from_min_max(cell.min+Vec2::new(0.0,inset),cell.max);
+        *bounds=bounds.union(content);
+        let gutter=egui::Rect::from_min_max(cell.min,egui::pos2(cell.right(),content.top()))
+            .expand2(Vec2::new(ui.spacing().item_spacing.x*0.5,0.0));
+        painter.rect_filled(gutter,0.0,background);
+        ui.visuals_mut().selection.bg_fill=selection_fill;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(content)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),contents);
+    });
+}
+
+/// Use current cell bounds, not TableRow::response's previous-pass UI bounds.
+/// Repaint after each cell's automatic stripe/hover but before its controls/text.
+fn string_group_column(
+    row: &mut egui_extras::TableRow<'_, '_>, painter: &egui::Painter,
+    bounds: &mut egui::Rect, fill: Color32, open: bool, table: egui::Rect, background: Color32,
+    contents: impl FnOnce(&mut Ui),
+) {
+    row.col(|ui| {
+        let cell = ui.max_rect();
+        let padded = egui::Rect::from_min_max(cell.min + Vec2::new(0.0, 8.0), cell.max);
+        *bounds = bounds.union(padded);
+        let clip = cell.expand2(ui.spacing().item_spacing * 0.5).intersect(painter.clip_rect());
+        let painter = painter.with_clip_rect(clip);
+        painter.rect_filled(clip, 0.0, background);
+        let header = egui::Rect::from_min_max(egui::pos2(table.left(), padded.top()), egui::pos2(table.right(), padded.bottom()));
+        painter.rect_filled(header, if open { egui::CornerRadius { nw:4, ne:4, sw:0, se:0 } } else { egui::CornerRadius::same(4) }, fill);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(padded).layout(egui::Layout::left_to_right(egui::Align::Center)), contents);
+    });
+}
+
+fn string_grabber(ui: &mut Ui, draggable: bool) -> egui::Response {
+    let mut bounds = ui.available_rect_before_wrap();
+    bounds.min.x += 8.0;
+    bounds.max.x -= 2.0;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(bounds), |ui| {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(18.0, 30.0),
+            if draggable { Sense::click_and_drag() } else { Sense::click() });
+        for x in [-2.5, 2.5] { for y in [-6.0, 0.0, 6.0] {
+            ui.painter().circle_filled(rect.center() + Vec2::new(x,y), 1.2, subtle_dark());
+        } }
+        response
+    }).inner
+}
+
+#[allow(clippy::too_many_arguments)]
+fn string_drop_target(ctx: &egui::Context, response: &egui::Response,
+    layout: &display::Layout, row: DisplayRow, descending: bool, table: egui::Id, count: usize,
+    display_index: usize, indicator: &mut Option<(usize, bool)>,
+) -> Option<StringDrop> {
+    let below = ctx.pointer_hover_pos().is_some_and(|pos| pos.y > response.rect.center().y);
+    if response.dnd_hover_payload::<StringRowDrag>().is_some_and(|source| source.table == table
+        && (if source.whole_group { layout.accepts_group_drop(row, below) }
+            else { layout.accepts_row_drop(&source.indices, row, below) })) {
+        *indicator = Some((display_index, below));
+    }
+    response.dnd_release_payload::<StringRowDrag>().filter(|source| source.table == table
+        && (if source.whole_group { layout.accepts_group_drop(row, below) }
+            else { layout.accepts_row_drop(&source.indices, row, below) }))
+        .map(|source| {
+            let before = if !source.whole_group && matches!(row,DisplayRow::Group(group) if !layout.groups[group].open) && below {
+                display::insertion_index(&layout.groups[match row {DisplayRow::Group(group)=>group,_=>unreachable!()}],StringSort::Index,descending,count)
+            } else { layout.drop_before(row,below,descending,source.whole_group,count) };
+            StringDrop {indices:source.indices.clone(),before,whole_group:source.whole_group,
+                copy:ctx.input(|input|input.modifiers.ctrl),target_group:layout.row_group(row)}
+        })
 }
 
 /// Keep headers and row contents equally inset from the column dividers.
@@ -904,6 +1537,24 @@ fn select(view: &mut StringListView, visible: &[usize], index: usize, modifiers:
     view.anchor = Some(index);
 }
 
+/// Header range selection follows displayed groups, skipping standalone rows.
+fn select_group(view: &mut StringListView, layout: &display::Layout, group: usize, modifiers: egui::Modifiers) {
+    if modifiers.shift && let Some(anchor)=view.anchor.and_then(|index|layout.group_for(index)) {
+        if !modifiers.ctrl && !modifiers.command {view.selected.clear();}
+        for group in &layout.groups[anchor.min(group)..=anchor.max(group)] {
+            view.selected.extend(group.members.iter().copied());
+        }
+        return;
+    }
+    let members=&layout.groups[group].members;
+    if modifiers.ctrl || modifiers.command {
+        if members.iter().all(|index|view.selected.contains(index)) {
+            view.selected.retain(|index| !members.contains(index));
+        } else {view.selected.extend(members.iter().copied());}
+    } else {view.selected=members.iter().copied().collect();}
+    view.anchor=members.first().copied();
+}
+
 fn select_context_row(view: &mut StringListView, index: usize) {
     if !view.selected.contains(&index) {
         view.selected = BTreeSet::from([index]);
@@ -913,11 +1564,99 @@ fn select_context_row(view: &mut StringListView, index: usize) {
 
 /// Remove the selected entries, then insert them together at an original-list boundary.
 fn move_string_rows(count: usize, selected: &BTreeSet<usize>, before: usize) -> Vec<usize> {
-    let before = before.min(count);
-    let at = (0..before).filter(|index| !selected.contains(index)).count();
-    let mut order: Vec<_> = (0..count).filter(|index| !selected.contains(index)).collect();
-    order.splice(at..at, selected.iter().copied().filter(|&index| index < count));
+    move_ordered_string_rows(count,&selected.iter().copied().collect::<Vec<_>>(),before)
+}
+
+fn move_ordered_string_rows(count: usize, ordered: &[usize], before: usize) -> Vec<usize> {
+    let selected:BTreeSet<_>=ordered.iter().copied().collect();
+    let before=before.min(count);
+    let at=(0..before).filter(|index| !selected.contains(index)).count();
+    let mut order:Vec<_>=(0..count).filter(|index| !selected.contains(index)).collect();
+    order.splice(at..at,ordered.iter().copied().filter(|&index|index<count));
     order
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_group_menu(ui: &mut Ui, cache: &ListCache, target: &GroupMenuTarget, _syntax: &TextSyntax,
+    editable: bool, edit: &FieldEditContext<'_>, view: &mut StringListView, actions: &mut ToolbarActions,
+) {
+    if target.revision != cache.revision { ui.label("The group changed. Open its menu again."); return; }
+    if view.group_rename.is_some() { ui.label("Finish or cancel the group rename first."); return; }
+    let busy = edit.buffers.has_changed_prefix(&format!("{}|strings|",edit.tag_key)) || !edit.string_list_ops.is_empty();
+    let change = editable && !busy;
+    if icon_text_button(ui,ButtonIcon::Rename,"Rename Group",change)
+        .on_disabled_hover_text("Finish or cancel the current string edit before renaming a group.").clicked() {
+        view.group_rename=Some(GroupRename {prefix:target.prefix.clone(),text:target.prefix.clone(),
+            content_stamp:(cache.revision.0,cache.revision.1),focus:true,error:None,pending_merge:None});
+        ui.ctx().request_repaint(); ui.close();
+    }
+    if icon_text_button(ui,ButtonIcon::Duplicate,"Duplicate Group",change).clicked() {
+        actions.group_duplicate=Some((target.prefix.clone(),if view.sort==StringSort::Index {target.below}else{cache.list.entries.len()}));
+        ui.close();
+    }
+    if icon_text_button(ui,ButtonIcon::Garbage,"Delete Group",change).clicked() {
+        view.selected=target.indices.clone(); actions.remove=true; ui.close();
+    }
+}
+
+fn draw_group_rename(ui: &mut Ui, count: usize, edit: &FieldEditContext<'_>, rename: &mut GroupRename,
+    actions: &mut ToolbarActions,
+) -> egui::Response {
+    let id=edit.widget_id(("group prefix",&rename.prefix));
+    let was_focused=ui.memory(|memory|memory.has_focus(id));
+    let focus=std::mem::take(&mut rename.focus);
+    let count=count.to_string();
+    let font=bold_font(12.5);
+    let count_width=ui.painter().layout_no_wrap(count.clone(),font.clone(),text_dark()).size().x;
+    let frame=egui::Frame::new().fill(foundation_input())
+        .corner_radius(ui.visuals().widgets.inactive.corner_radius)
+        .stroke(if rename.error.is_some() {invalid_value_stroke()}else{ui.visuals().widgets.inactive.bg_stroke})
+        .inner_margin(egui::Margin {left:4,right:(count_width+12.0).ceil() as i8,top:2,bottom:2});
+    let response=ui.add_sized(Vec2::new(ui.available_width(),BUTTON_HEIGHT),
+        egui::TextEdit::singleline(&mut rename.text).id(id).font(TextStyle::Monospace)
+            .vertical_align(egui::Align::Center).frame(frame).interactive(rename.pending_merge.is_none()));
+    ui.painter().text(egui::pos2(response.rect.right()-8.0,response.rect.center().y),egui::Align2::RIGHT_CENTER,
+        count,font,text_dark().gamma_multiply(0.5));
+    if focus && rename.pending_merge.is_none() {
+        response.request_focus();
+        if let Some(mut state)=egui::TextEdit::load_state(ui.ctx(),id) {
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0),
+                egui::text::CCursor::new(rename.text.chars().count()))));
+            state.store(ui.ctx(),id);
+        }
+    }
+    if response.changed() {rename.error=super::string_group_edit::normalize_prefix(&rename.text).err();}
+    let escaped=(was_focused || response.has_focus() || response.lost_focus()) && ui.input(|input|input.key_pressed(egui::Key::Escape));
+    if escaped { actions.cancel_group_rename=true; response.surrender_focus(); }
+    else if rename.pending_merge.is_none() && !focus && ((was_focused && ui.input(|input|input.key_pressed(egui::Key::Enter))) || response.lost_focus()) {
+        match super::string_group_edit::normalize_prefix(&rename.text) {
+            Ok(target) => {actions.group_rename=Some((rename.prefix.clone(),target));rename.error=None;}
+            Err(error) => {rename.error=Some(error);rename.focus=true;ui.ctx().request_repaint();}
+        }
+    }
+    response
+}
+
+fn draw_group_merge(ui: &Ui, edit: &FieldEditContext<'_>, view: &mut StringListView, actions: &mut ToolbarActions) {
+    let Some(rename)=view.group_rename.as_ref() else {return;};
+    let Some(target)=rename.pending_merge.clone() else {return;};
+    let prefix=rename.prefix.clone();
+    let mut confirm=false;
+    let mut cancel=false;
+    let modal=egui::Modal::new(edit.widget_id("confirm string group merge")).show(ui.ctx(),|ui| {
+        ui.set_width(340.0);
+        ui.heading("Merge String Groups?");
+        ui.label(format!("The group '{target}' already exists."));
+        ui.horizontal(|ui| {
+            confirm=icon_text_button(ui,ButtonIcon::Confirm,"Merge",true).clicked();
+            cancel=icon_text_button(ui,ButtonIcon::Clear,"Cancel",true).clicked();
+        });
+    });
+    if confirm {actions.group_rename=Some((prefix,target));actions.approve_group_merge=true;}
+    else if cancel || modal.should_close() {
+        let rename=view.group_rename.as_mut().unwrap();
+        rename.pending_merge=None;rename.focus=true;ui.ctx().request_repaint();
+    }
 }
 
 fn insert_menu(ui: &mut Ui, count: usize, editable: bool, clipboard: Option<&RowData>, actions: &mut ToolbarActions) {
@@ -948,7 +1687,8 @@ fn insert_menu(ui: &mut Ui, count: usize, editable: bool, clipboard: Option<&Row
 
 /// Only inspect the OS clipboard while a row menu is open. Tests provide an
 /// isolated clipboard so they never read or replace the user's real clipboard.
-fn row_actions_menu(ui: &mut Ui, count: usize, editable: bool, structural: bool, text_context: bool, clipboard: Option<&RowData>, actions: &mut ToolbarActions) {
+fn row_actions_menu(ui: &mut Ui, count: usize, editable: bool, structural: bool, text_context: bool, grouped: bool, clipboard: Option<&RowData>, actions: &mut ToolbarActions) {
+    if !grouped {
     insert_menu(ui, count, structural, clipboard, actions);
     let paste_label = if text_context { "Paste Rows" } else { "Paste" };
     let paste = if text_context {
@@ -976,7 +1716,7 @@ fn row_actions_menu(ui: &mut Ui, count: usize, editable: bool, structural: bool,
         actions.copy = true;
         ui.close();
     }
-    ui.separator();
+    }
     if shortcut_menu_button(ui, "Duplicate", Some(ButtonIcon::Duplicate), egui::Modifiers::COMMAND, egui::Key::D, structural && count > 0).clicked() {
         actions.duplicate = true;
         ui.close();
@@ -1881,12 +2621,19 @@ fn apply_actions(
     expert_mode: bool,
     edit: &mut FieldEditContext<'_>,
     view: &mut StringListView,
-    actions: ToolbarActions,
+    mut actions: ToolbarActions,
 ) {
     if list.storage == Storage::HudMessages && edit.hud_message_usage.locked(expert_mode)
         && (actions.add || actions.insert || actions.insert_below || actions.duplicate || actions.remove || actions.cut) {
         set_status(edit, super::hud_messages::EXPERT_REQUIRED.to_owned());
         return;
+    }
+    if view.grouped == Some(true) {
+        actions.copy = false;
+        actions.cut = false;
+        actions.paste = None;
+        actions.insert = false;
+        actions.insert_below = false;
     }
     let count = list.entries.len();
     if row_clipboard::cut(_ui.ctx()).is_some_and(|active| edit.string_row_document.as_ref() == Some(&active.source))
@@ -1894,7 +2641,55 @@ fn apply_actions(
         row_clipboard::cancel_cut(_ui.ctx());
         set_status(edit, "Cut cancelled because the source changed. The clipboard can still be pasted as a copy.".to_owned());
     }
+    if actions.cancel_group_rename { view.group_rename = None; }
+    if let Some((prefix,text)) = actions.group_rename {
+        if edit.buffers.has_changed_prefix(&format!("{}|strings|", edit.tag_key)) || !edit.string_list_ops.is_empty() {
+            set_status(edit,"Finish or cancel the current string edit before renaming a group.".into());
+            if let Some(rename) = &mut view.group_rename { rename.focus = true; }
+        } else { match super::string_group_edit::rename(list,&prefix,&text) {
+            Err(error) => if let Some(rename) = &mut view.group_rename { rename.error=Some(error); rename.focus=true; },
+            Ok(plan) if plan.merge && !actions.approve_group_merge => {
+                if let Some(rename) = &mut view.group_rename { rename.pending_merge=Some(plan.target); }
+                _ui.ctx().request_repaint();
+            }
+            Ok(plan) => {
+                edit.string_list_ops.extend(plan.edits.into_iter().map(|edit_op|StringListOp {game:edit.game,edit:edit_op}));
+                view.selected=plan.indices.into_iter().collect();
+                view.anchor=view.selected.first().copied();
+                let was_open=view.expanded.remove(&prefix);
+                if was_open && !plan.merge { view.expanded.insert(plan.target.clone()); }
+                view.scroll_to=None;
+                view.scroll_group=Some(plan.target);
+                view.group_rename=None;
+            }
+        } }
+    }
+    if let Some((prefix,at)) = actions.group_duplicate {
+        match super::string_group_edit::duplicate(list,&prefix) {
+            Ok((target,entries)) => {
+                let open=view.expanded.contains(&prefix);
+                insert_entries(edit,view,at,entries);
+                if open { view.expanded.insert(target.clone()); }
+                view.scroll_to=None;
+                view.scroll_group=Some(target);
+            }
+            Err(error) => set_status(edit,error),
+        }
+    }
     let last = view.selected.last().copied();
+    if let Some((prefix, at)) = actions.group_add {
+        let mut entry = list.new_entry();
+        let stem = entry.id.as_deref().unwrap_or("new_string");
+        let base = format!("{prefix}_{stem}");
+        entry.id = Some(std::iter::once(base.clone()).chain((1..).map(|n| format!("{base}_{n}")))
+            .find(|id| !list.entries.iter().any(|entry| entry.id.as_ref() == Some(id))).expect("unbounded"));
+        if view.sort == StringSort::StringId {
+            view.new_group_ids.push(entry.id.clone().expect("group additions have an ID"));
+        }
+        insert_entries(edit, view, at, vec![entry]);
+        view.expanded.insert(prefix);
+        view.focus_new = Some(at);
+    }
     if actions.add {
         insert_entries(edit, view, count, vec![list.new_entry()]);
         view.focus_new = Some(count);
@@ -1995,7 +2790,10 @@ fn remove_selected(edit: &mut FieldEditContext<'_>, view: &mut StringListView) {
     edit.string_list_ops.push(StringListOp { game: edit.game, edit: StringListEdit::Remove { indices } });
     view.selected.clear();
     view.anchor = None;
-    view.scroll_to = first;
+    // A deleted row's former index can now belong to a different, closed
+    // group. Keep the current viewport instead of revealing that new occupant.
+    view.scroll_to = if view.grouped == Some(true) {None} else {first};
+    view.scroll_group = None;
 }
 
 fn set_status(edit: &mut FieldEditContext<'_>, message: String) {
@@ -2037,24 +2835,36 @@ mod tests {
         checkboxes: bool,
         wrap_text: bool,
         time: f64,
+        /// A reload replaces the document but keeps the pane's scope.
+        document_revision: u64,
+        content_revision: u64,
+        kit_generation: u64,
+        render_method_epoch: u64,
+        scope: &'static str,
         /// The id of string 0's English text box.
         text_id: Option<egui::Id>,
     }
 
     struct Frame {
         copied: String,
+        cursor: egui::CursorIcon,
         texts: Vec<String>,
         text_rects: Vec<(String, egui::Rect)>,
         grabber_dots: Vec<egui::Pos2>,
         row_borders: Vec<Color32>,
+        row_fill_bounds: Vec<egui::Rect>,
         row_border_clips: Vec<egui::Rect>,
+        lines: Vec<([egui::Pos2; 2], Stroke)>,
+        occluded_drop_lines: usize,
         orders: Vec<Vec<usize>>,
         selected: BTreeSet<usize>,
         text_backgrounds: Vec<Color32>,
+        text_colours: Vec<(String, Vec<Color32>)>,
         pink: bool,
         edits: Vec<StringListEdit>,
         /// Rects painted, with their fills.
         rects: Vec<(egui::Rect, Color32)>,
+        image_rects: Vec<egui::Rect>,
         /// The colour picker a click asked for.
         colour_picker: Option<MaterialColorPopup>,
         row_request: Option<RowRequest>,
@@ -2072,6 +2882,11 @@ mod tests {
                 checkboxes: false,
                 wrap_text: false,
                 time: 0.0,
+                document_revision: 1,
+                content_revision: 1,
+                kit_generation: 1,
+                render_method_epoch: 1,
+                scope: "test",
                 text_id: None,
             }
         }
@@ -2086,9 +2901,13 @@ mod tests {
             let mut orders = Vec::new();
             let mut selected = BTreeSet::new();
             let mut row_request = None;
+            let document_revision=self.document_revision;
+            let revision=(document_revision,self.content_revision,self.kit_generation,self.render_method_epoch);
+            let scope=self.scope;
             let (tag, sinks, editable, checkboxes, wrap_text) = (&self.tag, &mut self.sinks, self.editable, &mut self.checkboxes, &mut self.wrap_text);
             let modifiers = events.iter().rev().find_map(|event| match event {
-                egui::Event::PointerButton { modifiers, .. } | egui::Event::Key { modifiers, .. } => Some(*modifiers),
+                egui::Event::PointerButton { modifiers, .. } | egui::Event::Key { modifiers, .. }
+                | egui::Event::ModifiersChanged(modifiers) => Some(*modifiers),
                 _ => None,
             }).unwrap_or_default();
             events.insert(0, egui::Event::ModifiersChanged(modifiers));
@@ -2096,7 +2915,7 @@ mod tests {
             let output = crate::app::run_ui_test(&self.ctx, input, |ui| {
                 let game = if tag.group().tag == strings::HUD_GROUP { GameId::HaloCe } else { GameId::Halo3 };
                 let tag_key = if tag.group().tag == strings::HUD_GROUP { "strings.hud_message_text" } else { "strings.multilingual_unicode_string_list" };
-                let mut edit = FieldEditContext::read_only(sinks, "test", tag_key);
+                let mut edit = FieldEditContext::read_only(sinks, scope, tag_key);
                 edit.root = Some(tag.root());
                 edit.game = Some(game);
                 edit.editable = editable;
@@ -2105,9 +2924,9 @@ mod tests {
                 edit.expert_mode = expert;
                 edit.string_list_checkboxes = *checkboxes;
                 edit.string_list_wrap_text = *wrap_text;
-                edit.string_row_document = Some(row_clipboard::RowDocument { kit: KitId(1), key: edit.tag_key.to_owned(), id: 1 });
+                edit.string_row_document = Some(row_clipboard::RowDocument { kit: KitId(1), key: edit.tag_key.to_owned(), id: document_revision });
                 edit.buffers.begin_pass(ui.ctx().cumulative_pass_nr());
-                draw_string_list_tag(ui, tag, (1, 1, 1, 1), Some(game), expert, &mut edit);
+                draw_string_list_tag(ui, tag, revision, Some(game), expert, &mut edit);
                 *checkboxes = edit.string_list_checkboxes;
                 *wrap_text = edit.string_list_wrap_text;
                 selected = ui.data(|data| data.get_temp::<StringListView>(edit.widget_id("string list view"))).unwrap().selected;
@@ -2128,19 +2947,30 @@ mod tests {
             let mut grabber_dots = Vec::new();
             let mut row_borders = Vec::new();
             let mut row_border_clips = Vec::new();
+            let mut lines = Vec::new();
             let mut text_backgrounds = Vec::new();
+            let mut text_colours = Vec::new();
             let mut pink = false;
             let mut rects = Vec::new();
+            let mut row_fill_bounds = Vec::new();
+            let mut image_rects = Vec::new();
             for clipped in &output.shapes {
+                if let egui::Shape::LineSegment { points, stroke } = &clipped.shape { lines.push((*points, *stroke)); }
                 match &clipped.shape {
                     egui::Shape::Text(text) => {
                         texts.push(text.galley.text().to_owned());
+                        text_colours.push((text.galley.text().to_owned(), text.galley.job.sections.iter().map(|section|section.format.color).collect()));
                         text_backgrounds.extend(text.galley.job.sections.iter().map(|section| section.format.background));
                         text_rects.push((text.galley.text().to_owned(), egui::Rect::from_min_size(text.pos, text.galley.size())));
                     }
+                    egui::Shape::Mesh(mesh) => image_rects.push(mesh.calc_bounds()),
                     egui::Shape::Rect(rect) => {
+                        if rect.brush.is_some() { image_rects.push(rect.rect); }
                         pink |= rect.fill == invalid_value_fill();
                         rects.push((rect.rect, rect.fill));
+                        if rect.rect.height() <= ROW_HEIGHT + 8.0 && rect.rect.width() > 20.0 && rect.fill != Color32::TRANSPARENT {
+                            row_fill_bounds.push(rect.rect.intersect(clipped.clip_rect));
+                        }
                     }
                     egui::Shape::Circle(circle) if (circle.radius - 1.2).abs() < 0.01 => grabber_dots.push(circle.center),
                     egui::Shape::LineSegment { stroke, .. } if (stroke.width - 1.6).abs() < 0.01 => {
@@ -2150,7 +2980,20 @@ mod tests {
                     _ => {}
                 }
             }
-            Frame { copied: crate::app::copied_text(&output.platform_output), texts, text_rects, grabber_dots, row_borders, row_border_clips, orders, selected, text_backgrounds, pink, edits, rects, colour_picker, row_request }
+            let occluded_drop_lines = output.shapes.iter().enumerate().filter(|(index, clipped)| {
+                let egui::Shape::LineSegment { points, stroke } = &clipped.shape else { return false; };
+                if (stroke.width-2.0).abs()>0.01 || stroke.color!=self.ctx.global_style().visuals.selection.stroke.color
+                    || points[1].x-points[0].x<600.0 { return false; }
+                let centre = (points[0]+points[1].to_vec2())*0.5;
+                output.shapes[index+1..].iter().any(|later| {
+                    let egui::Shape::Rect(rect) = &later.shape else { return false; };
+                    rect.fill.a()>0 && [-0.75,0.75].iter().any(|dy| {
+                        let sample = centre+Vec2::new(0.0,*dy);
+                        rect.rect.contains(sample) && later.clip_rect.contains(sample)
+                    })
+                })
+            }).count();
+            Frame { copied: crate::app::copied_text(&output.platform_output), cursor: output.platform_output.cursor_icon, texts, text_rects, grabber_dots, row_borders, row_fill_bounds, row_border_clips, lines, occluded_drop_lines, orders, selected, text_backgrounds, text_colours, pink, edits, rects, image_rects, colour_picker, row_request }
         }
 
         /// Focus string 0's text, with the cursor at its end.
@@ -2323,6 +3166,1220 @@ mod tests {
         panel.frame(vec![egui::Event::PointerMoved(target)]);
         let dropped = panel.frame(vec![pointer(target, false)]);
         assert_eq!(dropped.orders, if unfinished { Vec::<Vec<usize>>::new() } else { vec![vec![1, 2, 0]] });
+        }
+    }
+
+    fn set_display(panel: &Panel, grouped: bool, sort: StringSort, descending: bool, expanded: &[&str]) {
+        let id = egui::Id::new(("field_edit", "test", "strings.multilingual_unicode_string_list", "string list view"));
+        let mut view = panel.ctx.data(|data| data.get_temp::<StringListView>(id)).unwrap();
+        view.grouped = Some(grouped); view.sort = sort; view.descending = descending;
+        view.expanded = expanded.iter().map(|prefix| (*prefix).to_owned()).collect();
+        panel.ctx.data_mut(|data| data.insert_temp(id, view));
+    }
+    fn named_panel(ids: &[&str]) -> Panel {
+        let texts: Vec<_> = ids.iter().map(|_| "Message text").collect();
+        let mut panel = Panel::new(&texts);
+        Baboon::configure_context(&panel.ctx);
+        let edits: Vec<_> = ids.iter().enumerate().map(|(index,id)| StringListEdit::SetId { index, id: (*id).to_owned() }).collect();
+        strings::apply_string_list_edits(&mut panel.tag, None, &edits).unwrap();
+        panel.frame(vec![]);
+        panel
+    }
+    fn text_position(frame: &Frame, label: &str) -> egui::Pos2 {
+        frame.text_rects.iter().find(|(text,_)|text==label).unwrap_or_else(||panic!("{label}: {:?}",frame.texts)).1.center()
+    }
+    fn checkbox_position(frame: &Frame, label: &str) -> egui::Pos2 {
+        let y = text_position(frame,label).y;
+        frame.rects.iter().map(|(rect,_)|rect).find(|rect|
+            (rect.center().y-y).abs()<2.0 && (12.0..=20.0).contains(&rect.width())
+            && (rect.width()-rect.height()).abs()<1.0).expect("group checkbox").center()
+    }
+
+    #[test]
+    fn grouped_strings_start_collapsed_and_select_whole_groups_without_changing_indices() {
+        let mut panel = named_panel(&["B_TWO","A_ONE","B_ONE","plain","A_TWO"]);
+        panel.checkboxes = true;
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        panel.frame(vec![]);
+        let frame = panel.frame(vec![]);
+        assert!(text_position(&frame,"B").y < text_position(&frame,"A").y);
+        assert!(!frame.texts.contains(&"B_TWO".to_owned()));
+        let selected = click_at(&mut panel,checkbox_position(&frame,"B"));
+        assert_eq!(selected.selected,BTreeSet::from([0,2]));
+        assert!(selected.edits.is_empty() && selected.orders.is_empty());
+        let label = selected.text_rects.iter().find(|(text,_)|text=="B").unwrap().1;
+        click_at(&mut panel,egui::pos2(label.left()-16.0,label.center().y));
+        let open = panel.frame(vec![]);
+        assert!(open.texts.contains(&"B_TWO".to_owned()) && open.texts.contains(&"B_ONE".to_owned()));
+        assert!(open.texts.contains(&"0".to_owned()) && open.texts.contains(&"2".to_owned()));
+    }
+
+    #[test]
+    fn group_header_click_selects_members_only_without_checkboxes_and_chevron_only_expands() {
+        let mut panel = named_panel(&["A_one","B_one","A_two","B_two"]);
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        panel.frame(vec![]);
+        let frame = panel.frame(vec![]);
+        let selected = click_at(&mut panel,text_position(&frame,"A"));
+        assert_eq!(selected.selected,BTreeSet::from([0,2]));
+        assert!(!selected.texts.contains(&"A_one".to_owned()),"header selection does not expand the group");
+        let other = text_position(&selected,"B");
+        let selected = click_at(&mut panel,egui::pos2(850.0,other.y));
+        assert_eq!(selected.selected,BTreeSet::from([1,3]),"blank header band also selects its group");
+        panel.checkboxes = true;
+        panel.frame(vec![]);
+        let frame = panel.frame(vec![]);
+        let unchanged = click_at(&mut panel,text_position(&frame,"A"));
+        assert_eq!(unchanged.selected,BTreeSet::from([1,3]));
+        assert!(!unchanged.texts.contains(&"A_one".to_owned()));
+        let label = unchanged.text_rects.iter().find(|(text,_)|text=="A").unwrap().1;
+        click_at(&mut panel,egui::pos2(label.left()-16.0,label.center().y));
+        let expanded = panel.frame(vec![]);
+        assert!(expanded.texts.contains(&"A_one".to_owned()));
+        assert_eq!(expanded.selected,BTreeSet::from([1,3]));
+    }
+
+    fn begin_group_rename(panel: &mut Panel, prefix: &str) {
+        panel.frame(vec![]);
+        let frame=panel.frame(vec![]);
+        let menu=right_click_at(panel,text_position(&frame,prefix));
+        assert!(menu.texts.contains(&"Rename Group".to_owned()),"group menu: {:?}",menu.texts);
+        click_at(panel,text_position(&menu,"Rename Group"));
+        panel.frame(vec![]);
+    }
+
+    #[test]
+    fn group_context_menu_selects_members_and_hides_clipboard_actions() {
+        for descending in [false,true] {
+            let mut panel=named_panel(&["A_one","B_one","A_two","B_two","plain"]);
+            panel.checkboxes=true;
+            set_display(&panel,true,StringSort::Index,descending,&[]);
+            set_selection(&panel,&[4]);
+            let data=RowData {token:"group-cut".into(),classic:false,languages:vec!["English".into()],language:0,
+                rows:vec![row_clipboard::Row {id:Some("cut_id".into()),texts:vec![Some("Copied text".into())]}]};
+            row_clipboard::write(&panel.ctx,&data,&TextSyntax::unknown()).unwrap();
+            row_clipboard::set_active(&panel.ctx,row_clipboard::ActiveRows {cutting:true,
+                source:row_clipboard::RowDocument {kit:KitId(1),key:"strings.multilingual_unicode_string_list".into(),id:1},
+                revision:1,indices:BTreeSet::from([4]),token:data.token.clone(),data});
+            panel.frame(vec![]);
+            let frame=panel.frame(vec![]);
+            let menu=right_click_at(&mut panel,text_position(&frame,"A"));
+            assert_eq!(menu.selected,BTreeSet::from([0,2]));
+            assert!(row_clipboard::cut(&panel.ctx).is_some(),"right-click must retain cut mode");
+            for item in ["Rename Group","Duplicate Group","Delete Group"] {
+                assert!(menu.texts.contains(&item.into()),"missing {item}: {:?}",menu.texts);
+            }
+            for label in ["Copy","Cut","Paste","Insert String Above","Insert String Below","Expand Group","Collapse Group"] {
+                assert!(!menu.texts.contains(&label.into()),"unavailable {label} must be hidden");
+            }
+            assert_eq!(menu.texts.iter().filter(|text|text.as_str()=="Add String").count(),1,"only the inline Add String row should remain");
+            assert!(row_clipboard::cut(&panel.ctx).is_some());
+        }
+    }
+
+    #[test]
+    fn group_headers_support_control_toggle_and_shift_ranges_without_selecting_standalone_rows() {
+        for descending in [false,true] {
+            for checkboxes in [false,true] {
+                let mut panel=named_panel(&["A_one","B_one","A_two","B_two","plain","C_one","C_two","D_one","D_two"]);
+                panel.checkboxes=checkboxes;
+                set_display(&panel,true,StringSort::Index,descending,&[]);
+                panel.frame(vec![]);
+                let click=|panel:&mut Panel,name:&str,modifiers:egui::Modifiers| {
+                    let frame=panel.frame(vec![]);
+                    let pos=text_position(&frame,name);
+                    panel.frame(vec![egui::Event::PointerMoved(pos)]);
+                    for pressed in [true,false] {panel.frame(vec![egui::Event::PointerButton {
+                        pos,button:egui::PointerButton::Primary,pressed,modifiers,
+                    }]);}
+                    panel.frame(vec![])
+                };
+                assert_eq!(click(&mut panel,"A",egui::Modifiers::CTRL).selected,BTreeSet::from([0,2]));
+                assert_eq!(click(&mut panel,"C",egui::Modifiers::CTRL).selected,BTreeSet::from([0,2,5,6]));
+                assert_eq!(click(&mut panel,"A",egui::Modifiers::CTRL).selected,BTreeSet::from([5,6]));
+                click(&mut panel,"A",egui::Modifiers::CTRL);
+                let ranged=click(&mut panel,"C",egui::Modifiers::SHIFT);
+                assert_eq!(ranged.selected,BTreeSet::from([0,1,2,3,5,6]));
+                assert!(!ranged.texts.contains(&"A_one".into()),"selection must not expand collapsed groups");
+                assert_eq!(click(&mut panel,"D",egui::Modifiers {ctrl:true,shift:true,..Default::default()}).selected,
+                    BTreeSet::from([0,1,2,3,5,6,7,8]));
+            }
+        }
+    }
+
+    #[test]
+    fn group_grabber_moves_or_copies_three_whole_groups_and_excludes_partial_rows() {
+        for copy in [false,true] {
+            for descending in [false,true] {
+                let mut panel=named_panel(&["A_one","B_one","A_two","B_two","plain","C_one","C_two","D_one","D_two"]);
+                set_display(&panel,true,StringSort::Index,descending,&["A","C"]);
+                set_selection(&panel,&[0,1,2,3,4,5,6,7]);
+                panel.frame(vec![]);
+                let frame=panel.frame(vec![]);
+                let source=text_position(&frame,"A");
+                let handle=frame.grabber_dots.chunks_exact(6).map(|dots|egui::pos2(
+                    dots.iter().map(|p|p.x).sum::<f32>()/6.0,dots.iter().map(|p|p.y).sum::<f32>()/6.0))
+                    .min_by(|a,b|(a.y-source.y).abs().total_cmp(&(b.y-source.y).abs())).unwrap();
+                let target=text_position(&frame,"D")+Vec2::new(0.0,12.0);
+                let modifiers=if copy {egui::Modifiers::CTRL}else{egui::Modifiers::NONE};
+                let pointer=|pos,pressed|egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers};
+                panel.frame(vec![egui::Event::PointerMoved(handle),pointer(handle,true)]);
+                panel.frame(vec![egui::Event::ModifiersChanged(modifiers),egui::Event::PointerMoved(handle+Vec2::new(0.0,12.0))]);
+                for _ in 0..2 {panel.frame(vec![egui::Event::ModifiersChanged(modifiers),egui::Event::PointerMoved(target)]);}
+                let hovered=panel.frame(vec![egui::Event::ModifiersChanged(modifiers),egui::Event::PointerMoved(target)]);
+                assert_eq!(hovered.selected,BTreeSet::from([0,1,2,3,5,6]),"only complete groups travel with a group grabber");
+                assert!(hovered.texts.iter().any(|text|text==if copy {"Copy 3 groups"}else{"Move 3 groups"}));
+                let dropped=panel.frame(vec![pointer(target,false)]);
+                if copy {
+                    assert!(dropped.orders.is_empty());
+                    let [StringListEdit::Insert {at,entries}]=&dropped.edits[..] else {panic!("{:?}",dropped.edits)};
+                    assert_eq!(*at,if descending {7}else{9});
+                    assert_eq!(entries.iter().map(|entry|entry.id.as_deref().unwrap()).collect::<Vec<_>>(),
+                        vec!["A(1)_one","A(1)_two","B(1)_one","B(1)_two","C(1)_one","C(1)_two"]);
+                } else {
+                    assert!(dropped.edits.is_empty());
+                    assert_eq!(dropped.orders,vec![if descending {vec![4,0,2,1,3,5,6,7,8]}else{vec![4,7,8,0,2,1,3,5,6]}]);
+                }
+                let view=panel.ctx.data(|data|data.get_temp::<StringListView>(egui::Id::new((
+                    "field_edit","test","strings.multilingual_unicode_string_list","string list view")))).unwrap();
+                for prefix in if copy {["A(1)","C(1)"]}else{["A","C"]} {assert!(view.expanded.contains(prefix));}
+                assert!(!view.expanded.contains(if copy {"B(1)"}else{"B"}));
+                let original=panel.tag.write_to_bytes().unwrap();
+                let mut doc=crate::core::document::TagDocument::clean(panel.tag);
+                crate::core::document::apply::apply_deferred_ops(&mut doc,crate::core::document::apply::DeferredOps {
+                    string_list_ops:dropped.edits.into_iter().map(|edit|StringListOp {game:Some(GameId::Halo3),edit}).collect(),
+                    block_ops:dropped.orders.into_iter().map(|order|crate::core::document::ops::BlockOp {
+                        path:"string references".into(),kind:crate::core::document::ops::BlockOpKind::Reorder {order},
+                    }).collect(),..Default::default()
+                },"Drag selected groups");
+                let (snapshot,_)=doc.journal.undo(&doc.tag).unwrap();
+                assert_eq!(snapshot.as_slice(),original.as_slice());
+                assert!(!doc.journal.can_undo(),"moving or copying several groups is one undo step");
+            }
+        }
+    }
+
+    #[test]
+    fn undo_and_redo_of_group_moves_clear_selection_without_resetting_view_options() {
+        let mut panel=named_panel(&["A_one","B_one","A_two","B_two","plain","C_one","C_two","D_one","D_two"]);
+        set_display(&panel,true,StringSort::Index,false,&["A","C"]);
+        let mut doc=crate::core::document::TagDocument::clean(TagFile::read_from_bytes(&panel.tag.write_to_bytes().unwrap()).unwrap());
+        let order=vec![4,7,8,0,2,1,3,5,6];
+        crate::core::document::apply::apply_deferred_ops(&mut doc,crate::core::document::apply::DeferredOps {
+            block_ops:vec![crate::core::document::ops::BlockOp {path:"string references".into(),
+                kind:crate::core::document::ops::BlockOpKind::Reorder {order}}],..Default::default()
+        },"Move three groups");
+        panel.tag=TagFile::read_from_bytes(&doc.tag.write_to_bytes().unwrap()).unwrap();
+        panel.content_revision+=1;
+        set_selection(&panel,&[3,4,5,6,7,8]);
+        panel.frame(vec![]);
+        let original_doc=panel.document_revision;
+        for redo in [false,true] {
+            if redo {set_selection(&panel,&[0,1,2,3,5,6]);}
+            let (snapshot,_)=if redo {doc.journal.redo(&doc.tag)}else{doc.journal.undo(&doc.tag)}.unwrap();
+            doc.tag=TagFile::read_from_bytes(&snapshot).unwrap();
+            panel.tag=TagFile::read_from_bytes(&snapshot).unwrap();
+            panel.content_revision+=1;
+            clear_selection_after_history(&panel.ctx,original_doc);
+            let frame=panel.frame(vec![]);
+            assert!(frame.selected.is_empty(),"history must not select unrelated rows at restored indices");
+            let view=panel.ctx.data(|data|data.get_temp::<StringListView>(egui::Id::new((
+                "field_edit","test","strings.multilingual_unicode_string_list","string list view")))).unwrap();
+            assert!(view.anchor.is_none() && view.scroll_to.is_none() && view.focus_new.is_none());
+            assert_eq!(view.grouped,Some(true));
+            assert_eq!(view.expanded,BTreeSet::from(["A".into(),"C".into()]));
+            assert!(frame.edits.is_empty() && frame.orders.is_empty());
+            // A different document's history cannot clear this pane's selection.
+            set_selection(&panel,&[0]);
+            clear_selection_after_history(&panel.ctx,original_doc+100);
+            assert_eq!(panel.frame(vec![]).selected,BTreeSet::from([0]));
+        }
+    }
+
+    #[test]
+    fn group_rename_survives_index_refresh_but_stops_when_document_contents_change() {
+        for expanded in [false,true] {
+            let mut panel=named_panel(&["A_one","A_two","B_one","B_two"]);
+            set_display(&panel,true,StringSort::Index,false,if expanded {&["A"]}else{&[]});
+            begin_group_rename(&mut panel,"A");
+            panel.frame(vec![text("Draft")]);
+            let focused=panel.ctx.memory(|memory|memory.focused()).unwrap();
+            let view_id=egui::Id::new(("field_edit","test","strings.multilingual_unicode_string_list","string list view"));
+            // Periodic entry-index installation advances kit.generation without
+            // replacing or editing this open document. Render metadata is also unrelated.
+            for epoch in 2..=4 {
+                panel.kit_generation=epoch;
+                panel.render_method_epoch=epoch;
+                let frame=panel.frame(vec![]);
+                let view=panel.ctx.data(|data|data.get_temp::<StringListView>(view_id)).unwrap();
+                assert_eq!(view.group_rename.as_ref().map(|rename|rename.text.as_str()),Some("Draft"));
+                assert_eq!(panel.ctx.memory(|memory|memory.focused()),Some(focused));
+                assert!(frame.edits.is_empty());
+            }
+            panel.frame(vec![text("Next")]);
+            let committed=panel.frame(vec![key(egui::Key::Enter)]);
+            assert!(matches!(&committed.edits[..],[StringListEdit::SetId {id:a,..},StringListEdit::SetId {id:b,..}]
+                if a=="DraftNext_one" && b=="DraftNext_two"),"{:?}",committed.edits);
+            begin_group_rename(&mut panel,"A");
+            panel.frame(vec![text("Stale")]);
+            strings::apply_string_list_edits(&mut panel.tag,None,&[StringListEdit::SetId {index:0,id:"B_changed".into()}]).unwrap();
+            panel.content_revision+=1;
+            let frame=panel.frame(vec![]);
+            let view=panel.ctx.data(|data|data.get_temp::<StringListView>(view_id)).unwrap();
+            assert!(view.group_rename.is_none(),"actual content changes must still invalidate a stale rename");
+            assert!(frame.edits.is_empty());
+        }
+    }
+
+    #[test]
+    fn expanded_group_rename_keeps_focus_while_idle() {
+        let mut panel=named_panel(&["A_one","A_two","B_one","B_two"]);
+        panel.checkboxes=true;
+        set_display(&panel,true,StringSort::Index,false,&["A"]);
+        begin_group_rename(&mut panel,"A");
+        for _ in 0..30 {
+            let idle=panel.frame(vec![]);
+            assert!(idle.texts.iter().any(|t|t.contains("does not update references")),"{:?}",idle.texts);
+            assert!(idle.edits.is_empty());
+        }
+        panel.frame(vec![text("New")]);
+        let committed=panel.frame(vec![key(egui::Key::Enter)]);
+        assert!(matches!(&committed.edits[..],[StringListEdit::SetId {id:a,..},StringListEdit::SetId {id:b,..}]
+            if a=="New_one" && b=="New_two"),"{:?}",committed.edits);
+    }
+
+    #[test]
+    fn inline_group_rename_commits_all_members_as_one_undo_and_preserves_disclosure() {
+        let mut panel=named_panel(&["A_one","plain","A_two"]);
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        begin_group_rename(&mut panel,"A");
+        let warning=panel.frame(vec![]);
+        assert!(warning.texts.iter().any(|t|t.contains("does not update references")));
+        let typed=panel.frame(vec![text("Renamed___")]);
+        assert!(typed.edits.is_empty(),"typing must not rename yet");
+        let committed=panel.frame(vec![key(egui::Key::Enter)]);
+        assert!(matches!(&committed.edits[..],[StringListEdit::SetId {index:0,id:a},StringListEdit::SetId {index:2,id:b}]
+            if a=="Renamed_one" && b=="Renamed_two"),"{:?}",committed.edits);
+        let original=panel.tag.write_to_bytes().unwrap();
+        let mut doc=crate::core::document::TagDocument::clean(panel.tag);
+        crate::core::document::apply::apply_deferred_ops(&mut doc,crate::core::document::apply::DeferredOps {
+            string_list_ops:committed.edits.into_iter().map(|edit|StringListOp {game:Some(GameId::Halo3),edit}).collect(),
+            ..Default::default()
+        },"Rename String Group");
+        let list=strings::read_string_list(&doc.tag).unwrap();
+        assert_eq!(list.entries[1].id.as_deref(),Some("plain"));
+        assert_eq!(list.entries[0].texts[0].as_deref(),Some("Message text"));
+        let (snapshot,_)=doc.journal.undo(&doc.tag).unwrap();
+        assert_eq!(snapshot.as_slice(),original.as_slice());
+        assert!(!doc.journal.can_undo());
+        panel.tag=doc.tag;
+        let cache_id=egui::Id::new(("field_edit","test","strings.multilingual_unicode_string_list","string list cache"));
+        panel.ctx.data_mut(|data|data.remove::<Arc<ListCache>>(cache_id));
+        panel.frame(vec![]);
+        let renamed=panel.frame(vec![]);
+        assert!(renamed.texts.contains(&"Renamed".into()));
+        assert!(!renamed.texts.contains(&"Renamed_one".into()),"collapsed state must survive rename");
+    }
+
+    #[test]
+    fn group_merge_requires_confirmation_and_cancel_returns_to_the_inline_draft() {
+        let mut panel=named_panel(&["A_one","A_two","B_one","B_two"]);
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        begin_group_rename(&mut panel,"A");
+        panel.frame(vec![text("B")]);
+        assert!(panel.frame(vec![key(egui::Key::Enter)]).edits.is_empty());
+        panel.frame(vec![]); // Modal performs a hidden first sizing pass.
+        let modal=panel.frame(vec![]);
+        assert!(modal.texts.contains(&"Merge String Groups?".into()),"{:?}",modal.texts);
+        assert!(modal.texts.contains(&"The group 'B' already exists.".into()));
+        let cancelled=click_at(&mut panel,text_position(&modal,"Cancel"));
+        assert!(cancelled.edits.is_empty());
+        panel.frame(vec![]);
+        let draft=panel.frame(vec![]);
+        assert!(!draft.texts.contains(&"Merge String Groups?".into()));
+        assert!(panel.frame(vec![key(egui::Key::Enter)]).edits.is_empty());
+        panel.frame(vec![]); // Modal performs a hidden first sizing pass.
+        let modal=panel.frame(vec![]);
+        let committed=click_at(&mut panel,text_position(&modal,"Merge"));
+        assert!(matches!(&committed.edits[..],[StringListEdit::SetId {index:0,id:a},StringListEdit::SetId {index:1,id:b}]
+            if a=="B_one(1)" && b=="B_two(1)"),"{:?}",committed.edits);
+    }
+
+    #[test]
+    fn invalid_group_prefix_and_escape_leave_the_tag_unchanged() {
+        let mut panel=named_panel(&["A_one","A_two"]);
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        begin_group_rename(&mut panel,"A");
+        panel.frame(vec![text("bad_prefix")]);
+        let invalid=panel.frame(vec![key(egui::Key::Enter)]);
+        assert!(invalid.edits.is_empty());
+        assert!(invalid.texts.iter().any(|t|t.contains("internal underscores")));
+        let cancelled=panel.frame(vec![key(egui::Key::Escape)]);
+        assert!(cancelled.edits.is_empty());
+        let normal=panel.frame(vec![]);
+        assert!(!normal.texts.iter().any(|t|t.contains("does not update references")));
+    }
+
+    #[test]
+    fn grouped_duplicate_is_available_while_blank_insertion_is_hidden() {
+        for (sort,descending,expected) in [(StringSort::Index,false,1),(StringSort::Index,true,0),(StringSort::StringId,false,4)] {
+            let mut panel=named_panel(&["A_one","B_one","A_two","plain"]);
+            set_display(&panel,true,sort,descending,&[]);
+            panel.frame(vec![]);
+            let frame=panel.frame(vec![]);
+            let menu=right_click_at(&mut panel,text_position(&frame,"A"));
+            let result=click_at(&mut panel,text_position(&menu,"Duplicate Group"));
+            assert!(matches!(&result.edits[..],[StringListEdit::Insert {at,entries}]
+                if *at==expected && entries.len()==2 && entries[0].id.as_deref()==Some("A(1)_one")
+                && entries[1].id.as_deref()==Some("A(1)_two")),"{:?}",result.edits);
+        }
+        let mut panel=named_panel(&["A_one","B_one","A_two","plain"]);
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        panel.frame(vec![]);
+        let frame=panel.frame(vec![]);
+        let menu=right_click_at(&mut panel,text_position(&frame,"A"));
+        assert!(!menu.texts.contains(&"Insert String Below".into()));
+    }
+
+    #[test]
+    fn alphabetic_group_menu_omits_insertion_but_inline_group_add_remains_available() {
+        let mut panel=named_panel(&["A_one","A_two"]);
+        set_display(&panel,true,StringSort::StringId,false,&[]);
+        panel.frame(vec![]);
+        let frame=panel.frame(vec![]);
+        let menu=right_click_at(&mut panel,text_position(&frame,"A"));
+        assert!(!menu.texts.contains(&"Insert String Above".into()));
+        assert_eq!(menu.texts.iter().filter(|text|text.as_str()=="Add String").count(),1,"menu should not duplicate inline Add String");
+        panel.frame(vec![key(egui::Key::Escape)]);
+        let frame=panel.frame(vec![]);
+        let prefix=frame.text_rects.iter().find(|(text,_)|text=="A").unwrap().1;
+        click_at(&mut panel,egui::pos2(prefix.left()-16.0,prefix.center().y));
+        let expanded=panel.frame(vec![]);
+        let result=click_at(&mut panel,text_position(&expanded,"Add String"));
+        assert!(matches!(&result.edits[..],[StringListEdit::Insert {at:2,entries}]
+            if entries[0].id.as_deref()==Some("A_new_string")));
+    }
+
+    #[test]
+    fn filtered_group_rename_updates_hidden_members_too() {
+        let mut panel=named_panel(&["A_one","B_one","A_two","B_two"]);
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        let tag_key="strings.multilingual_unicode_string_list";
+        let kind=FindTargetKind::StringText {index:2,language:0};
+        let snapshot=Arc::new(FindRenderSnapshot {query:"Message".into(),match_case:false,whole_word:false,active:None,
+            matching_cells:Arc::new([(tag_key.to_owned(),String::new(),kind)].into_iter().collect()),
+            string_context:Some(StringFindContext {selected:BTreeSet::new(),kit:KitId(1),tag_key:tag_key.into(),scope:"test".into(),
+                game:Some(GameId::Halo3),definitions_root:None,language:0,languages:vec!["English".into()],has_ids:true,editor_active:true}),filter_results:true});
+        panel.ctx.data_mut(|data|data.insert_temp(find_render_snapshot_id(),snapshot));
+        begin_group_rename(&mut panel,"A");
+        panel.frame(vec![text("New")]);
+        let result=panel.frame(vec![key(egui::Key::Enter)]);
+        assert!(matches!(&result.edits[..],[StringListEdit::SetId {index:0,..},StringListEdit::SetId {index:2,..}]));
+    }
+
+    #[test]
+    fn scrolling_an_inline_rename_out_of_view_commits_instead_of_leaving_an_invisible_draft() {
+        let ids:Vec<_>=(0..35).flat_map(|i|[format!("g{i:02}_one"),format!("g{i:02}_two")]).collect();
+        let mut panel=named_panel(&ids.iter().map(String::as_str).collect::<Vec<_>>());
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        begin_group_rename(&mut panel,"g00");
+        panel.frame(vec![text("Renamed")]);
+        let mut edits=Vec::new();
+        for _ in 0..3 {
+            let frame=panel.frame(vec![egui::Event::PointerMoved(egui::pos2(850.0,400.0)),
+                egui::Event::MouseWheel {unit:egui::MouseWheelUnit::Point,delta:Vec2::new(0.0,-800.0),
+                    phase:egui::TouchPhase::Move,modifiers:Default::default()}]);
+            edits.extend(frame.edits);
+        }
+        assert!(matches!(&edits[..],[StringListEdit::SetId {index:0,..},StringListEdit::SetId {index:1,..}]));
+    }
+
+    #[test]
+    fn checkbox_art_aligns_between_column_header_groups_and_strings() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            let mut panel = named_panel(&["A_one", "A_two"]);
+            panel.ctx.set_pixels_per_point(scale);
+            panel.checkboxes = true;
+            set_display(&panel, true, StringSort::Index, false, &["A"]);
+            panel.frame(vec![]);
+            let frame = panel.frame(vec![]);
+            let x = checkbox_position(&frame,"A").x;
+            let centres: Vec<_> = ["Index", "A", "A_one", "A_two"].iter().map(|label| {
+                let y = text_position(&frame,label).y;
+                frame.image_rects.iter().find(|r| (r.width()-16.0).abs()<1.0
+                    && (r.height()-16.0).abs()<1.0 && (r.center().x-x).abs()<12.0
+                    && (r.center().y-y).abs()<16.0).unwrap_or_else(||panic!("checkbox for {label}, scale={scale}, column x={x}, y={y}, images={:?}",frame.image_rects)).center().x
+            }).collect();
+            assert!(centres.iter().all(|x| (x-centres[0]).abs()<0.01),
+                "checkbox glyphs must share a column centre, scale={scale}: {centres:?}");
+        }
+    }
+
+    #[test]
+    fn fully_selected_groups_highlight_with_or_without_selection_checkboxes() {
+        for checkboxes in [false,true] {
+            let mut panel = named_panel(&["A_one", "A_two", "B_one", "B_two"]);
+            panel.checkboxes = checkboxes;
+            set_display(&panel, true, StringSort::Index, false, &[]);
+            panel.frame(vec![]);
+            set_selection(&panel, &[0,1,2]);
+            let frame = panel.frame(vec![]);
+            let fill = |label| {
+                let sample = egui::pos2(850.0,text_position(&frame,label).y);
+                frame.rects.iter().rev().find(|(rect,fill)|rect.contains(sample)&&fill.a()>0).unwrap().1
+            };
+            assert_ne!(fill("A"),foundation_section_bar(),"fully selected group must highlight, checkboxes={checkboxes}");
+            assert_eq!(fill("B"),foundation_section_bar(),"partial group retains its normal background");
+        }
+    }
+
+    #[test]
+    fn selected_group_text_keeps_its_normal_colours() {
+        let mut panel = named_panel(&["A_one", "A_two"]);
+        set_display(&panel, true, StringSort::Index, false, &["A"]);
+        panel.frame(vec![]);
+        let normal = panel.frame(vec![]);
+        set_selection(&panel, &[0, 1]);
+        let selected = panel.frame(vec![]);
+        for label in ["A", "2"] {
+            let colours = |frame: &Frame| frame.text_colours.iter().find(|(text,_)|text==label).unwrap().1.clone();
+            assert_eq!(colours(&normal), colours(&selected), "group {label} colour must not change on selection");
+        }
+    }
+
+    #[test]
+    fn selecting_adjacent_string_rows_preserves_their_alternating_backgrounds() {
+        let mut panel = named_panel(&["one", "two"]);
+        panel.frame(vec![]);
+        set_selection(&panel, &[0, 1]);
+        panel.frame(vec![]);
+        let frame = panel.frame(vec![]);
+        let mut backgrounds = Vec::new();
+        let mut layers = Vec::new();
+        for label in ["one", "two"] {
+            let sample = egui::pos2(60.0, text_position(&frame,label).y);
+            // egui's faint stripe can be additive (nonzero RGB with zero alpha).
+            let fills: Vec<_> = frame.rects.iter().filter(|(rect,fill)|rect.contains(sample)&&*fill!=Color32::TRANSPARENT).map(|(_,fill)|*fill).collect();
+            let overlay = fills.last().expect("selected row background");
+            assert!(overlay.a()<255, "selection should be translucent so the stripe survives");
+            layers.push(fills.clone());
+            backgrounds.push(fills.into_iter().fold(Color32::TRANSPARENT, |base,fill|base.blend(fill)));
+        }
+        assert_ne!(backgrounds[0], backgrounds[1], "adjacent selected rows must retain visible banding: {layers:?}");
+    }
+
+    #[test]
+    fn grouped_headers_meet_the_first_row_and_fills_stop_at_the_bottom_outline() {
+        for expanded in [false, true] {
+            let mut panel = named_panel(&["A_one", "A_two", "plain"]);
+            panel.editable = false;
+            set_display(&panel, true, StringSort::Index, false, if expanded { &["A"] } else { &[] });
+            set_selection(&panel, &[0]);
+            panel.frame(vec![]);
+            let frame = panel.frame(vec![]);
+            let prefix = text_position(&frame,"A");
+            let bounds = frame.rects.iter().filter(|(rect,fill)| *fill==Color32::TRANSPARENT
+                && rect.width()>600.0 && rect.contains(prefix)).min_by(|(a,_),(b,_)|a.height().total_cmp(&b.height())).unwrap().0;
+            let header = frame.rects.iter().find(|(rect,fill)| *fill==foundation_section_bar() && rect.contains(prefix)).unwrap().0;
+            assert!(header.bottom() <= bounds.bottom()+0.1, "collapsed header fill must end at its outline");
+            if expanded {
+                let first = text_position(&frame,"A_one");
+                let last = text_position(&frame,"A_two");
+                let first_fill = frame.row_fill_bounds.iter().find(|rect|rect.contains(egui::pos2(850.0,first.y))).unwrap();
+                assert!((first_fill.top()-header.bottom()).abs()<0.1, "header and first row must meet: {header:?}, {first_fill:?}");
+                for fill in frame.row_fill_bounds.iter().filter(|rect|rect.contains(egui::pos2(850.0,last.y))) {
+                    assert!(fill.bottom() <= bounds.bottom()+0.1,"row fill must not protrude below the group: {fill:?}, {bounds:?}");
+                }
+            } else { assert!((header.bottom()-bounds.bottom()).abs()<0.1); }
+        }
+    }
+
+    #[test]
+    fn grouped_row_backgrounds_stay_inside_the_group_outline() {
+        let mut panel = named_panel(&["A_one", "A_two", "plain"]);
+        set_display(&panel, true, StringSort::Index, false, &["A"]);
+        set_selection(&panel, &[0]);
+        panel.frame(vec![]);
+        let frame = panel.frame(vec![]);
+        let first = text_position(&frame, "A_one");
+        let last = text_position(&frame, "A_two");
+        let next = text_position(&frame, "plain");
+        let bounds = frame.rects.iter().find(|(rect, fill)| *fill == Color32::TRANSPARENT
+            && rect.width() > 600.0 && rect.contains(first) && rect.contains(last) && rect.bottom() < next.y).unwrap().0;
+        for at in [egui::pos2(bounds.left() + 1.0, first.y), egui::pos2(850.0, first.y), egui::pos2(850.0, last.y)] {
+            let fills: Vec<_> = frame.row_fill_bounds.iter().filter(|rect| rect.contains(at)).collect();
+            assert!(!fills.is_empty(), "row background must be checked");
+            for rect in fills {
+                assert!(rect.left() >= bounds.left() - 0.1 && rect.right() <= bounds.right() + 0.1,
+                    "row fill {rect:?} extends outside group {bounds:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn group_count_uses_the_same_right_alignment_before_and_during_rename() {
+        let mut panel=named_panel(&["A_one","A_two"]);
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        panel.frame(vec![]);
+        let frame=panel.frame(vec![]);
+        let before=frame.text_rects.iter().find(|(text,_)|text=="2").unwrap().1;
+        begin_group_rename(&mut panel,"A");
+        let editing=panel.frame(vec![]);
+        let during=editing.text_rects.iter().find(|(text,_)|text=="2").unwrap().1;
+        assert!((before.right()-during.right()).abs()<0.5,"{before:?} vs {during:?}");
+        assert!((before.center().y-during.center().y).abs()<0.5);
+    }
+
+    #[test]
+    fn deleting_a_group_preserves_the_next_groups_disclosure_state() {
+        let mut panel=named_panel(&["A_one","A_two","B_one","B_two"]);
+        set_display(&panel,true,StringSort::Index,false,&["A"]);
+        panel.frame(vec![]);
+        let frame=panel.frame(vec![]);
+        let menu=right_click_at(&mut panel,text_position(&frame,"A"));
+        let deleted=click_at(&mut panel,text_position(&menu,"Delete Group"));
+        assert_eq!(deleted.edits,vec![StringListEdit::Remove {indices:vec![0,1]}]);
+        strings::apply_string_list_edits(&mut panel.tag,None,&deleted.edits).unwrap();
+        panel.ctx.data_mut(|data|data.remove::<Arc<ListCache>>(egui::Id::new((
+            "field_edit","test","strings.multilingual_unicode_string_list","string list cache"))));
+        panel.frame(vec![]);
+        let remaining=panel.frame(vec![]);
+        assert!(remaining.texts.contains(&"B".to_owned()));
+        assert!(!remaining.texts.contains(&"B_one".to_owned()),"deleting A must not expand B");
+    }
+
+    #[test]
+    fn grouped_column_resizes_only_from_header_and_defers_full_wrap_reflow_until_release() {
+        let mut panel=named_panel(&["A_one","A_two"]);
+        panel.wrap_text=true;
+        set_display(&panel,true,StringSort::Index,false,&["A"]);
+        panel.frame(vec![]);
+        let frame=panel.frame(vec![]);
+        let heading=text_position(&frame,"String ID");
+        let divider=frame.lines.iter().find(|(points,_)|points[0].x==points[1].x
+            && points[0].x>heading.x && points[0].y<heading.y && points[1].y>heading.y).unwrap().0;
+        assert!(divider[1].y<text_position(&frame,"A_one").y,"divider must stop at the header");
+        let view_id=egui::Id::new(("field_edit","test","strings.multilingual_unicode_string_list","string list view"));
+        let initial=panel.ctx.data(|data|data.get_temp::<StringListView>(view_id)).unwrap().wrapped_rows.unwrap().layout.widths.clone();
+        let at=egui::pos2(divider[0].x,heading.y);
+        let pointer=|pos,pressed|egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+        panel.frame(vec![egui::Event::PointerMoved(at),pointer(at,true)]);
+        let target=at+Vec2::new(80.0,0.0);
+        panel.frame(vec![egui::Event::PointerMoved(target)]);
+        panel.frame(vec![egui::Event::PointerMoved(target)]);
+        let resizing=panel.ctx.data(|data|data.get_temp::<StringListView>(view_id)).unwrap();
+        assert!(resizing.id_column_width>300.0,"header handle must resize the ID column");
+        assert_eq!(resizing.wrapped_rows.unwrap().layout.widths,initial,"full-list wrap reflow must be deferred during resize");
+        panel.frame(vec![pointer(target,false)]);
+        panel.frame(vec![]);
+        let finished=panel.ctx.data(|data|data.get_temp::<StringListView>(view_id)).unwrap();
+        assert_ne!(finished.wrapped_rows.unwrap().layout.widths,initial,"full reflow must finish when resize ends");
+    }
+
+    #[test]
+    fn group_headers_use_standard_colour_align_counts_and_close_expanded_groups() {
+        for editable in [false, true] {
+            let mut panel = named_panel(&["A_one", "A_two", "plain"]);
+            panel.editable = editable;
+            set_display(&panel, true, StringSort::Index, false, &["A"]);
+            panel.frame(vec![]);
+            let frame = panel.frame(vec![]);
+            let prefix = frame.text_rects.iter().find(|(text,_)|text == "A").unwrap().1;
+            let count = frame.text_rects.iter().filter(|(text,_)|text == "2")
+                .min_by(|(_,a),(_,b)|(a.center().y-prefix.center().y).abs().total_cmp(&(b.center().y-prefix.center().y).abs())).unwrap().1;
+            assert!((prefix.center().y-count.center().y).abs()<0.5);
+            assert!((prefix.height()-count.height()).abs()<0.5, "same font metrics align their baselines");
+            assert!(count.left()-prefix.right()>=10.0);
+            let sample = egui::pos2(850.0,prefix.center().y);
+            assert_eq!(frame.rects.iter().rev().find(|(rect,fill)|rect.contains(sample)&&fill.a()>0).unwrap().1,
+                foundation_section_bar());
+            let last = text_position(&frame, if editable { "Add String" } else { "A_two" }).y;
+            let next = text_position(&frame,"plain").y;
+            assert!(frame.rects.iter().any(|(rect,fill)| rect.bottom()>last && rect.bottom()<next
+                && rect.top()<prefix.center().y && rect.width()>600.0 && *fill==Color32::TRANSPARENT),
+                "expanded group must have one enclosing outline, editable={editable}");
+        }
+    }
+
+    #[test]
+    fn grouped_header_bands_keep_one_background_while_scrolling_virtual_rows() {
+        let ids: Vec<_> = (0..40).flat_map(|group| [format!("group{group:02}_one"),format!("group{group:02}_two")]).collect();
+        let refs: Vec<_> = ids.iter().map(String::as_str).collect();
+        let mut panel = named_panel(&refs);
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        panel.frame(vec![]);
+        panel.frame(vec![]);
+        let mut seen = BTreeSet::new();
+        for step in 0..16 {
+            let frame = panel.frame(vec![egui::Event::PointerMoved(egui::pos2(850.0,320.0)),
+                egui::Event::MouseWheel { unit:egui::MouseWheelUnit::Point,delta:Vec2::new(0.0,if step<10 {-53.0}else{53.0}),
+                    phase:egui::TouchPhase::Move,modifiers:Default::default() }]);
+            for (label,rect) in &frame.text_rects {
+                if !label.starts_with("group") || label.contains('_') || rect.center().y < 150.0 || rect.center().y > 650.0 { continue; }
+                seen.insert(label.clone());
+                let sample = egui::pos2(850.0,rect.center().y);
+                let expected = frame.rects.iter().find(|(bounds,fill)| bounds.contains(sample)
+                    && bounds.width()>600.0 && (bounds.height()-40.0).abs()<1.0 && fill.a()>0)
+                    .unwrap_or_else(||panic!("{label}, frame {step}, at {sample:?}, covering shapes: {:?}",frame.rects.iter()
+                        .filter(|(bounds,fill)|bounds.contains(sample) && fill.a()>0).collect::<Vec<_>>())).1;
+                let actual = frame.rects.iter().rev().find(|(bounds,fill)|bounds.contains(sample) && fill.a()>0).unwrap().1;
+                assert_eq!(actual,expected,"{label}, scrolling frame {step}: a table stripe/hover must not cover the header band");
+            }
+        }
+        assert!(seen.len()>15,"the test must scroll beyond one viewport of virtual headers");
+    }
+
+    #[test]
+    fn sorting_strings_only_changes_display_and_hides_grabbers_for_string_ids() {
+        let mut panel = named_panel(&["z","a","m"]);
+        let original = panel.tag.write_to_bytes().unwrap();
+        for (sort,descending,expected) in [(StringSort::Index,true,["m","a","z"]),(StringSort::StringId,false,["a","m","z"])] {
+            set_display(&panel,false,sort,descending,&[]);
+            panel.frame(vec![]);
+            let frame = panel.frame(vec![]);
+            assert!(text_position(&frame,expected[0]).y < text_position(&frame,expected[1]).y);
+            assert!(text_position(&frame,expected[1]).y < text_position(&frame,expected[2]).y);
+            assert_eq!(frame.grabber_dots.is_empty(),sort==StringSort::StringId);
+            assert!(frame.edits.is_empty() && frame.orders.is_empty());
+            assert_eq!(panel.tag.write_to_bytes().unwrap(),original);
+        }
+    }
+
+    #[test]
+    fn grouped_find_reveals_hits_and_checkboxes_only_select_matching_members() {
+        let mut panel = named_panel(&["A_one","B_one","A_two","B_two"]);
+        panel.checkboxes = true;
+        set_display(&panel,true,StringSort::Index,false,&[]);
+        set_selection(&panel,&[1]);
+        let key = "strings.multilingual_unicode_string_list";
+        let hit = FindOccurrence { tag_key: key.to_owned(), field_path: String::new(), text: "Message text".to_owned(),
+            range: 0..7, kind: FindTargetKind::StringText { index: 2, language: 0 } };
+        let snapshot = Arc::new(FindRenderSnapshot {
+            query: "Message".to_owned(), match_case: false, whole_word: false, active: Some(hit.clone()),
+            matching_cells: Arc::new([(key.to_owned(),String::new(),hit.kind)].into_iter().collect()),
+            string_context: Some(StringFindContext { selected: BTreeSet::new(), kit: KitId(1), tag_key: key.to_owned(), scope: "test".to_owned(),
+                game: Some(GameId::Halo3), definitions_root: None, language: 0,
+                languages: vec!["English".to_owned()], has_ids: true, editor_active: true }), filter_results: true,
+        });
+        panel.ctx.data_mut(|data| { data.insert_temp(find_render_snapshot_id(),snapshot);
+            data.insert_temp(string_find_jump_id("test",key),hit); });
+        panel.frame(vec![]);
+        let frame = panel.frame(vec![]);
+        assert!(frame.texts.contains(&"A_two".to_owned()));
+        assert!(!frame.texts.contains(&"A_one".to_owned()) && !frame.texts.contains(&"B".to_owned()));
+        assert!(frame.texts.contains(&"1 / 2".to_owned()));
+        let selected = click_at(&mut panel,checkbox_position(&frame,"A"));
+        assert_eq!(selected.selected,BTreeSet::from([1,2]));
+        panel.ctx.data_mut(|data|data.remove::<Arc<FindRenderSnapshot>>(find_render_snapshot_id()));
+        panel.frame(vec![]);
+        let restored = panel.frame(vec![]);
+        assert!(restored.texts.contains(&"A_one".to_owned()) && restored.texts.contains(&"A_two".to_owned()),
+            "Find navigation leaves the target group expanded after filtering clears");
+        assert!(!restored.texts.contains(&"B_one".to_owned()),"other groups remain collapsed");
+    }
+
+    #[test]
+    fn group_add_string_uses_prefixed_default_names_and_sort_dependent_insertion() {
+        for (sort,descending,at) in [(StringSort::Index,false,3),(StringSort::Index,true,0),(StringSort::StringId,false,4)] {
+            let mut panel = named_panel(&["A_new_string","B_two","A_one","B_one"]);
+            set_display(&panel,true,sort,descending,&["A"]);
+            panel.frame(vec![]);
+            let frame = panel.frame(vec![]);
+            let added = click_at(&mut panel,text_position(&frame,"Add String"));
+            let [StringListEdit::Insert { at: actual, entries }] = added.edits.as_slice() else { panic!("expected one group insertion: {:?}",added.edits); };
+            assert_eq!(*actual,at);
+            assert_eq!(entries[0].id.as_deref(),Some("A_new_string_1"));
+            assert_eq!(entries[0].texts.len(),12);
+            assert!(entries[0].texts.iter().all(Option::is_none));
+        }
+    }
+
+    #[test]
+    fn alphabetical_group_additions_stay_at_the_bottom_until_renamed() {
+        for descending in [false, true] {
+            let mut panel = named_panel(&["A_aaa", "A_zzz", "plain"]);
+            set_display(&panel, true, StringSort::StringId, descending, &["A"]);
+            panel.frame(vec![]);
+            let frame = panel.frame(vec![]);
+            let added = click_at(&mut panel, text_position(&frame, "Add String"));
+            assert!(matches!(&added.edits[..], [StringListEdit::Insert { at: 3, .. }]));
+            strings::apply_string_list_edits(&mut panel.tag, None, &added.edits).unwrap();
+            let cache_id = egui::Id::new(("field_edit", "test", "strings.multilingual_unicode_string_list", "string list cache"));
+            panel.ctx.data_mut(|data| data.remove::<Arc<ListCache>>(cache_id));
+            panel.frame(vec![]);
+            let frame = panel.frame(vec![]);
+            let bottom = text_position(&frame, "A_aaa").y.max(text_position(&frame, "A_zzz").y);
+            assert!(text_position(&frame, "A_new_string").y > bottom, "new group member must appear last, descending={descending}");
+            strings::apply_string_list_edits(&mut panel.tag, None,
+                &[StringListEdit::SetId { index: 3, id: "A_aab".into() }]).unwrap();
+            panel.ctx.data_mut(|data| data.remove::<Arc<ListCache>>(cache_id));
+            panel.frame(vec![]);
+            let frame = panel.frame(vec![]);
+            let a = text_position(&frame, "A_aaa").y;
+            let z = text_position(&frame, "A_zzz").y;
+            let renamed = text_position(&frame, "A_aab").y;
+            assert!(renamed>a.min(z) && renamed<a.max(z), "renamed entry resumes alphabetical order");
+        }
+    }
+
+    #[test]
+    fn dragging_into_another_group_replaces_prefix_reveals_destination_and_is_one_undo() {
+        for copy in [false,true] {
+            for expanded in [false,true] {
+                for descending in [false,true] {
+                    let mut panel=named_panel(&["A_pickup","B_hint","A_swap","B_other"]);
+                    strings::apply_string_list_edits(&mut panel.tag,None,&[StringListEdit::SetText {
+                        index:0,language:1,text:"Another language".into()}]).unwrap();
+                    panel.ctx.data_mut(|data|data.remove::<Arc<ListCache>>(egui::Id::new((
+                        "field_edit","test","strings.multilingual_unicode_string_list","string list cache"))));
+                    let original=panel.tag.write_to_bytes().unwrap();
+                    set_display(&panel,true,StringSort::Index,descending,if expanded {&["A","B"]}else{&["A"]});
+                    panel.frame(vec![]);
+                    let frame=panel.frame(vec![]);
+                    let source=text_position(&frame,"A_pickup");
+                    let handle=frame.grabber_dots.chunks_exact(6).map(|dots|egui::pos2(
+                        dots.iter().map(|p|p.x).sum::<f32>()/6.0,dots.iter().map(|p|p.y).sum::<f32>()/6.0))
+                        .min_by(|a,b|(a.y-source.y).abs().total_cmp(&(b.y-source.y).abs())).unwrap();
+                    let target=if expanded {text_position(&frame,"B_other")+Vec2::new(0.0,if descending {-12.0}else{12.0})}
+                        else {text_position(&frame,"B")+Vec2::new(0.0,12.0)};
+                    let modifiers=if copy {egui::Modifiers::CTRL}else{egui::Modifiers::NONE};
+                    let pointer=|pos,pressed|egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers};
+                    panel.frame(vec![egui::Event::PointerMoved(handle),pointer(handle,true)]);
+                    panel.frame(vec![egui::Event::ModifiersChanged(modifiers),egui::Event::PointerMoved(handle+Vec2::new(0.0,12.0))]);
+                    for _ in 0..2 {panel.frame(vec![egui::Event::ModifiersChanged(modifiers),egui::Event::PointerMoved(target)]);}
+                    let hovered=panel.frame(vec![egui::Event::ModifiersChanged(modifiers),egui::Event::PointerMoved(target)]);
+                    assert!(hovered.texts.iter().any(|text|text.contains("Prefix will be changed to B_")),"{:?}",hovered.texts);
+                    assert_eq!(hovered.texts.iter().any(|text|text.contains("References in other tags are not updated")),!copy);
+                    let action=text_position(&hovered,if copy {"Copy 1 string"}else{"Move 1 string"});
+                    let prefix=text_position(&hovered,"Prefix will be changed to B_");
+                    assert!(action.y<prefix.y,"drag feedback must use separate lines");
+                    if !copy {
+                        let warning=text_position(&hovered,"References in other tags are not updated.");
+                        assert!(prefix.y<warning.y,"move warning must have its own line");
+                    }
+                    let dropped=panel.frame(vec![pointer(target,false)]);
+                    assert!(dropped.orders.is_empty());
+                    assert_eq!(dropped.edits.len(),if copy {1}else{2});
+                    let StringListEdit::Insert {at,entries}=dropped.edits.last().unwrap() else {panic!("{:?}",dropped.edits)};
+                    let before=if !expanded && descending {1}else{4};
+                    assert_eq!(*at,if copy {before}else{before-1});
+                    assert_eq!(entries[0].id.as_deref(),Some("B_pickup"),"a free destination ID must not get a copy suffix");
+                    assert_eq!(entries[0].texts[1].as_deref(),Some("Another language"));
+                    let mut doc=crate::core::document::TagDocument::clean(panel.tag);
+                    crate::core::document::apply::apply_deferred_ops(&mut doc,crate::core::document::apply::DeferredOps {
+                        string_list_ops:dropped.edits.into_iter().map(|edit|StringListOp {game:Some(GameId::Halo3),edit}).collect(),
+                        ..Default::default()
+                    },"Transfer strings between prefix groups");
+                    let list=strings::read_string_list(&doc.tag).unwrap();
+                    assert_eq!(list.entries.len(),if copy {5}else{4});
+                    assert_eq!(list.entries.iter().any(|entry|entry.id.as_deref()==Some("A_pickup")),copy);
+                    let (snapshot,_)=doc.journal.undo(&doc.tag).unwrap();
+                    assert_eq!(snapshot.as_slice(),original.as_slice());
+                    assert!(!doc.journal.can_undo());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn control_drag_copies_rows_or_groups_at_the_drop_boundary_with_all_languages() {
+        for whole_group in [false,true] {
+            for descending in [false,true] {
+                for expanded in [false,true] {
+                    if !whole_group && !expanded { continue; }
+                    let mut panel=named_panel(&["A_zulu","B_two","A_alpha","B_one","plain"]);
+                    strings::apply_string_list_edits(&mut panel.tag,None,&(0..5).map(|index|
+                        StringListEdit::SetText {index,language:1,text:format!("Japanese {index}")}).collect::<Vec<_>>()).unwrap();
+                    panel.ctx.data_mut(|data|data.remove::<Arc<ListCache>>(egui::Id::new((
+                        "field_edit","test","strings.multilingual_unicode_string_list","string list cache"))));
+                    let original=panel.tag.write_to_bytes().unwrap();
+                    set_display(&panel,true,StringSort::Index,descending,if expanded {&["A"]}else{&[]});
+                    panel.frame(vec![]);
+                    let frame=panel.frame(vec![]);
+                    let source=text_position(&frame,if whole_group {"A"}else{"A_zulu"});
+                    let handle=frame.grabber_dots.chunks_exact(6).map(|dots|egui::pos2(
+                        dots.iter().map(|p|p.x).sum::<f32>()/6.0,dots.iter().map(|p|p.y).sum::<f32>()/6.0))
+                        .min_by(|a,b|(a.y-source.y).abs().total_cmp(&(b.y-source.y).abs())).unwrap();
+                    let target=if whole_group {text_position(&frame,"B")-Vec2::new(0.0,12.0)}
+                        else {text_position(&frame,"A_alpha")+Vec2::new(0.0,if descending {-12.0}else{12.0})};
+                    let pointer=|pos,pressed,modifiers|egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers};
+                    panel.frame(vec![egui::Event::PointerMoved(handle),pointer(handle,true,Default::default())]);
+                    panel.frame(vec![egui::Event::PointerMoved(handle+Vec2::new(0.0,12.0))]);
+                    panel.frame(vec![egui::Event::PointerMoved(target)]);
+                    let copied=panel.frame(vec![egui::Event::ModifiersChanged(egui::Modifiers::CTRL),egui::Event::PointerMoved(target)]);
+                    assert_eq!(copied.cursor,egui::CursorIcon::Copy);
+                    assert!(copied.rects.iter().any(|(rect,fill)| *fill==Color32::WHITE
+                        && rect.min==target+Vec2::new(14.0,16.0) && rect.size()==Vec2::splat(14.0)),
+                        "copy feedback must include a painted plus badge, even if Windows falls back to the arrow");
+                    let moved=panel.frame(vec![egui::Event::ModifiersChanged(Default::default()),egui::Event::PointerMoved(target)]);
+                    assert_eq!(moved.cursor,egui::CursorIcon::Grabbing,"releasing Ctrl restores move feedback");
+                    panel.frame(vec![egui::Event::ModifiersChanged(egui::Modifiers::CTRL),egui::Event::PointerMoved(target)]);
+                    let dropped=panel.frame(vec![pointer(target,false,egui::Modifiers::CTRL)]);
+                    assert!(dropped.orders.is_empty(),"copying must not reorder originals");
+                    let [StringListEdit::Insert {at,entries}]=dropped.edits.as_slice() else {panic!("{:?}",dropped.edits)};
+                    assert_eq!(*at,if whole_group {if descending {4}else{1}}else{3});
+                    assert_eq!(entries[0].id.as_deref(),Some(if whole_group {"A(1)_zulu"}else{"A_zulu(1)"}));
+                    assert_eq!(entries[0].texts[1].as_deref(),Some("Japanese 0"));
+                    assert_eq!(entries.len(),if whole_group {2}else{1});
+                    if whole_group {
+                        assert_eq!(entries[1].id.as_deref(),Some("A(1)_alpha"));
+                        assert_eq!(entries[1].texts[1].as_deref(),Some("Japanese 2"));
+                        let view=panel.ctx.data(|data|data.get_temp::<StringListView>(
+                            egui::Id::new(("field_edit","test","strings.multilingual_unicode_string_list","string list view")))).unwrap();
+                        assert_eq!(view.expanded.contains("A(1)"),expanded);
+                    }
+                    let mut doc=crate::core::document::TagDocument::clean(panel.tag);
+                    crate::core::document::apply::apply_deferred_ops(&mut doc,crate::core::document::apply::DeferredOps {
+                        string_list_ops:dropped.edits.into_iter().map(|edit|StringListOp {game:Some(GameId::Halo3),edit}).collect(),
+                        ..Default::default()
+                    },"Duplicate strings by dragging");
+                    assert_eq!(strings::read_string_list(&doc.tag).unwrap().entries.len(),if whole_group {7}else{6});
+                    let (snapshot,_)=doc.journal.undo(&doc.tag).unwrap();
+                    assert_eq!(snapshot.as_slice(),original.as_slice());
+                    assert!(!doc.journal.can_undo(),"a copied range must be one undo step");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dragging_back_to_the_same_slot_does_not_alphabetize_group_members() {
+        for descending in [false,true] {
+            for below in [false,true] {
+                let mut panel = named_panel(&["A_zulu","B_two","A_alpha","B_one","A_middle"]);
+                set_display(&panel,true,StringSort::Index,descending,&["A"]);
+                panel.frame(vec![]);
+                let frame = panel.frame(vec![]);
+                let at = text_position(&frame,"A_zulu");
+                let handle = frame.grabber_dots.chunks_exact(6).map(|dots|egui::pos2(
+                    dots.iter().map(|p|p.x).sum::<f32>()/6.0,dots.iter().map(|p|p.y).sum::<f32>()/6.0))
+                    .min_by(|a,b|(a.y-at.y).abs().total_cmp(&(b.y-at.y).abs())).unwrap();
+                let pointer = |pos,pressed|egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+                panel.frame(vec![egui::Event::PointerMoved(handle),pointer(handle,true)]);
+                panel.frame(vec![egui::Event::PointerMoved(handle+Vec2::new(0.0,12.0))]);
+                let target = at+Vec2::new(0.0,if below {12.0}else{-12.0});
+                panel.frame(vec![egui::Event::PointerMoved(target)]);
+                panel.frame(vec![egui::Event::PointerMoved(target)]);
+                let dropped = panel.frame(vec![pointer(target,false)]);
+                assert!(dropped.orders.is_empty(),"dropping back into the same slot must be a no-op: {:?}",dropped.orders);
+            }
+        }
+    }
+
+    #[test]
+    fn add_string_rows_require_an_explicit_button_click() {
+        for grouped in [false,true] {
+            let mut panel = named_panel(&["A_one","A_two"]);
+            set_display(&panel,grouped,StringSort::Index,false,&["A"]);
+            panel.frame(vec![]);
+            let frame = panel.frame(vec![]);
+            let button = text_position(&frame,"Add String");
+            let outside = egui::pos2(850.0,button.y);
+            panel.frame(vec![egui::Event::PointerMoved(outside)]);
+            let hovered = panel.frame(vec![egui::Event::PointerMoved(outside)]);
+            let fill_at = |frame: &Frame| frame.rects.iter().filter(|(rect,_)|rect.contains(outside))
+                .fold(Color32::TRANSPARENT, |fill,(_,overlay)|fill.blend(*overlay));
+            assert_eq!(fill_at(&frame),fill_at(&hovered),"empty Add String row must not highlight on hover");
+            let clicked = click_at(&mut panel,outside);
+            assert!(clicked.edits.is_empty(),"clicking the empty Add String row must not insert: {:?}",clicked.edits);
+            assert!(click_at(&mut panel,button).edits.iter().any(|edit|matches!(edit,StringListEdit::Insert {..})));
+        }
+    }
+
+    #[test]
+    fn mixed_group_row_drag_includes_collapsed_selection_and_preserves_destination_ids() {
+        for copy in [false,true] {
+            for descending in [false,true] {
+              for into_source in [false,true] {
+                let mut panel=named_panel(&["A_pickup","B_pickup","A_swap","B_other","C_extra","C_keep"]);
+                set_display(&panel,true,StringSort::Index,descending,&["A","B"]);
+                set_selection(&panel,&[0,1,2,4]);
+                panel.frame(vec![]);
+                let frame=panel.frame(vec![]);
+                let source=text_position(&frame,"A_pickup");
+                let handle=frame.grabber_dots.chunks_exact(6).map(|dots|egui::pos2(
+                    dots.iter().map(|p|p.x).sum::<f32>()/6.0,dots.iter().map(|p|p.y).sum::<f32>()/6.0))
+                    .min_by(|a,b|(a.y-source.y).abs().total_cmp(&(b.y-source.y).abs())).unwrap();
+                let target=text_position(&frame,if into_source {"A_swap"}else{"B_other"})+Vec2::new(0.0,if descending {-12.0}else{12.0});
+                let modifiers=if copy {egui::Modifiers::CTRL}else{egui::Modifiers::NONE};
+                let pointer=|pos,pressed|egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers};
+                panel.frame(vec![egui::Event::PointerMoved(handle),pointer(handle,true)]);
+                panel.frame(vec![egui::Event::ModifiersChanged(modifiers),egui::Event::PointerMoved(handle+Vec2::new(0.0,12.0))]);
+                for _ in 0..2 {panel.frame(vec![egui::Event::ModifiersChanged(modifiers),egui::Event::PointerMoved(target)]);}
+                let hovered=panel.frame(vec![egui::Event::ModifiersChanged(modifiers),egui::Event::PointerMoved(target)]);
+                assert_eq!(hovered.selected,BTreeSet::from([0,1,2,4]));
+                assert!(hovered.texts.iter().any(|text|text==if copy {"Copy 4 strings"}else{"Move 4 strings"}));
+                let dropped=panel.frame(vec![pointer(target,false)]);
+                assert!(dropped.orders.is_empty());
+                let StringListEdit::Insert {at,entries}=dropped.edits.last().unwrap() else {panic!("{:?}",dropped.edits)};
+                assert_eq!(*at,if copy {if into_source {3}else{4}}else if into_source {0}else{1});
+                assert_eq!(entries.iter().map(|entry|entry.id.as_deref().unwrap()).collect::<Vec<_>>(),
+                    if into_source {
+                        if copy {vec!["A_pickup(1)","A_swap(1)","A_pickup(2)","A_extra"]}
+                        else {vec!["A_pickup","A_swap","A_pickup(1)","A_extra"]}
+                    } else if copy {vec!["B_pickup(1)","B_swap","B_pickup(2)","B_extra"]}
+                    else {vec!["B_pickup(1)","B_swap","B_pickup","B_extra"]});
+                let original=panel.tag.write_to_bytes().unwrap();
+                let mut doc=crate::core::document::TagDocument::clean(panel.tag);
+                crate::core::document::apply::apply_deferred_ops(&mut doc,crate::core::document::apply::DeferredOps {
+                    string_list_ops:dropped.edits.into_iter().map(|edit|StringListOp {game:Some(GameId::Halo3),edit}).collect(),
+                    ..Default::default()
+                },"Drag selected strings");
+                let list=strings::read_string_list(&doc.tag).unwrap();
+                if !copy {
+                    assert_eq!(list.entries.iter().map(|entry|entry.id.as_deref().unwrap()).collect::<Vec<_>>(),
+                        if into_source {vec!["A_pickup","A_swap","A_pickup(1)","A_extra","B_other","C_keep"]}
+                        else {vec!["B_other","B_pickup(1)","B_swap","B_pickup","B_extra","C_keep"]});
+                    assert!(display::prefix_for(&list,5).is_none(),"a lone remaining member becomes ungrouped");
+                }
+                let (snapshot,_)=doc.journal.undo(&doc.tag).unwrap();
+                assert_eq!(snapshot.as_slice(),original.as_slice());
+                assert!(!doc.journal.can_undo(),"a multi-group drag is one undo step");
+              }
+            }
+        }
+    }
+
+    #[test]
+    fn row_drags_keep_slots_locally_and_change_prefix_between_groups() {
+        for descending in [false, true] {
+            for allowed in [false, true] {
+                let mut panel = named_panel(&["A_one", "B_one", "A_two", "B_two", "plain"]);
+                set_display(&panel, true, StringSort::Index, descending, &["A", "B"]);
+                set_selection(&panel, &[0]);
+                panel.frame(vec![]);
+                let frame = panel.frame(vec![]);
+                let source_y = text_position(&frame, "A_one").y;
+                let handle = frame.grabber_dots.chunks_exact(6).map(|dots| {
+                    egui::pos2(dots.iter().map(|p|p.x).sum::<f32>()/6.0, dots.iter().map(|p|p.y).sum::<f32>()/6.0)
+                }).min_by(|a,b|(a.y-source_y).abs().total_cmp(&(b.y-source_y).abs())).unwrap();
+                let target = text_position(&frame, if allowed { "A_two" } else { "B_one" })
+                    + Vec2::new(0.0, if descending { -12.0 } else { 12.0 });
+                let pointer = |pos,pressed| egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+                panel.frame(vec![egui::Event::PointerMoved(handle), pointer(handle,true)]);
+                panel.frame(vec![egui::Event::PointerMoved(handle+Vec2::new(0.0,12.0))]);
+                panel.frame(vec![egui::Event::PointerMoved(target)]);
+                let hovered = panel.frame(vec![egui::Event::PointerMoved(target)]);
+                let indicators = hovered.lines.iter().filter(|(points,stroke)| (stroke.width-2.0).abs()<0.01
+                    && stroke.color == panel.ctx.global_style().visuals.selection.stroke.color
+                    && points[1].x-points[0].x > 600.0).count();
+                assert_eq!(indicators,1);
+                let dropped = panel.frame(vec![pointer(target,false)]);
+                if allowed { assert_eq!(dropped.orders, vec![vec![2,1,0,3,4]]); }
+                else {
+                    assert!(dropped.orders.is_empty());
+                    assert!(matches!(&dropped.edits[..],[StringListEdit::Remove {indices},StringListEdit::Insert {at:1,entries}]
+                        if indices==&vec![0] && entries[0].id.as_deref()==Some("B_one(1)")),"{:?}",dropped.edits);
+                }
+                assert_eq!(hovered.selected, BTreeSet::from([0]), "a single-row selection stays selected");
+            }
+        }
+    }
+
+    #[test]
+    fn discarding_document_edits_keeps_view_options_until_the_pane_is_closed() {
+        for grouped in [false,true] {
+            let mut panel=named_panel(&["A_one","A_two","plain"]);
+            let saved=panel.tag.write_to_bytes().unwrap();
+            set_display(&panel,grouped,StringSort::StringId,true,&["A",""]);
+            let id=egui::Id::new(("field_edit","test","strings.multilingual_unicode_string_list","string list view"));
+            let mut view=panel.ctx.data(|data|data.get_temp::<StringListView>(id)).unwrap();
+            view.collect_ungrouped=true;
+            let width=if grouped {210.0}else{view.id_column_width};
+            view.id_column_width=width;
+            // These refer to unsaved data and must not survive the reload.
+            view.selected=BTreeSet::from([3]);
+            view.anchor=Some(3);
+            view.focus_new=Some(3);
+            view.new_group_ids=vec!["A_unsaved".into()];
+            view.group_rename=Some(GroupRename {prefix:"A".into(),text:"unsaved".into(),content_stamp:(1,1),
+                focus:true,error:None,pending_merge:None});
+            panel.ctx.data_mut(|data|data.insert_temp(id,view));
+            panel.wrap_text=true;
+            panel.checkboxes=true;
+            strings::apply_string_list_edits(&mut panel.tag,None,&[StringListEdit::SetText {
+                index:0,language:0,text:"Unsaved text".into(),
+            }]).unwrap();
+            // Discard reloads saved bytes into a fresh document in the same tile.
+            panel.tag=TagFile::read_from_bytes(&saved).unwrap();
+            panel.document_revision=2;
+            let frame=panel.frame(vec![]);
+            let view=panel.ctx.data(|data|data.get_temp::<StringListView>(id)).unwrap();
+            assert_eq!(view.grouped,Some(grouped));
+            assert!(view.collect_ungrouped);
+            assert!(view.sort==StringSort::StringId && view.descending);
+            assert_eq!(view.expanded,BTreeSet::from(["A".into(),String::new()]));
+            assert!((view.id_column_width-width).abs()<1.0);
+            assert!(panel.wrap_text && panel.checkboxes);
+            assert_eq!(view.document,Some(2));
+            assert!(view.selected.is_empty() && view.anchor.is_none() && view.focus_new.is_none());
+            assert!(view.group_rename.is_none() && view.new_group_ids.is_empty());
+            assert!(!frame.texts.contains(&"Unsaved text".into()));
+            assert!(frame.edits.is_empty() && frame.orders.is_empty());
+            // Reopening uses a new tile scope, so it gets normal defaults.
+            panel.scope="reopened tile";
+            panel.document_revision=3;
+            panel.frame(vec![]);
+            let reopened=panel.ctx.data(|data|data.get_temp::<StringListView>(egui::Id::new((
+                "field_edit","reopened tile","strings.multilingual_unicode_string_list","string list view")))).unwrap();
+            assert_eq!(reopened.grouped,Some(false));
+            assert!(!reopened.collect_ungrouped && !reopened.descending && reopened.expanded.is_empty());
+            assert!(reopened.sort==StringSort::Index);
+        }
+    }
+
+    #[test]
+    fn view_option_collects_ungrouped_rows_with_selection_but_no_group_actions() {
+        let mut panel=named_panel(&["solo_pickup","A_hint","plain","A_other"]);
+        set_display(&panel,true,StringSort::Index,false,&["A"]);
+        panel.frame(vec![]);
+        let frame=panel.frame(vec![]);
+        assert!(!frame.texts.contains(&"Ungrouped Strings".into()));
+        let view_button=frame.text_rects.iter().find(|(text,_)|text.trim()=="View").unwrap().1.center();
+        click_at(&mut panel,view_button);
+        let menu=panel.frame(vec![]);
+        click_at(&mut panel,text_position(&menu,"Group Ungrouped Strings"));
+        panel.frame(vec![key(egui::Key::Escape)]);
+        panel.frame(vec![]);
+        let frame=panel.frame(vec![]);
+        let header=text_position(&frame,"Ungrouped Strings");
+        assert!(header.y>text_position(&frame,"A").y);
+        assert!(!frame.texts.contains(&"solo_pickup".into()),"collection starts collapsed");
+        assert!(!frame.grabber_dots.iter().any(|dot|(dot.y-header.y).abs()<10.0),"collection has no grabber");
+        let selected=click_at(&mut panel,header);
+        assert_eq!(selected.selected,BTreeSet::from([0,2]));
+        let menu=right_click_at(&mut panel,text_position(&selected,"Ungrouped Strings"));
+        assert!(!menu.texts.iter().any(|text|matches!(text.as_str(),"Rename Group"|"Duplicate Group"|"Delete Group")));
+        let label=menu.text_rects.iter().find(|(text,_)|text=="Ungrouped Strings").unwrap().1;
+        click_at(&mut panel,egui::pos2(label.left()-16.0,label.center().y));
+        let frame=panel.frame(vec![]);
+        assert!(frame.texts.contains(&"solo_pickup".into()));
+        let source=text_position(&frame,"solo_pickup");
+        let handle=frame.grabber_dots.chunks_exact(6).map(|dots|egui::pos2(
+            dots.iter().map(|p|p.x).sum::<f32>()/6.0,dots.iter().map(|p|p.y).sum::<f32>()/6.0))
+            .min_by(|a,b|(a.y-source.y).abs().total_cmp(&(b.y-source.y).abs())).unwrap();
+        let target=text_position(&frame,"A_other")+Vec2::new(0.0,12.0);
+        let pointer=|pos,pressed|egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+        panel.frame(vec![egui::Event::PointerMoved(handle),pointer(handle,true)]);
+        panel.frame(vec![egui::Event::PointerMoved(handle+Vec2::new(0.0,12.0))]);
+        for _ in 0..2 {panel.frame(vec![egui::Event::PointerMoved(target)]);}
+        let dropped=panel.frame(vec![pointer(target,false)]);
+        let [StringListEdit::Remove {indices},StringListEdit::Insert {at:2,entries}]=&dropped.edits[..] else {panic!("{:?}",dropped.edits)};
+        assert_eq!(indices,&vec![0,2]);
+        assert_eq!(entries.iter().map(|entry|entry.id.as_deref()).collect::<Vec<_>>(),vec![Some("A_pickup"),Some("A_plain")]);
+    }
+
+    #[test]
+    fn ungrouped_runs_have_a_gutter_after_groups_but_no_internal_gaps() {
+        for expanded in [false,true] {
+            for pixels_per_point in [1.0,1.5,2.0] {
+                let mut panel=named_panel(&["A_one","A_two","plain_one","other","B_one","B_two"]);
+                panel.ctx.set_pixels_per_point(pixels_per_point);
+                set_display(&panel,true,StringSort::Index,false,if expanded {&["A"]}else{&[]});
+                panel.frame(vec![]);
+                let frame=panel.frame(vec![]);
+                let previous=text_position(&frame,if expanded {"Add String"}else{"A"}).y;
+                let first=text_position(&frame,"plain_one").y;
+                let second=text_position(&frame,"other").y;
+                let next=text_position(&frame,"B").y;
+                assert!((first-previous-if expanded {44.0}else{46.0}).abs()<1.1,
+                    "the ungrouped run must have an 8px top gutter: {}",first-previous);
+                assert!((second-first-ROW_HEIGHT).abs()<1.1,"consecutive ungrouped strings stay together");
+                assert!((next-second-46.0).abs()<1.1,"spacing on each side of the ungrouped run must match");
+            }
+        }
+    }
+
+    #[test]
+    fn whole_group_drop_indicator_has_one_position_per_gap() {
+        for pixels_per_point in [1.0, 1.25, 1.5, 2.0] {
+            for descending in [false, true] {
+                for expanded in [false, true] {
+                    let mut panel = named_panel(&["A_one", "A_two", "B_one", "B_two", "plain", "C_one", "C_two"]);
+                    panel.ctx.set_pixels_per_point(pixels_per_point);
+                    set_display(&panel, true, StringSort::Index, descending, if expanded { &["A"] } else { &[] });
+                    panel.frame(vec![]);
+                    let frame = panel.frame(vec![]);
+                    let source_y = text_position(&frame, "C").y;
+                    let handle = frame.grabber_dots.chunks_exact(6).map(|dots| {
+                        egui::pos2(dots.iter().map(|p|p.x).sum::<f32>()/6.0,dots.iter().map(|p|p.y).sum::<f32>()/6.0)
+                    }).min_by(|a,b|(a.y-source_y).abs().total_cmp(&(b.y-source_y).abs())).unwrap();
+                    let mut sections: Vec<_> = ["A", "B", "plain", "C"].iter().map(|name| {
+                        let top = text_position(&frame, name).y;
+                        let bottom = if *name == "A" && expanded { text_position(&frame, "Add String").y } else { top };
+                        (top, bottom)
+                    }).collect();
+                    sections.sort_by(|a,b|a.0.total_cmp(&b.0));
+                    let pointer = |pos,pressed| egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+                    panel.frame(vec![egui::Event::PointerMoved(handle),pointer(handle,true)]);
+                    panel.frame(vec![egui::Event::PointerMoved(handle+Vec2::new(0.0,12.0))]);
+                    for pair in sections.windows(2) {
+                        let mut positions = Vec::new();
+                        for y in [pair[0].1 + 8.0, pair[1].0 - 8.0] {
+                            let event = egui::Event::PointerMoved(egui::pos2(850.0,y));
+                            panel.frame(vec![event.clone()]);
+                            let hovered = panel.frame(vec![event]);
+                            let lines: Vec<_> = hovered.lines.iter().filter(|(points,stroke)|
+                                (stroke.width-2.0).abs()<0.01 && stroke.color == panel.ctx.global_style().visuals.selection.stroke.color
+                                && points[1].x-points[0].x>600.0).collect();
+                            assert_eq!(lines.len(),1,"one indicator must be visible at each valid gap");
+                            assert_eq!(hovered.occluded_drop_lines,0,"later row backgrounds must not cover either half of the indicator");
+                            positions.push(lines[0].0[0].y);
+                        }
+                        assert!((positions[0]-positions[1]).abs()<0.1,
+                            "same gap must have one position: {positions:?}, descending={descending}, expanded={expanded}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dragging_an_interleaved_group_compacts_only_its_members_in_one_operation() {
+        for expanded in [false, true] {
+            for descending in [false,true] {
+                let mut panel = named_panel(&["B_TWO","A_ONE","B_ONE","plain","A_TWO"]);
+                let languages: Vec<_> = (0..5).map(|index| StringListEdit::SetText {
+                    index, language: 1, text: format!("Japanese {index}"),
+                }).collect();
+                strings::apply_string_list_edits(&mut panel.tag,None,&languages).unwrap();
+                set_display(&panel,true,StringSort::Index,descending,if expanded { &["B"] } else { &[] });
+                panel.frame(vec![]);
+                let frame = panel.frame(vec![]);
+                let header_y = text_position(&frame,"B").y;
+                let handle = frame.grabber_dots.chunks_exact(6).map(|dots| {
+                    egui::pos2(dots.iter().map(|p|p.x).sum::<f32>()/6.0,dots.iter().map(|p|p.y).sum::<f32>()/6.0)
+                }).min_by(|a,b|(a.y-header_y).abs().total_cmp(&(b.y-header_y).abs())).unwrap();
+                let target = text_position(&frame,"plain") + Vec2::new(0.0,if descending {-12.0}else{12.0});
+                let pointer = |pos,pressed| egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+                panel.frame(vec![egui::Event::PointerMoved(handle),pointer(handle,true)]);
+                panel.frame(vec![egui::Event::PointerMoved(handle+Vec2::new(0.0,12.0))]);
+                panel.frame(vec![egui::Event::PointerMoved(target)]);
+                let dropped = panel.frame(vec![pointer(target,false)]);
+                assert_eq!(dropped.orders,vec![vec![1,3,4,0,2]],"descending={descending}");
+                assert_eq!(dropped.selected,BTreeSet::from([3,4]));
+                let original = panel.tag.write_to_bytes().unwrap();
+                let mut doc = crate::core::document::TagDocument::clean(panel.tag);
+                crate::core::document::apply::apply_deferred_ops(&mut doc,crate::core::document::apply::DeferredOps {
+                    block_ops: vec![crate::core::document::ops::BlockOp { path: "string references".to_owned(),
+                        kind: crate::core::document::ops::BlockOpKind::Reorder { order: dropped.orders[0].clone() } }],
+                    ..Default::default()
+                },"Move string group");
+                let reordered = strings::read_string_list(&doc.tag).unwrap();
+                assert_eq!(reordered.entries.iter().map(|entry|entry.texts[1].clone().unwrap()).collect::<Vec<_>>(),
+                    vec!["Japanese 1","Japanese 3","Japanese 4","Japanese 0","Japanese 2"]);
+                let (snapshot,_) = doc.journal.undo(&doc.tag).expect("one group move has an undo step");
+                assert_eq!(snapshot.as_slice(),original.as_slice());
+                assert!(!doc.journal.can_undo(),"the group move must be one atomic operation");
+                panel.tag = doc.tag;
+                let cache_id = egui::Id::new(("field_edit", "test", "strings.multilingual_unicode_string_list", "string list cache"));
+                panel.ctx.data_mut(|data| data.remove::<Arc<ListCache>>(cache_id));
+                panel.frame(vec![]);
+                let moved = panel.frame(vec![]);
+                assert_eq!(moved.texts.contains(&"B_TWO".to_owned()), expanded,
+                    "moving a group must preserve its disclosure state, expanded={expanded}, descending={descending}");
+                assert!(!moved.texts.contains(&"A_ONE".to_owned()), "other groups must remain collapsed");
+            }
         }
     }
 
@@ -2528,6 +4585,45 @@ mod tests {
         click_at(&mut panel, text);
         assert_eq!(panel.frame(vec![select_all()]).selected, BTreeSet::from([0]));
         assert_eq!(panel.frame(vec![egui::Event::Copy]).copied, "One");
+    }
+
+    #[test]
+    fn grouped_mode_hides_clipboard_actions_but_keeps_duplicate_text_clipboard_and_delete() {
+        let mut panel = named_panel(&["A_one", "A_two"]);
+        set_display(&panel, true, StringSort::Index, false, &["A"]);
+        set_selection(&panel, &[0]);
+        panel.frame(vec![]);
+        panel.frame(vec![]);
+        panel.ctx.data_mut(|data| data.insert_temp(egui::Id::new("test string row clipboard"), "new\tPasted".to_owned()));
+        let duplicate = egui::Event::Key {key:egui::Key::D,physical_key:None,pressed:true,repeat:false,modifiers:egui::Modifiers::COMMAND};
+        for event in [egui::Event::Copy,egui::Event::Cut,egui::Event::Paste("new\tPasted".into())] {
+            let frame = panel.frame(vec![event]);
+            assert!(frame.row_request.is_none() && frame.edits.is_empty());
+        }
+        let frame = panel.frame(vec![]);
+        let menu = right_click_at(&mut panel,text_position(&frame,"0"));
+        for label in ["Copy", "Cut", "Paste", "Insert Copied Row Above", "Insert Copied Row Below"] {
+            assert!(!menu.texts.contains(&label.into()),"{label} must be hidden");
+        }
+        panel.frame(vec![key(egui::Key::Escape)]);
+        let duplicated=panel.frame(vec![duplicate]);
+        assert!(duplicated.edits.iter().any(|edit|matches!(edit,StringListEdit::Insert {..})),"Ctrl+D stays available");
+        panel.frame(vec![]);
+        panel.focus_first_text(12);
+        panel.frame(vec![]);
+        let select_all = egui::Event::Key {key:egui::Key::A,physical_key:None,pressed:true,repeat:false,modifiers:egui::Modifiers::COMMAND};
+        panel.frame(vec![select_all]);
+        let copied = panel.frame(vec![egui::Event::Copy]);
+        assert_eq!(copied.copied,"Message text");
+        assert!(copied.row_request.is_none());
+        let pasted = panel.frame(vec![egui::Event::Paste("Edited text".into())]);
+        assert!(pasted.row_request.is_none());
+        let committed = panel.frame(vec![key(egui::Key::Enter)]);
+        assert!(committed.edits.iter().any(|edit|matches!(edit,StringListEdit::SetText {index:0,text,..} if text=="Edited text")));
+        let frame = panel.frame(vec![]);
+        click_at(&mut panel,text_position(&frame,"0"));
+        let deleted = panel.frame(vec![key(egui::Key::Delete)]);
+        assert!(deleted.edits.contains(&StringListEdit::Remove {indices:vec![0]}));
     }
 
     #[test]

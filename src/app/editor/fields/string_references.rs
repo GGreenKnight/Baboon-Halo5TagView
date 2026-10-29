@@ -69,6 +69,16 @@ impl blam_tags::string_editor::TagSource for SavedTags<'_> {
     }
 }
 
+pub(super) fn is_hud_message_list(edit: &FieldEditContext<'_>) -> bool {
+    let Some(tag) = edit.string_editor_tag else { return false; };
+    let Some(editors) = string_editors(edit.definitions_root, edit.game) else { return false; };
+    let path = crate::app::browser::entry_rel_path(tag.entry);
+    let context = EditorContext { tag: tag.tag, tag_path: &path, field_path: "" };
+    let Some(list) = editors.string_references("hud_message", &context, &SavedTags::new(tag.source)) else { return false; };
+    let normalize = |path: &str| path.trim_end_matches('\0').replace('/', "\\").to_ascii_lowercase();
+    list.source.is_some_and(|source| source.group_tag == tag.entry.group_tag && normalize(&source.path) == normalize(&path))
+}
+
 fn snapshot(
     edit: &FieldEditContext<'_>,
     editors: &StringEditors,
@@ -1182,6 +1192,24 @@ mod tests {
         assert!(frame.pink);
         assert!(!frame.has("Could not validate"));
     }
+    #[test]
+    fn string_references_hud_list_default_uses_the_globals_destination() {
+        let panel = Panel::new("",Some(&[("A_one",Some("One")),("A_two",Some("Two"))]));
+        let strings = string_tag(&[("A_one",Some("One")),("A_two",Some("Two"))]);
+        let key = panel.kit.key("ui/messages.multilingual_unicode_string_list");
+        let entry = panel.source.entry_for_key(&key).unwrap();
+        let defs = locate_definitions_root();
+        let mut sinks = EditSinks::default();
+        let mut edit = FieldEditContext::read_only(&mut sinks,"default-grouping",&key);
+        edit.game = Some(GameId::Halo2); edit.definitions_root = Some(&defs);
+        edit.string_editor_tag = Some(EditedTag { tag: &strings, entry, stamp: (1,0), source: &panel.source });
+        assert!(is_hud_message_list(&edit));
+        let mut unrelated = entry.clone();
+        unrelated.display_path = "ui\\hud_messages.multilingual_unicode_string_list".to_owned();
+        edit.string_editor_tag = Some(EditedTag { tag: &strings, entry: &unrelated, stamp: (1,0), source: &panel.source });
+        assert!(!is_hud_message_list(&edit),"a familiar filename alone does not identify the HUD list");
+    }
+
     #[test]
     fn string_references_mounted_source_identity_changes_on_remount() {
         use crate::core::source::TagSource;

@@ -50,6 +50,10 @@ pub(in crate::app) fn string_editors(definitions_root: Option<&Path>, game: Opti
         .clone()
 }
 
+pub(in crate::app) fn is_hud_message_list(edit: &FieldEditContext<'_>) -> bool {
+    string_references::is_hud_message_list(edit)
+}
+
 /// The string editor of the field at `path`, with the game's editors.
 pub(in crate::app) fn field_string_editor(edit: &FieldEditContext<'_>, path: &str) -> Option<(Arc<StringEditors>, String)> {
     let root = edit.root?;

@@ -231,6 +231,7 @@ impl Baboon {
             doc.dirty.touch();
             doc.note_layout_change();
             doc.settle_after_step();
+            super::string_list::clear_selection_after_history(&self.egui_ctx,doc.id);
             let opposite = if redo { doc.journal.stacks().0 } else { doc.journal.stacks().1 };
             steps[i] = opposite.last().unwrap().id;
             self.views[address.kit].edit_buffers.forget_tag(&address.key);
