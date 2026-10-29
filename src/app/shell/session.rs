@@ -372,6 +372,7 @@ impl Baboon {
         let was_active = kit_index == self.model.active;
         let source = kit.source.as_ref()?;
         let (source_kind, source_path) = match &source.source {
+            TagSource::Halo5 {source}=>(if source.root.is_file() {LastSessionSourceKind::SingleFile}else{LastSessionSourceKind::LooseFolder},source.root.clone()),
             TagSource::SingleFile { path } => (LastSessionSourceKind::SingleFile, path.clone()),
             TagSource::LooseFolder { root, .. } => {
                 (LastSessionSourceKind::LooseFolder, root.clone())
@@ -401,7 +402,7 @@ impl Baboon {
                 TagEntryLocation::LooseFile(path) => {
                     Some(fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
                 }
-                TagEntryLocation::Monolithic { .. }
+                TagEntryLocation::Halo5 {..} | TagEntryLocation::Monolithic { .. }
                 | TagEntryLocation::Container { .. }
                 | TagEntryLocation::NewContainer { .. } => None,
             };
@@ -894,7 +895,7 @@ pub(in crate::app) fn render_last_opened_windows_prompt(
                             ui.add_enabled_ui(kit.checked, |ui| {
                             for entry in &mut kit.folder_entries {
                                 restore_path_row(ui, &mut entry.checked, entry.available,
-                                    &tag_path::relative_tag_path(&entry.folder.rel_path), None, None, true);
+                                    &entry.folder.rel_path.display().to_string(), None, None, true);
                             }
                             for entry in &mut kit.entries {
                                 // Session labels include " - group name" for the old
@@ -1135,7 +1136,7 @@ fn parse_session_kit(value: &Value) -> Option<LastSessionKit> {
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|label| !label.is_empty())
-                .or_else(|| Path::new(rel_path).file_name().and_then(|name| name.to_str()))?;
+                .or_else(|| rel_path.rsplit(['/', '\\']).next())?;
             Some(LastSessionFolder {
                 rel_path: PathBuf::from(rel_path),
                 label: label.to_owned(),

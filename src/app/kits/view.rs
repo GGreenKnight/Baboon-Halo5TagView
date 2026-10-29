@@ -261,6 +261,8 @@ impl<'a> KitMut<'a> {
     /// only the delete path dropped the model preview, whose geometry and
     /// textures therefore outlived every closed tab.
     pub(in crate::app) fn drop_document(&mut self, key: &str) {
+        self.kit.halo5_documents.remove(key);
+        self.kit.halo5_save_paths.remove(key);
         self.kit.parsed_tags.remove(key);
         self.kit.loading_tags.remove(key);
         self.view.caches.bitmap_previews.remove(key);
@@ -277,6 +279,7 @@ impl<'a> KitMut<'a> {
             .kit
             .parsed_tags
             .keys()
+            .chain(self.kit.halo5_documents.keys())
             .chain(self.kit.loading_tags.iter())
             .chain(self.view.caches.bitmap_previews.keys())
             .chain(self.view.caches.model_previews.keys())

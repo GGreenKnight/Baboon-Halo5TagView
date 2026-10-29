@@ -24,7 +24,6 @@ use walkdir::WalkDir;
 use crate::core::format::TagNameIndex;
 use crate::core::game::GameId;
 use crate::core::tag_key::file_key_path;
-use crate::core::tag_path;
 
 #[derive(Clone, Copy, Debug, Default)]
 /// Snapshot reported while a background loose-folder index scan is running.
@@ -55,6 +54,7 @@ pub struct TagEntry {
 /// The location is interpreted only together with the owning [`TagSource`]; a
 /// loose path does not by itself carry the game definitions needed to parse it.
 pub enum TagEntryLocation {
+    Halo5 { index: usize },
     LooseFile(PathBuf),
     Monolithic {
         name: String,
@@ -123,6 +123,7 @@ pub enum NewContainerTemplate {
 /// Clones deliberately share monolithic cache storage while keeping loose-file
 /// parsing context explicit.
 pub enum TagSource {
+    Halo5 { source: Arc<blam_tags::halo5::Source> },
     SingleFile {
         path: PathBuf,
     },
@@ -222,10 +223,14 @@ pub struct ContainerTagIndex {
 }
 
 /// Normalize a tag reference into the key `build_container_set` dedups on:
-/// strip NULs (references can carry them), trim, lowercase, and prefix the
-/// group FOURCC. Mirrors the `logical` normalization at mount time.
+/// strip NULs (references can carry them), trim, `\` → `/`, lowercase, and
+/// prefix the group FOURCC. Mirrors the `logical` normalization at mount time.
 pub fn container_ref_key(group_tag: u32, reference: &str) -> String {
-    let normalized = reference.replace('\u{0}', "").trim().to_ascii_lowercase();
+    let normalized = reference
+        .replace('\u{0}', "")
+        .trim()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
     format!("{group_tag:08x}:{normalized}")
 }
 
@@ -246,15 +251,15 @@ impl ContainerTagIndex {
         // `_Generated_` folder, but the references baked into the tag data
         // still carry the pre-cook path: `c10.scenario` points its
         // `structure bsps[]` at `levels\halo1\solo\c10\level_a` while the
-        // payload mounts as `levels\halo1\solo\c10\_generated_\level_a`.
+        // payload mounts as `levels/halo1/solo/c10/_generated_/level_a`.
         // Retry through that folder when the literal path misses.
         //
         // A fallback rather than an alias inserted at mount: the exact key
         // still wins, so a real tag sitting at the un-generated path is never
         // shadowed by its `_Generated_` neighbour.
-        let (prefix, leaf) = key.rsplit_once(tag_path::SEPARATOR)?;
+        let (prefix, leaf) = key.rsplit_once('/')?;
         self.by_key
-            .get(&format!("{prefix}\\_generated_\\{leaf}"))
+            .get(&format!("{prefix}/_generated_/{leaf}"))
             .map(|(c, p)| (*c, p.as_str()))
     }
 
@@ -349,6 +354,7 @@ impl ContainerPackageIndex {
 impl TagSource {
     pub fn origin_label(&self) -> String {
         match self {
+            TagSource::Halo5 {source} => format!("Halo 5: Guardians: {}",source.root.display()),
             TagSource::SingleFile { path } => format!("File: {}", path.display()),
             TagSource::LooseFolder { root, .. } => format!("Folder: {}", root.display()),
             TagSource::MonolithicCache { root, .. } => {
@@ -367,6 +373,7 @@ impl TagSource {
     /// is what per-source sidecars key on.
     pub fn root_path(&self) -> &Path {
         match self {
+            TagSource::Halo5 {source} => &source.root,
             TagSource::SingleFile { path } => path,
             TagSource::LooseFolder { root, .. } => root,
             TagSource::MonolithicCache { root, .. } => root,
@@ -387,7 +394,7 @@ impl TagSource {
         let (container, rel_path) = index.lookup(group_tag, reference).ok_or_else(|| {
             anyhow!(
                 "{}.{:08x} not found in mounted containers",
-                reference,
+                reference.replace('\\', "/"),
                 group_tag
             )
         })?;
@@ -832,6 +839,7 @@ pub mod ce_audio;
 mod editing_kit;
 mod index;
 mod loading;
+mod halo5;
 mod tree;
 
 pub(crate) use editing_kit::*;
@@ -841,6 +849,7 @@ use editing_kit::{detect_ek_game, detect_ek_root_with_aliases};
 use index::open_index_db;
 pub(crate) use index::*;
 pub use loading::*;
+pub use halo5::*;
 pub use tree::*;
 use tree::{
     display_path_with_friendly_extension, display_str_with_friendly_extension, path_to_display,
@@ -856,14 +865,14 @@ mod tests {
     /// Campaign Evolved's cook puts a level's generated tags under
     /// `_Generated_`, but the references baked into the tag data still use the
     /// pre-cook path — `c10.scenario` points at `levels\halo1\solo\c10\level_a`
-    /// while the payload mounts at `...\c10\_generated_\level_a`. Without the
+    /// while the payload mounts at `.../c10/_generated_/level_a`. Without the
     /// fallback, exporting a CE scenario's geometry resolved none of its \\Ps.
     #[test]
     fn container_lookup_falls_back_through_generated_folder() {
         let sbsp = u32::from_be_bytes(*b"sbsp");
         let mut index = ContainerTagIndex::default();
         index.insert(
-            container_ref_key(sbsp, "levels\\halo1\\solo\\c10\\_generated_\\level_a"),
+            container_ref_key(sbsp, "levels/halo1/solo/c10/_generated_/level_a"),
             3,
             "Meteorite/Content/Tags/Levels/Halo1/Solo/C10/_Generated_/level_a-scenario_structure_bsp.ubulk"
                 .to_owned(),
@@ -904,12 +913,12 @@ mod tests {
         let sbsp = u32::from_be_bytes(*b"sbsp");
         let mut index = ContainerTagIndex::default();
         index.insert(
-            container_ref_key(sbsp, "levels\\x\\bsp"),
+            container_ref_key(sbsp, "levels/x/bsp"),
             1,
             "exact.ubulk".to_owned(),
         );
         index.insert(
-            container_ref_key(sbsp, "levels\\x\\_generated_\\bsp"),
+            container_ref_key(sbsp, "levels/x/_generated_/bsp"),
             2,
             "generated.ubulk".to_owned(),
         );

@@ -148,7 +148,11 @@ pub(in crate::app) fn browser_favorites_divider(ui: &mut Ui, favorites_visible: 
 }
 
 pub(in crate::app) fn pane_header_path_parts(display_path: &str) -> (Vec<(String, PathBuf)>, String) {
-    let mut components: Vec<&str> = tag_path::segments(display_path).collect();
+    let normalized = display_path.replace('\\', "/");
+    let mut components: Vec<&str> = normalized
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect();
     let title = components.pop().unwrap_or_default().to_owned();
     let mut path = PathBuf::new();
     let breadcrumbs = components
@@ -604,6 +608,7 @@ pub(in crate::app) fn sidebar_wrappable_path_label(path: &str) -> String {
 
 pub(in crate::app) fn sidebar_source_path_label(source: &TagSource) -> String {
     match source {
+        TagSource::Halo5 {source}=>source.root.display().to_string(),
         TagSource::SingleFile { path } => path.display().to_string(),
         TagSource::LooseFolder { root, .. } => root.display().to_string(),
         TagSource::MonolithicCache { root, .. } => root.display().to_string(),
@@ -619,7 +624,7 @@ pub(in crate::app) fn monitor_commands_for_game(game: Option<GameId>) -> &'stati
 /// A clickable tag entry row in the Content Explorer. Returns true on click.
 pub(in crate::app) fn explorer_entry_row(ui: &mut Ui, entry: &TagEntry) -> bool {
     ui.add(
-        egui::Label::new(RichText::new(&entry.display_path).color(text_dark()))
+        egui::Label::new(RichText::new(entry.display_path.replace('\\', "/")).color(text_dark()))
             .sense(Sense::click()),
     )
     .on_hover_text("Click to navigate here")
@@ -1112,7 +1117,7 @@ mod tests {
 
     #[test]
     fn pane_header_breadcrumbs_accumulate_clickable_folder_paths() {
-        let (breadcrumbs, title) = pane_header_path_parts(r"objects\characters\brute\brute.biped");
+        let (breadcrumbs, title) = pane_header_path_parts("objects\\characters/brute/brute.biped");
 
         assert_eq!(title, "brute.biped");
         assert_eq!(
@@ -2080,7 +2085,7 @@ mod tests {
         pub(in crate::app) const GAME: &str = "halo3_mcc";
 
         /// `folders` × `subfolders` × `tags` loose-file entries, as
-        /// `folder_NN\sub_NN\tag_NNN.biped`. The defaults (40 × 10 × 150) are
+        /// `folder_NN/sub_NN/tag_NNN.biped`. The defaults (40 × 10 × 150) are
         /// the 60,000 tags the browser virtualization tests use.
         pub(in crate::app) fn synthetic_entries(
             folders: usize,
@@ -2091,13 +2096,13 @@ mod tests {
             for top in 0..folders {
                 for sub in 0..subfolders {
                     for tag in 0..tags {
-                        let path = format!(r"folder_{top:02}\sub_{sub:02}\tag_{tag:03}.biped");
+                        let path = format!("folder_{top:02}/sub_{sub:02}/tag_{tag:03}.biped");
                         entries.push(TagEntry {
-                            key: entry_key(&path),
+                            key: format!("file:{path}"),
                             display_path: path.clone(),
                             group_tag: u32::from_be_bytes(*b"bipd"),
                             group_name: Some("biped".to_owned()),
-                            location: TagEntryLocation::LooseFile(tag_path::to_relative(&path)),
+                            location: TagEntryLocation::LooseFile(path.into()),
                         });
                     }
                 }
@@ -2105,9 +2110,8 @@ mod tests {
             entries
         }
 
-        /// The key of the loose file a tag path names, relative to no root.
         pub(in crate::app) fn entry_key(display_path: &str) -> String {
-            crate::core::tag_key::file_entry_key(&tag_path::to_relative(display_path))
+            format!("file:{display_path}")
         }
 
         /// The browser entry for a document built in memory.
@@ -2119,7 +2123,7 @@ mod tests {
                 group_name: display_path
                     .rsplit_once('.')
                     .map(|(_, extension)| extension.to_owned()),
-                location: TagEntryLocation::LooseFile(tag_path::to_relative(display_path)),
+                location: TagEntryLocation::LooseFile(display_path.into()),
             }
         }
 
@@ -2450,7 +2454,7 @@ mod tests {
         check: fn(&Harness, &Measured) -> Result<(), String>,
     }
 
-    const MIDDLE_TAG: &str = "folder_20\\sub_05\\tag_075.biped";
+    const MIDDLE_TAG: &str = "folder_20/sub_05/tag_075.biped";
 
     fn no_events(_: &mut Harness, _: usize) -> Vec<egui::Event> {
         Vec::new()
@@ -2484,7 +2488,7 @@ mod tests {
         .unwrap();
         let key = entries
             .iter()
-            .find(|entry| entry.display_path == tag_path::from_input(rel))
+            .find(|entry| entry.display_path.replace('\\', "/") == rel)
             .unwrap_or_else(|| panic!("{rel} is not in {}", root.display()))
             .key
             .clone();
@@ -2562,7 +2566,7 @@ mod tests {
 
     fn setup_large_tag(h: &mut Harness) -> String {
         let (tag, _) = fixture::large_scenario(&[64, 8]);
-        let path = "levels\\perf\\perf.scenario";
+        let path = "levels/perf/perf.scenario";
         let mut entries = fixture::synthetic_entries(4, 5, 50);
         entries.push(fixture::document_entry(path, &tag));
         fixture::install_kit(&mut h.app, entries);
@@ -2700,7 +2704,7 @@ mod tests {
                 what: "H3 shader: 12 categories x 4 options, 12 parameters per option (memoized model)",
                 setup: |h| {
                     let shader = fixture::synthetic_shader(12);
-                    let path = "shaders\\perf.shader";
+                    let path = "shaders/perf.shader";
                     let mut entries = fixture::synthetic_entries(4, 5, 50);
                     entries.push(fixture::document_entry(path, &shader));
                     fixture::install_kit(&mut h.app, entries);
@@ -2721,7 +2725,7 @@ mod tests {
                 what: "Halo CE sound, 24 permutations x 10 s inline PCM, player + waveform, no input",
                 setup: |h| {
                     let sound = fixture::synthetic_ce_sound(24, 10.0);
-                    let path = "sound\\perf\\perf.sound";
+                    let path = "sound/perf/perf.sound";
                     let mut entries = fixture::synthetic_entries(4, 5, 50);
                     entries.push(fixture::document_entry(path, &sound));
                     fixture::install_kit_for_game(&mut h.app, entries, "haloce_mcc");
@@ -3135,11 +3139,11 @@ mod tests {
     fn loose_kit(h: &mut Harness) {
         let root = temp_dir("frame-smoke-kit").join("tags");
         for (rel, group) in [
-            ("objects\\weapons\\rifle\\rifle.biped", "biped"),
-            ("objects\\weapons\\rifle\\rifle.scenery", "scenery"),
-            ("levels\\smoke\\smoke.scenario", "scenario"),
+            ("objects/weapons/rifle/rifle.biped", "biped"),
+            ("objects/weapons/rifle/rifle.scenery", "scenery"),
+            ("levels/smoke/smoke.scenario", "scenario"),
         ] {
-            let path = root.join(tag_path::to_relative(rel));
+            let path = root.join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             fixture::new_tag(group).write(&path).unwrap();
         }
@@ -3159,12 +3163,12 @@ mod tests {
         h.app.model.loaded_tags_root().expect("a loose kit is loaded")
     }
 
-    const CE_TAG: &str = "objects\\weapons\\rifle\\rifle.weapon";
+    const CE_TAG: &str = "objects/weapons/rifle/rifle.weapon";
 
     /// A Campaign Evolved container workspace with no containers on disk: its
     /// entries are in memory, which is all the dialogs over it read.
     fn container_kit(h: &mut Harness) {
-        let entries: Vec<TagEntry> = [CE_TAG, "objects\\weapons\\rifle\\rifle.model"]
+        let entries: Vec<TagEntry> = [CE_TAG, "objects/weapons/rifle/rifle.model"]
             .into_iter()
             .map(|path| TagEntry {
                 key: format!("ce:{path}"),
@@ -3211,12 +3215,12 @@ mod tests {
     }
 
     fn biped_key() -> String {
-        fixture::entry_key("folder_00\\sub_00\\tag_000.biped")
+        fixture::entry_key("folder_00/sub_00/tag_000.biped")
     }
 
     // --- tags for the pane cases: each base lists the tag, each open opens it ---
 
-    const SCENARIO: &str = "levels\\smoke\\smoke.scenario";
+    const SCENARIO: &str = "levels/smoke/smoke.scenario";
 
     fn scenario_tag() -> TagFile {
         fixture::large_scenario(&[2]).0
@@ -3239,7 +3243,7 @@ mod tests {
 
     fn shader_kit(h: &mut Harness) {
         let shader = fixture::synthetic_shader(3);
-        pane_kit(h, fixture::GAME, "shaders\\smoke.shader", &shader);
+        pane_kit(h, fixture::GAME, "shaders/smoke.shader", &shader);
         fixture::install_render_method(&mut h.app, &shader, 3, 2, 4);
     }
 
@@ -3339,7 +3343,7 @@ mod tests {
                 |h| {
                     fixture::open_document(
                         &mut h.app,
-                        "shaders\\smoke.shader",
+                        "shaders/smoke.shader",
                         fixture::synthetic_shader(3),
                     );
                 },
@@ -3349,9 +3353,9 @@ mod tests {
                 "pane_material",
                 &[],
                 &[],
-                |h| pane_kit(h, "halo4_mcc", "shaders\\smoke.material", &material_tag()),
+                |h| pane_kit(h, "halo4_mcc", "shaders/smoke.material", &material_tag()),
                 |h| {
-                    fixture::open_document(&mut h.app, "shaders\\smoke.material", material_tag());
+                    fixture::open_document(&mut h.app, "shaders/smoke.material", material_tag());
                 },
                 &["smoke.material"],
             ),
@@ -3359,9 +3363,9 @@ mod tests {
                 "pane_sound",
                 &["audio"],
                 &[],
-                |h| pane_kit(h, "haloce_mcc", "sound\\smoke.sound", &sound_tag()),
+                |h| pane_kit(h, "haloce_mcc", "sound/smoke.sound", &sound_tag()),
                 |h| {
-                    fixture::open_document(&mut h.app, "sound\\smoke.sound", sound_tag());
+                    fixture::open_document(&mut h.app, "sound/smoke.sound", sound_tag());
                 },
                 &["smoke.sound", "2 permutations"],
             ),
@@ -3371,11 +3375,11 @@ mod tests {
                 &[],
                 |h| {
                     let bitmap = fixture::new_tag("bitmap");
-                    pane_kit(h, fixture::GAME, "bitmaps\\smoke.bitmap", &bitmap);
+                    pane_kit(h, fixture::GAME, "bitmaps/smoke.bitmap", &bitmap);
                 },
                 |h| {
                     let bitmap = fixture::new_tag("bitmap");
-                    fixture::open_document(&mut h.app, "bitmaps\\smoke.bitmap", bitmap);
+                    fixture::open_document(&mut h.app, "bitmaps/smoke.bitmap", bitmap);
                 },
                 &["smoke.bitmap"],
             ),
@@ -3385,11 +3389,11 @@ mod tests {
                 &[],
                 |h| {
                     let model = render_model_tag();
-                    pane_kit(h, fixture::GAME, "objects\\smoke.render_model", &model);
+                    pane_kit(h, fixture::GAME, "objects/smoke.render_model", &model);
                 },
                 |h| {
                     let model = render_model_tag();
-                    let key = fixture::open_document(&mut h.app, "objects\\smoke.render_model", model);
+                    let key = fixture::open_document(&mut h.app, "objects/smoke.render_model", model);
                     let kit = &mut h.app.model.kits[h.app.model.active];
                     let view = &mut h.app.views[kit.id];
                     view.caches.model_previews.entry(key).or_default().active_tab =
@@ -3401,15 +3405,12 @@ mod tests {
                 "pane_function_rows",
                 &[],
                 &[],
-                |h| pane_kit(h, fixture::GAME, "objects\\smoke.light", &light_tag()),
+                |h| pane_kit(h, fixture::GAME, "objects/smoke.light", &light_tag()),
                 |h| {
-                    let key = fixture::open_document(&mut h.app, "objects\\smoke.light", light_tag());
+                    let key = fixture::open_document(&mut h.app, "objects/smoke.light", light_tag());
                     fixture::expand_all(&mut h.app, &key);
-                    // The grouped input controls make the editor taller;
-                    // include it beneath the light's preceding fields.
-                    h.ctx.set_zoom_factor(0.75);
                 },
-                &["smoke.light", "Function Type"],
+                &["smoke.light", "Function type:"],
             ),
             // --- synthetic panes ---
             case(
@@ -3470,20 +3471,20 @@ mod tests {
                 |h| {
                     let mut entries = fixture::synthetic_entries(2, 2, 10);
                     entries.push(fixture::document_entry(
-                        "shaders\\left.shader",
+                        "shaders/left.shader",
                         &fixture::synthetic_shader(1),
                     ));
-                    entries.push(fixture::document_entry("levels\\right.scenario", &scenario_tag()));
+                    entries.push(fixture::document_entry("levels/right.scenario", &scenario_tag()));
                     fixture::install_kit(&mut h.app, entries);
                 },
                 |h| {
                     fixture::open_document(
                         &mut h.app,
-                        "shaders\\left.shader",
+                        "shaders/left.shader",
                         fixture::synthetic_shader(1),
                     );
                     let mut kit = h.app.kit_and_view(h.app.model.active);
-                    let key = fixture::entry_key("levels\\right.scenario");
+                    let key = fixture::entry_key("levels/right.scenario");
                     kit.kit.parsed_tags.insert(key.clone(), TagDocument::clean(scenario_tag()));
                     kit.open_tag_pane_beside(&key);
                 },
@@ -3888,7 +3889,7 @@ mod tests {
                         kit: h.app.model.kits[0].id,
                         can_stash: false,
                         dirty_tags: vec![DirtyTagEntry {
-                            path: "objects\\smoke.biped".to_owned(),
+                            path: "objects/smoke.biped".to_owned(),
                             tag_id: biped_key(),
                             checked: true,
                         }],
@@ -3899,7 +3900,7 @@ mod tests {
                         confirm_discard: false,
                     });
                 },
-                &["Baboon - Save Changes?", "objects\\smoke.biped"],
+                &["Baboon - Save Changes?", "objects/smoke.biped"],
             ),
             case(
                 "last_opened_windows",
@@ -4041,14 +4042,14 @@ mod tests {
                     h.app.dialogs.open(DeleteConfirm {
                         kit: active_id(h),
                         key: file_entry_key(&path),
-                        display_path: "objects\\weapons\\rifle\\rifle.biped".to_owned(),
+                        display_path: "objects/weapons/rifle/rifle.biped".to_owned(),
                         kind: DeleteKind::Loose,
-                        referrers: vec!["levels\\smoke\\smoke.scenario".to_owned()],
+                        referrers: vec!["levels/smoke/smoke.scenario".to_owned()],
                         referrers_unavailable: false,
                         has_unsaved_edits: true,
                     });
                 },
-                &["Delete tag?", "levels\\smoke\\smoke.scenario"],
+                &["Delete tag?", "levels/smoke/smoke.scenario"],
             ),
             case(
                 "delete_confirm_container",
@@ -4080,10 +4081,10 @@ mod tests {
                     h.app.dialogs.open(RenameTagState {
                         kit: active_id(h),
                         key: file_entry_key(&path),
-                        old_display: "objects\\weapons\\rifle\\rifle.biped".to_owned(),
+                        old_display: "objects/weapons/rifle/rifle.biped".to_owned(),
                         extension: "biped".to_owned(),
                         operation: TagNameOperation::Rename,
-                        new_path_input: "objects\\weapons\\rifle\\smoke_rifle".to_owned(),
+                        new_path_input: "objects/weapons/rifle/smoke_rifle".to_owned(),
                         fixed_parent: String::new(),
                         focus_input: true,
                         referrers: Vec::new(),
@@ -4109,7 +4110,7 @@ mod tests {
                         extension: "weapon".to_owned(),
                         operation: TagNameOperation::Duplicate,
                         new_path_input: "rifle_copy".to_owned(),
-                        fixed_parent: "objects\\weapons\\rifle".to_owned(),
+                        fixed_parent: "objects/weapons/rifle".to_owned(),
                         focus_input: true,
                         referrers: Vec::new(),
                         referrers_unavailable: true,
@@ -4130,7 +4131,7 @@ mod tests {
                     h.app.dialogs.open(ImportTagDialog {
                         kit: active_id(h),
                         source_path: PathBuf::from("/no/such/smoke.weapon"),
-                        folder_rel: "objects\\weapons".to_owned(),
+                        folder_rel: "objects/weapons".to_owned(),
                         name: "smoke".to_owned(),
                         group_tag: u32::from_be_bytes(*b"weap"),
                         group_name: "weapon".to_owned(),
@@ -4182,7 +4183,7 @@ mod tests {
                     };
                     h.app.dialogs.open(CacheImportDialog {
                         kit: active_id(h),
-                        prefix: "objects\\weapons".to_owned(),
+                        prefix: "objects/weapons".to_owned(),
                         selected: 2,
                         targets: vec![target],
                         target_index: 0,
@@ -4286,7 +4287,7 @@ mod tests {
                     h.app.dialogs.open(LooseFolderRenameState {
                         kit: active_id(h),
                         rel_path: PathBuf::from("objects/weapons/rifle"),
-                        parent_display: "objects\\weapons".to_owned(),
+                        parent_display: "objects/weapons".to_owned(),
                         old_name: "rifle".to_owned(),
                         name_input: "smoke_rifle".to_owned(),
                         focus_input: true,
@@ -4367,8 +4368,8 @@ mod tests {
                 // carries the notice the window opens from.
                 |h| {
                     let tag = fixture::new_tag_for("haloreach_mcc", "sound_mix");
-                    pane_kit(h, fixture::GAME, "sound\\smoke.sound_mix", &tag);
-                    fixture::open_document(&mut h.app, "sound\\smoke.sound_mix", tag);
+                    pane_kit(h, fixture::GAME, "sound/smoke.sound_mix", &tag);
+                    fixture::open_document(&mut h.app, "sound/smoke.sound_mix", tag);
                 },
                 |h| {
                     // The steps run before anything is drawn; the badge is
@@ -4451,7 +4452,7 @@ mod tests {
                     h.app.dialogs.open(ExtractTargetPrompt {
                         kit: h.app.model.kits[0].id,
                         key: biped_key(),
-                        display_path: "objects\\smoke.render_model".to_owned(),
+                        display_path: "objects/smoke.render_model".to_owned(),
                         kind: ExtractKind::Geometry,
                         source: blam_tags::game::Game::Halo3,
                         target: blam_tags::game::Game::Halo3,
@@ -5127,7 +5128,7 @@ mod tests {
     fn a_drawn_frame_with_no_edits_ends_the_undo_step() {
         let mut h = Harness::new();
         let tag = fixture::synthetic_shader(1);
-        let path = "shaders\\undo.shader";
+        let path = "shaders/undo.shader";
         let mut entries = fixture::synthetic_entries(1, 1, 1);
         entries.push(fixture::document_entry(path, &tag));
         fixture::install_kit(&mut h.app, entries);
@@ -5150,7 +5151,7 @@ mod tests {
     fn edits_with_no_frame_between_them_are_one_step() {
         let mut h = Harness::new();
         let tag = fixture::synthetic_shader(1);
-        let path = "shaders\\undo.shader";
+        let path = "shaders/undo.shader";
         let mut entries = fixture::synthetic_entries(1, 1, 1);
         entries.push(fixture::document_entry(path, &tag));
         fixture::install_kit(&mut h.app, entries);
@@ -5320,7 +5321,7 @@ mod tests {
     #[test]
     fn the_new_tag_window_reads_the_kit_it_was_opened_for() {
         let kit = LooseKit::new("new-tag-kit", "halo3_mcc");
-        kit.write_mcc("objects\\weapons\\rifle\\assault_rifle", "biped", |_| {});
+        kit.write_mcc("objects/weapons/rifle/assault_rifle", "biped", |_| {});
         let mut h = Harness::new();
         kit.install(&mut h.app);
         h.app.open_new_tag_dialog();
@@ -5340,13 +5341,13 @@ mod tests {
     #[test]
     fn closing_its_kit_closes_compare_tags() {
         let kit = LooseKit::new("compare-closed-kit", "halo3_mcc");
-        kit.write_mcc("objects\\weapons\\rifle\\assault_rifle", "biped", |_| {});
+        kit.write_mcc("objects/weapons/rifle/assault_rifle", "biped", |_| {});
         let mut h = Harness::new();
         kit.install(&mut h.app);
         let compared = h.app.model.kits[0].id;
         h.app.dialogs.open(TagDiffState {
             kit: compared,
-            a_key: kit.key("objects\\weapons\\rifle\\assault_rifle.biped"),
+            a_key: kit.key("objects/weapons/rifle/assault_rifle.biped"),
             source: TagCompareSource::OpenTag,
             b_kit: None,
             b_key: None,
@@ -5375,7 +5376,7 @@ mod tests {
     #[test]
     fn a_reveal_through_unloaded_folders_reaches_its_tag() {
         let kit = LooseKit::new("lazy-reveal", "halo3_mcc");
-        kit.write_mcc("objects\\weapons\\rifle\\assault_rifle", "biped", |_| {});
+        kit.write_mcc("objects/weapons/rifle/assault_rifle", "biped", |_| {});
         let mut h = Harness::new();
         kit.install(&mut h.app);
         for _ in 0..2 {
@@ -5387,7 +5388,7 @@ mod tests {
             "no folder is loaded before the reveal"
         );
 
-        let key = kit.key("objects\\weapons\\rifle\\assault_rifle.biped");
+        let key = kit.key("objects/weapons/rifle/assault_rifle.biped");
         h.app.reveal_in_browser(&key);
         // One unloaded folder a frame, three deep, plus the frames a background
         // index job may take to land and rebuild the tree under it: bounded, not
@@ -5451,9 +5452,9 @@ mod tests {
     // command sent while the tiles draw, so these drive whole frames.
 
     const PATHS: [&str; 3] = [
-        "folder_00\\sub_00\\tag_000.biped",
-        "folder_00\\sub_00\\tag_001.biped",
-        "folder_00\\sub_00\\tag_002.biped",
+        "folder_00/sub_00/tag_000.biped",
+        "folder_00/sub_00/tag_001.biped",
+        "folder_00/sub_00/tag_002.biped",
     ];
 
     /// A kit with the three tags open in one tab group, `tag_002` showing.
@@ -5583,9 +5584,9 @@ mod tests {
         let mut h = Harness::new();
         h.app.model.prefs.reveal_active_tab_in_browser = true;
         fixture::install_kit(&mut h.app, fixture::synthetic_entries(2, 1, 1));
-        let first = fixture::open_document(&mut h.app, "folder_00\\sub_00\\tag_000.biped", fixture::new_tag("biped"));
+        let first = fixture::open_document(&mut h.app, "folder_00/sub_00/tag_000.biped", fixture::new_tag("biped"));
         idle(&mut h);
-        fixture::open_document(&mut h.app, "folder_01\\sub_00\\tag_000.biped", fixture::new_tag("biped"));
+        fixture::open_document(&mut h.app, "folder_01/sub_00/tag_000.biped", fixture::new_tag("biped"));
         idle(&mut h);
         // The tree's `sub_00` rows, not the breadcrumb's, which sits in the
         // tag pane to the right of the tree.
@@ -5658,7 +5659,7 @@ mod tests {
             return;
         }
         let mut h = Harness::new();
-        let display = "sound\\sound_mix.sound_mix";
+        let display = "sound/sound_mix.sound_mix";
         let entry = TagEntry {
             key: fixture::entry_key(display),
             display_path: display.to_owned(),
@@ -5696,7 +5697,7 @@ mod tests {
         }
         let keywords_at = |tag: blam_tags::TagFile| {
             let mut h = Harness::new();
-            let display = "sound\\sound_mix.sound_mix";
+            let display = "sound/sound_mix.sound_mix";
             let entry = TagEntry {
                 key: fixture::entry_key(display),
                 display_path: display.to_owned(),
@@ -5727,8 +5728,8 @@ mod tests {
     /// shipped crates still carry.
     #[test]
     fn a_field_the_definitions_dropped_is_drawn_with_the_tags_value() {
-        let display = "objects\\cex\\cex_ff_halo\\crates\\cov_man_cannon\\ff_man_cannon_forge_heavy.crate";
-        let path = crate::core::test_kits::hrek_tags().join(tag_path::to_relative(display));
+        let display = "objects/cex/cex_ff_halo/crates/cov_man_cannon/ff_man_cannon_forge_heavy.crate";
+        let path = crate::core::test_kits::hrek_tags().join(display);
         if !path.is_file() {
             eprintln!("skipping: {} not present", path.display());
             return;
@@ -5811,10 +5812,10 @@ mod tests {
     #[test]
     fn an_open_tag_left_alone_lets_the_window_sleep() {
         let kit = LooseKit::new("idle-repaint", "haloce_mcc");
-        kit.write_classic_ce("weapons\\rifle", "weapon");
+        kit.write_classic_ce("weapons/rifle", "weapon");
         let mut app = app();
         kit.install(&mut app);
-        let key = kit.open(&mut app, "weapons\\rifle.weapon");
+        let key = kit.open(&mut app, "weapons/rifle.weapon");
         assert!(
             app.views[app.model.kits[0].id].tag_tree.tiles.iter().any(
                 |(_, tile)| matches!(tile, egui_tiles::Tile::Pane(pane) if *pane == key)
@@ -5842,12 +5843,12 @@ mod tests {
     fn rows_out_of_view_are_skipped_and_nothing_in_view_changes() {
         use crate::app::editor::{FIELD_ROWS_BUILT, ROW_CULLING_OFF};
         let kit = LooseKit::new("row-culling", "haloce_mcc");
-        kit.write_classic_ce("weapons\\b", "weapon");
+        kit.write_classic_ce("weapons/b", "weapon");
         let run = |culling: bool| {
             ROW_CULLING_OFF.with(|off| off.set(!culling));
             let mut h = Harness::new();
             kit.install(&mut h.app);
-            kit.open(&mut h.app, "weapons\\b.weapon");
+            kit.open(&mut h.app, "weapons/b.weapon");
             settle(&mut h, 8);
             let mut views = Vec::new();
             let mut built = Vec::new();
@@ -5886,10 +5887,10 @@ mod tests {
     #[test]
     fn a_pasted_reference_takes_its_group_from_the_kits_game() {
         let kit = LooseKit::new("tsv-reference", "haloce_mcc");
-        kit.write_classic_ce("weapons\\b", "weapon");
+        kit.write_classic_ce("weapons/b", "weapon");
         let mut h = Harness::new();
         kit.install(&mut h.app);
-        let key = kit.open(&mut h.app, "weapons\\b.weapon");
+        let key = kit.open(&mut h.app, "weapons/b.weapon");
         settle(&mut h, 2);
         let active = h.app.model.active;
         let block = "item/object/attachments";
@@ -6032,12 +6033,12 @@ mod tests {
         /// Type `5` into "bounding radius" and leave the box focused.
         fn new(name: &str) -> Self {
             let kit = LooseKit::new(name, "haloce_mcc");
-            kit.write_classic_ce("weapons\\a", "weapon");
-            kit.write_classic_ce("weapons\\b", "weapon");
+            kit.write_classic_ce("weapons/a", "weapon");
+            kit.write_classic_ce("weapons/b", "weapon");
             let mut h = Harness::new();
             kit.install(&mut h.app);
-            kit.open(&mut h.app, "weapons\\a.weapon");
-            let key = kit.open(&mut h.app, "weapons\\b.weapon");
+            kit.open(&mut h.app, "weapons/a.weapon");
+            let key = kit.open(&mut h.app, "weapons/b.weapon");
             settle(&mut h, 8);
             let at = field_box(&h, "bounding radius");
             click_point(&mut h, at);

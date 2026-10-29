@@ -529,6 +529,7 @@ pub(in crate::app) struct FieldEditContext<'a> {
     pub(in crate::app) tag_reference_picker: &'a mut Option<TagReferencePickerState>,
     pub(in crate::app) status: Option<&'a mut String>,
     pub(in crate::app) editable: bool,
+    pub(in crate::app) access: Option<&'a crate::core::document::DocumentAccess>,
     /// Expert mode: fields the definitions mark read-only can be edited too.
     pub(in crate::app) expert_mode: bool,
     pub(in crate::app) show_block_sizes: bool,
@@ -634,11 +635,6 @@ pub(in crate::app) struct FieldEditContext<'a> {
     /// The pane's row heights, for skipping rows out of view; `None` draws
     /// every row.
     pub(in crate::app) row_heights: Option<&'a mut RowHeights>,
-    /// The tag being drawn, for string editors' menus: the tag itself, its
-    /// path in the kit's tags folder (`\`-separated, no extension), a stamp
-    /// that changes with every edit to it, and the kit it came from (to open
-    /// the other tags a menu reads). `None` outside a tag pane.
-    pub(in crate::app) string_editor_tag: Option<super::fields::string_editors::EditedTag<'a>>,
 }
 
 /// What a tag pane's field rows measured when last drawn, so the rows outside
@@ -777,6 +773,7 @@ impl<'a> FieldEditContext<'a> {
             tag_reference_picker: &mut sinks.tag_reference_picker,
             status: None,
             editable: false,
+            access: None,
             expert_mode: false,
             show_block_sizes: false,
             hud_message_usage: Default::default(),
@@ -825,7 +822,6 @@ impl<'a> FieldEditContext<'a> {
             expand_all: None,
             nested_default: NestedDefault::default(),
             row_heights: None,
-            string_editor_tag: None,
         }
     }
 }
@@ -835,6 +831,10 @@ impl FieldEditContext<'_> {
     /// and a field the definitions mark read-only needs expert mode.
     pub(in crate::app) fn can_edit(&self, meta: &FieldDisplayMeta) -> bool {
         self.editable && (!meta.read_only || self.expert_mode)
+    }
+    pub(in crate::app) fn can_write_path(&self, path: &str) -> bool {
+        self.editable && self.access.and_then(|access|access.writable_fields.as_ref())
+            .is_none_or(|fields|fields.contains(path))
     }
 
     /// Queue `ops`, as a row's own commit does: the same ops a

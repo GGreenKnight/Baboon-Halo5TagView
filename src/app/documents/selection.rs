@@ -145,6 +145,10 @@ impl Baboon {
         else {
             return;
         };
+        if let (TagSource::Halo5 {source},TagEntryLocation::Halo5 {index})=(&source.source,&entry.location) {
+            self.begin_halo5_tag_load(key,*index,source.clone(),ctx);
+            return;
+        }
         // A new tag reaching here has lost its document and its project overlay
         // (`select_entry` tries the overlay first), so there is nothing left to
         // read — `read_entry` would only fail on the worker thread. Retire the

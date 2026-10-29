@@ -72,6 +72,12 @@ pub(super) fn draw_tag(
     edit: &mut FieldEditContext<'_>,
 ) {
     let is_object_family = is_object_family_group(entry.group_tag);
+    if edit.access.is_some_and(|access| access.fields_only) {
+        draw_tag_fields_scroll(ui, tag, document_revision, entry, names, source,
+            rmdf_cache, rmop_cache, h2_templates, color_popup, function_popup,
+            expert_mode, edit, is_object_family, false);
+        return;
+    }
     let is_shaderish = !supports_field_search(entry, &bundled_group_hierarchy(source_game));
     let is_model = is_previewable_geometry_group_for_game(entry.group_tag, names, source_game);
 
